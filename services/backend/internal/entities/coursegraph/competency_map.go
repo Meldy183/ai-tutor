@@ -179,8 +179,8 @@ type mapOutcome struct {
 	requires              []string
 }
 
-// BuildMapGraph builds the course graph from the first sheet of the book, the
-// simulation's; the other sheets are not read.
+// BuildMapGraph builds the Geek course graph from the first sheet. Paired-map
+// structure is validated by the importer before it stages the learning sheet.
 func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 	if len(sheets) == 0 {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "В книге нет листов."}
@@ -225,6 +225,44 @@ func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 		return MapGraph{}, err
 	}
 	return MapGraph{Graph: graph, Sheet: sheet, Topics: topics, Skipped: skipped}, nil
+}
+
+// CompetencyMapStructure extracts the authored structure of Geek's map sheet
+// in the shared comparison shape used to pair it with the learning sheet.
+func CompetencyMapStructureKeys(sheet MapSheet) ([]string, error) {
+	_, valid := mapHeader(sheet.Rows)
+	if !valid {
+		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("На листе «%s» нет обязательных колонок карты.", sheet.Name)}
+	}
+	outcomes, groups, issues := readMapOutcomes(sheet.Rows)
+	if len(issues) > 0 {
+		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet.Name), Issues: issues}
+	}
+	keys := []string{}
+	competencyNames := map[string]struct{}{}
+	constituentNames := map[string]struct{}{}
+	for _, group := range groups {
+		competency := normalizeMapKey(group.competency)
+		constituent := normalizeMapKey(group.constituent)
+		if _, ok := competencyNames[competency]; !ok {
+			competencyNames[competency] = struct{}{}
+			keys = append(keys, "компетенция/"+competency)
+		}
+		constituentKey := "составляющая/" + competency + "/" + constituent
+		if _, ok := constituentNames[constituentKey]; !ok {
+			constituentNames[constituentKey] = struct{}{}
+			keys = append(keys, constituentKey)
+		}
+	}
+	for _, outcome := range outcomes {
+		keys = append(keys, "ор/"+normalizeMapKey(outcome.competency)+"/"+normalizeMapKey(outcome.constituent)+"/"+normalizeMapKey(outcome.outcome))
+	}
+	slices.Sort(keys)
+	return keys, nil
+}
+
+func normalizeMapKey(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
 func skippedIssues(skipped []SkippedCompetency) []MapIssue {

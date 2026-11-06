@@ -9,6 +9,24 @@ import (
 	"context"
 )
 
+const learningActivatePendingRevision = `-- name: LearningActivatePendingRevision :execrows
+UPDATE learning_subject_state SET active_revision=pending_revision, pending_revision=NULL
+WHERE subject_id=$1 AND pending_revision=$2
+`
+
+type LearningActivatePendingRevisionParams struct {
+	SubjectID       string
+	PendingRevision *int64
+}
+
+func (q *Queries) LearningActivatePendingRevision(ctx context.Context, arg LearningActivatePendingRevisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, learningActivatePendingRevision, arg.SubjectID, arg.PendingRevision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const learningCountExistingOutcomesForSubject = `-- name: LearningCountExistingOutcomesForSubject :one
 SELECT count(*)::integer FROM learning_outcomes outcome
 JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
@@ -52,6 +70,28 @@ type LearningDeleteMaterialLinksBySubjectAndNameParams struct {
 func (q *Queries) LearningDeleteMaterialLinksBySubjectAndName(ctx context.Context, arg LearningDeleteMaterialLinksBySubjectAndNameParams) error {
 	_, err := q.db.Exec(ctx, learningDeleteMaterialLinksBySubjectAndName, arg.SubjectID, arg.MaterialName)
 	return err
+}
+
+const learningDiscardPendingRevision = `-- name: LearningDiscardPendingRevision :execrows
+WITH cleared AS (
+    UPDATE learning_subject_state SET pending_revision=NULL
+    WHERE subject_id=$1 AND pending_revision=$2 RETURNING subject_id
+)
+DELETE FROM learning_map_imports imported WHERE imported.subject_id=$1 AND imported.revision=$2
+  AND EXISTS (SELECT 1 FROM cleared)
+`
+
+type LearningDiscardPendingRevisionParams struct {
+	SubjectID string
+	Revision  int64
+}
+
+func (q *Queries) LearningDiscardPendingRevision(ctx context.Context, arg LearningDiscardPendingRevisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, learningDiscardPendingRevision, arg.SubjectID, arg.Revision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const learningGetGeneratedTaskByKey = `-- name: LearningGetGeneratedTaskByKey :one
@@ -1019,6 +1059,21 @@ func (q *Queries) LearningSearchTaskProfiles(ctx context.Context, arg LearningSe
 		return nil, err
 	}
 	return items, nil
+}
+
+const learningStageSubjectRevision = `-- name: LearningStageSubjectRevision :exec
+INSERT INTO learning_subject_state(subject_id, pending_revision) VALUES ($1, $2)
+ON CONFLICT (subject_id) DO UPDATE SET pending_revision = EXCLUDED.pending_revision
+`
+
+type LearningStageSubjectRevisionParams struct {
+	SubjectID       string
+	PendingRevision *int64
+}
+
+func (q *Queries) LearningStageSubjectRevision(ctx context.Context, arg LearningStageSubjectRevisionParams) error {
+	_, err := q.db.Exec(ctx, learningStageSubjectRevision, arg.SubjectID, arg.PendingRevision)
+	return err
 }
 
 const learningUpdateCompetencyMapRevision = `-- name: LearningUpdateCompetencyMapRevision :exec

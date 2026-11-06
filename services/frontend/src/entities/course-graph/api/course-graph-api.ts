@@ -307,8 +307,8 @@ export async function startCourseGraphBuild(
   return build
 }
 
-// Builds the course graph from a competency map instead of the materials;
-// the server reads the first sheet of the book.
+// Imports one competency workbook. For a two-sheet workbook the server prepares
+// both mode projections and publishes them together.
 export async function importCompetencyMap(
   subjectId: string,
   file: File,

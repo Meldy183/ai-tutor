@@ -14,6 +14,7 @@ import {
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { createQueryClient } from '@/bootstrap/providers'
 import { routeTree } from '@/routeTree.gen'
+import { zipSync } from 'fflate'
 
 // Load the lazy page outside timed user interactions, as in diagnostic tests.
 beforeAll(async () => {
@@ -142,6 +143,7 @@ function backend(
     (item) => ({ ...item }),
   )
   let graphRequested = false
+  let unifiedMapRequested = false
   let signedIn = options.user !== null
   let metadataFailuresRemaining = options.metadataFailCount ?? 0
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -172,8 +174,9 @@ function backend(
       if (options.learningMap404)
         return Response.json({ message: 'Карта не найдена.' }, { status: 404 })
       return Response.json({
-        revision: options.learningMapExists ? 1 : 0,
-        imported_at: options.learningMapExists ? 2 : null,
+        revision: options.learningMapExists || unifiedMapRequested ? 1 : 0,
+        imported_at:
+          options.learningMapExists || unifiedMapRequested ? 2 : null,
         competencies: [],
       })
     }
@@ -310,11 +313,13 @@ function backend(
       return Response.json({
         status: graphRequested
           ? 'pending'
-          : options.build
-            ? states[options.build.status]
-            : options.graph
-              ? 'ready'
-              : 'not_requested',
+          : unifiedMapRequested
+            ? 'ready'
+            : options.build
+              ? states[options.build.status]
+              : options.graph
+                ? 'ready'
+                : 'not_requested',
         attempts: 1,
         error_message: options.build?.error?.message ?? '',
         graph: options.graph
@@ -335,11 +340,39 @@ function backend(
             }
           : null,
         stale: false,
+        graph_source: unifiedMapRequested ? 'competency_map' : 'none',
+        build_source: unifiedMapRequested ? 'competency_map' : null,
+        map: unifiedMapRequested
+          ? {
+              filename: 'map.xlsx',
+              sheet: 'Geek',
+              fingerprint: 'paired-fingerprint',
+            }
+          : null,
         inputs_ready:
           activeMaterials.length > 0 &&
           activeMaterials.every((item) => item.status === 'parsed'),
         updated_at: options.graph?.published_at ?? 0,
         progress: graphRequested ? null : (options.build?.progress ?? null),
+      })
+    }
+    if (url.endsWith('/graph/competency-map') && init?.method === 'POST') {
+      unifiedMapRequested = true
+      return Response.json({
+        status: 'pending',
+        attempts: 1,
+        error_message: '',
+        graph: null,
+        stale: false,
+        graph_source: 'none',
+        build_source: 'competency_map',
+        map: {
+          filename: 'map.xlsx',
+          sheet: 'Geek',
+          fingerprint: 'paired-fingerprint',
+        },
+        inputs_ready: false,
+        updated_at: 1,
       })
     }
     if (
@@ -566,9 +599,11 @@ it('imports a learning map only into the course selected in its route', async ()
   fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
     target: { files: [file] },
   })
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
-  )
+  const submit = await screen.findByRole('button', {
+    name: 'Подтвердить изменения',
+  })
+  await waitFor(() => expect(submit).toBeEnabled())
+  fireEvent.click(submit)
   expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   await waitFor(() =>
     expect(
@@ -583,6 +618,46 @@ it('imports a learning map only into the course selected in its route', async ()
   expect(
     fetch.mock.calls.some(([url]) =>
       url.endsWith('/learn/admin/subjects/subject-a/competency-map/import'),
+    ),
+  ).toBe(false)
+})
+
+it('sends a two-sheet workbook through the single shared map import', async () => {
+  const fetch = backend()
+  renderApp('/admin/courses/subject-b')
+  await screen.findByRole('heading', {
+    name: 'Текущее состояние карты',
+    level: 3,
+  })
+  const sheets = ['Geek', 'Обучение']
+    .map(
+      (name, index) =>
+        `<sheet name="${name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+    )
+    .join('')
+  const workbook = zipSync({
+    'xl/workbook.xml': new TextEncoder().encode(
+      `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>${sheets}</sheets></workbook>`,
+    ),
+  })
+  const file = new File([workbook], 'map.xlsx')
+  fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
+    target: { files: [file] },
+  })
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
+  )
+  await screen.findByText('Карта компетенций успешно загружена')
+  expect(
+    fetch.mock.calls.some(
+      ([url, request]) =>
+        url.endsWith('/exam/admin/subjects/subject-b/graph/competency-map') &&
+        request?.method === 'POST',
+    ),
+  ).toBe(true)
+  expect(
+    fetch.mock.calls.some(([url]) =>
+      url.endsWith('/learn/admin/subjects/subject-b/competency-map/import'),
     ),
   ).toBe(false)
 })

@@ -40,7 +40,7 @@ func New(service *application.Service, maxUploadBytes int64) *Handler {
 
 // ImportSubject handles POST /admin/subjects/{subject_id}/competency-map/import.
 // @Summary Заменить карту предмета
-// @Description Доступно только admin. Импорт атомарно заменяет карту указанного предмета.
+// @Description Доступно только admin. Совместимый импорт CSV и однолистовой XLSX атомарно заменяет учебную карту. Двухлистовую XLSX-карту нужно загрузить через единый импорт графа курса; независимая публикация её учебного листа отклоняется.
 // @ID importSubjectCompetencyMap
 // @Tags Учебная база
 // @Security accessCookie
@@ -53,7 +53,7 @@ func New(service *application.Service, maxUploadBytes int64) *Handler {
 // @Failure 401 {object} fault.Error
 // @Failure 403 {object} fault.Error
 // @Failure 404 {object} fault.Error
-// @Failure 409 {object} fault.Error
+// @Failure 409 {object} fault.Error "COMPETENCY_MAP_CHANGED или UNIFIED_COMPETENCY_MAP_REQUIRED"
 // @Failure 413 {object} fault.Error
 // @Failure 415 {object} fault.Error
 // @Failure 422 {object} fault.Error

@@ -64,6 +64,12 @@ export const learningTranslations = {
     submitEdit: 'Подтвердить изменения',
     cancelEdit: 'Отменить',
     uploading: 'Загружаем и проверяем карту…',
+    checkingWorkbook: 'Проверяем число листов…',
+    preparingUnified:
+      'Карта проверена. Подготавливаем единый граф для обучения и Geek…',
+    unifiedBuildFailed:
+      'Не удалось подготовить граф. Откройте карту курса в разделе Geek, чтобы повторить подготовку.',
+    openGeekMap: 'Открыть подготовку в Geek',
     invalidType: 'Выберите файл CSV или XLSX.',
     tooLarge: 'Размер файла не должен превышать 25 МиБ.',
     emptyFile: 'Выбранный файл пуст.',
@@ -71,6 +77,8 @@ export const learningTranslations = {
     confirmTitle: 'Перезаписать карту?',
     confirmHelp:
       'Текущая карта и задания предмета будут заменены. Это действие нельзя отменить.',
+    confirmHelpUnified:
+      'После проверки и подготовки новая карта станет общей для обучения и Geek. До успешной подготовки текущая версия продолжит работать.',
     cancel: 'Отмена',
     confirm: 'Перезаписать',
     stats: {

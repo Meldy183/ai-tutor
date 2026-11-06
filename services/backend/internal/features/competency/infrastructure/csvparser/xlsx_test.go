@@ -124,6 +124,27 @@ func TestLearningStillReadsSecondSheet(t *testing.T) {
 	}
 }
 
+func TestParseXLSXSheetSelectsEitherCourseMapSheet(t *testing.T) {
+	headers := []any{"Компетенция", "Уровень темы", "Составляющая", "Образовательный результат", "Что должно войти в тест", "Таксономия", "Уровень ALDs", "Важность", "Раздел РПД · компетенции РПД", "ОС", "Задание 1"}
+	bookData := book(t, map[string][][]any{
+		"Экзамен":  {headers, {"К1", "средний", "С1", "Устный ОР", true, "Понимать", "средний", 4, "", "", "Объясните концепцию своими словами."}},
+		"Обучение": {headers, {"К1", "средний", "С1", "Учебный ОР", true, "Понимать", "средний", 4, "", "", "Выберите правильный ответ."}},
+	}, []string{"Экзамен", "Обучение"})
+
+	for index, want := range []string{"Устный ОР", "Учебный ОР"} {
+		parsed, err := ParseXLSXSheet(bookData, index)
+		if err != nil {
+			t.Fatalf("parse sheet %d: %v", index+1, err)
+		}
+		if len(parsed.Outcomes) != 1 || parsed.Outcomes[0].Name != want {
+			t.Fatalf("sheet %d outcomes = %+v, want %q", index+1, parsed.Outcomes, want)
+		}
+	}
+	if _, err := ParseXLSXSheet(bookData, 2); err == nil {
+		t.Fatal("out-of-range sheet index accepted")
+	}
+}
+
 func TestXLSXNativeBooleanValues(t *testing.T) {
 	for _, value := range []bool{true, false} {
 		workbook := excelize.NewFile()

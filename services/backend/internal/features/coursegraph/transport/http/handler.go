@@ -120,7 +120,7 @@ func (h *Handler) Read(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {object} fault.Error
 // @Failure 403 {object} fault.Error
 // @Failure 404 {object} fault.Error
-// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS: сборка уже идёт"
+// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED"
 // @Failure 422 {object} fault.Error "GRAPH_INPUTS_NOT_READY: материалы ещё обрабатываются, не обработаны или их нет"
 // @Failure 503 {object} fault.Error
 // @Router /exam/admin/subjects/{subject_id}/graph/build [post]
@@ -140,7 +140,7 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 
 // ImportMap builds the course graph from a competency map.
 // @Summary Импортировать карту компетенций
-// @Description Доступно только admin. Кнопка «Импортировать карту компетенций»: граф курса собирается по карте вместо материалов — на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; вопрос — задание карты без изменений. Карта проверяется сразу, затем вопросы готовятся и граф публикуется так же, как сборка из материалов, и заменяет прежний граф курса. Граф строится по первому листу книги (второй — для диагностики режима «Обучение»); колонки «Компетенция» и «Таксономия» принимаются вместо «Субкомпетенция» и «Уровень по Блуму». Все колонки «Задание N» ОР становятся вариантами темы с критериями из колонки «Критерии оценивания…» того же номера по порядку; экзамен при старте выбирает один вариант случайно.
+// @Description Доступно только admin. Одна загрузка двухлистовой карты проверяет структуру обоих листов по компетенции, составляющей и ОР. Первый лист готовит граф Geek, второй сохраняется как учебная проекция; задания и критерии остаются при своих ОР и не подменяют друг друга. Учебная редакция и граф становятся активными одной транзакцией после подготовки вопросов. При ошибке активная версия остаётся прежней. Для графа Geek на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; все колонки «Задание N» становятся вариантами темы с критериями из колонки того же номера по порядку. CSV и однолистовые импорты обучения сохраняют прежний маршрут.
 // @ID importCourseGraphCompetencyMap
 // @Tags Материалы
 // @Security accessCookie
@@ -153,9 +153,9 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {object} fault.Error
 // @Failure 403 {object} fault.Error
 // @Failure 404 {object} fault.Error
-// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS: сборка уже идёт"
+// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED"
 // @Failure 413 {object} fault.Error
-// @Failure 422 {object} fault.Error "COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY"
+// @Failure 422 {object} fault.Error "COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH"
 // @Failure 503 {object} fault.Error
 // @Router /exam/admin/subjects/{subject_id}/graph/competency-map [post]
 func (h *Handler) ImportMap(w http.ResponseWriter, r *http.Request) {

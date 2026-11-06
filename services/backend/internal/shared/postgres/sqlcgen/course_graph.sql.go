@@ -73,34 +73,47 @@ func (q *Queries) FailCourseGraph(ctx context.Context, arg FailCourseGraphParams
 
 const finishCourseGraph = `-- name: FinishCourseGraph :one
 WITH accepted AS (
-    UPDATE course_graph_jobs j SET status='ready', lease_until=0, error_message='', updated_at=$2
-    WHERE j.subject_id=$3 AND j.lease_token=$4 AND j.status='processing'
-      AND j.fingerprint=$5
-      AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=$3
-                 AND i.source=j.source AND i.fingerprint=$5)
+    UPDATE course_graph_jobs j SET status='ready', lease_until=0, error_message='', updated_at=$1
+    WHERE j.subject_id=$2 AND j.lease_token=$3 AND j.status='processing'
+      AND j.fingerprint=$4
+      AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=$2
+                 AND i.source=j.source AND i.fingerprint=$4)
+      AND (j.source <> 'competency_map' OR NOT EXISTS (
+          SELECT 1 FROM course_graph_maps m WHERE m.subject_id=j.subject_id AND m.learning_revision IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM learning_subject_state state
+                            WHERE state.subject_id=j.subject_id
+                              AND (state.pending_revision=m.learning_revision OR state.active_revision=m.learning_revision))))
     RETURNING j.subject_id, j.source, j.fingerprint
-)
+), published AS (
 INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at)
-SELECT accepted.subject_id,accepted.source,accepted.fingerprint,$1::jsonb,$2::bigint FROM accepted
+SELECT accepted.subject_id,accepted.source,accepted.fingerprint,$5::jsonb-'learning_revision',$1::bigint FROM accepted
 ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,updated_at=excluded.updated_at
 RETURNING subject_id
+), activated AS (
+ UPDATE learning_subject_state state SET active_revision=state.pending_revision,pending_revision=NULL
+ FROM course_graph_maps map, accepted
+ WHERE state.subject_id=accepted.subject_id AND map.subject_id=accepted.subject_id
+   AND accepted.source='competency_map' AND map.learning_revision=state.pending_revision
+ RETURNING state.subject_id
+)
+SELECT subject_id FROM published
 `
 
 type FinishCourseGraphParams struct {
-	Graph       []byte
 	Now         int64
 	SubjectID   string
 	Token       string
 	Fingerprint string
+	Graph       []byte
 }
 
 func (q *Queries) FinishCourseGraph(ctx context.Context, arg FinishCourseGraphParams) (string, error) {
 	row := q.db.QueryRow(ctx, finishCourseGraph,
-		arg.Graph,
 		arg.Now,
 		arg.SubjectID,
 		arg.Token,
 		arg.Fingerprint,
+		arg.Graph,
 	)
 	var subject_id string
 	err := row.Scan(&subject_id)
@@ -302,7 +315,11 @@ func (q *Queries) RenewCourseGraph(ctx context.Context, arg RenewCourseGraphPara
 const replaceCurrentCourseGraphMap = `-- name: ReplaceCurrentCourseGraphMap :execrows
 UPDATE course_graph_maps m
 SET filename=$1, sheet=$2,
-    fingerprint=$3, graph=$4::jsonb, uploaded_at=$5::bigint
+    fingerprint=$3, graph=$4::jsonb, uploaded_at=$5::bigint,
+    learning_revision=CASE WHEN EXISTS (SELECT 1 FROM learning_subject_state state
+                                        WHERE state.subject_id=m.subject_id
+                                          AND state.active_revision=m.learning_revision)
+                           THEN m.learning_revision ELSE NULL END
 WHERE m.subject_id=$6 AND m.fingerprint=$7
   AND EXISTS (SELECT 1 FROM course_graphs g WHERE g.subject_id=m.subject_id
               AND g.source='competency_map' AND g.fingerprint=m.fingerprint)
@@ -409,11 +426,13 @@ func (q *Queries) RetryFailedCourseGraphMapBuild(ctx context.Context, arg RetryF
 }
 
 const saveCourseGraphMap = `-- name: SaveCourseGraphMap :exec
-INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at)
-SELECT $1, $2, $3, $4, $5::jsonb, $6::bigint
+INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at, learning_revision)
+SELECT $1, $2, $3, $4, $5::jsonb, $6::bigint,
+       NULLIF($5::jsonb->>'learning_revision','')::bigint
 WHERE EXISTS (SELECT 1 FROM subjects s WHERE s.id=$1)
 ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded.sheet,
-    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at
+    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at,
+    learning_revision=excluded.learning_revision
 `
 
 type SaveCourseGraphMapParams struct {

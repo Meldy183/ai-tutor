@@ -54,12 +54,13 @@ type CourseGraphJobInput struct {
 }
 
 type CourseGraphMap struct {
-	SubjectID   string
-	Filename    string
-	Sheet       string
-	Fingerprint string
-	Graph       []byte
-	UploadedAt  int64
+	SubjectID        string
+	Filename         string
+	Sheet            string
+	Fingerprint      string
+	Graph            []byte
+	UploadedAt       int64
+	LearningRevision *int64
 }
 
 type GeekRequest struct {
@@ -336,8 +337,9 @@ type LearningSession struct {
 }
 
 type LearningSubjectState struct {
-	SubjectID      string
-	ActiveRevision *int64
+	SubjectID       string
+	ActiveRevision  *int64
+	PendingRevision *int64
 }
 
 type LearningTask struct {

@@ -24,6 +24,22 @@ INSERT INTO learning_map_imports(
 -- name: LearningUpdateSubjectActiveRevision :exec
 INSERT INTO learning_subject_state(subject_id, active_revision) VALUES ($1, $2) ON CONFLICT (subject_id) DO UPDATE SET active_revision = EXCLUDED.active_revision;
 
+-- name: LearningStageSubjectRevision :exec
+INSERT INTO learning_subject_state(subject_id, pending_revision) VALUES ($1, $2)
+ON CONFLICT (subject_id) DO UPDATE SET pending_revision = EXCLUDED.pending_revision;
+
+-- name: LearningActivatePendingRevision :execrows
+UPDATE learning_subject_state SET active_revision=pending_revision, pending_revision=NULL
+WHERE subject_id=$1 AND pending_revision=$2;
+
+-- name: LearningDiscardPendingRevision :execrows
+WITH cleared AS (
+    UPDATE learning_subject_state SET pending_revision=NULL
+    WHERE subject_id=$1 AND pending_revision=$2 RETURNING subject_id
+)
+DELETE FROM learning_map_imports imported WHERE imported.subject_id=$1 AND imported.revision=$2
+  AND EXISTS (SELECT 1 FROM cleared);
+
 -- name: LearningInsertCompetency :exec
 INSERT INTO learning_competencies(id, name, revision) VALUES ($1, $2, $3);
 

@@ -4155,7 +4155,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
         "422":
           content:
             application/json:
@@ -4176,7 +4176,7 @@ paths:
       x-implementation: implemented
   /exam/admin/subjects/{subject_id}/graph/competency-map:
     post:
-      description: 'Доступно только admin. Кнопка «Импортировать карту компетенций»: граф курса собирается по карте вместо материалов — на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; вопрос — задание карты без изменений. Карта проверяется сразу, затем вопросы готовятся и граф публикуется так же, как сборка из материалов, и заменяет прежний граф курса. Граф строится по первому листу книги (второй — для диагностики режима «Обучение»); колонки «Компетенция» и «Таксономия» принимаются вместо «Субкомпетенция» и «Уровень по Блуму». Все колонки «Задание N» ОР становятся вариантами темы с критериями из колонки «Критерии оценивания…» того же номера по порядку; экзамен при старте выбирает один вариант случайно.'
+      description: Доступно только admin. Одна загрузка двухлистовой карты проверяет структуру обоих листов по компетенции, составляющей и ОР. Первый лист готовит граф Geek, второй сохраняется как учебная проекция; задания и критерии остаются при своих ОР и не подменяют друг друга. Учебная редакция и граф становятся активными одной транзакцией после подготовки вопросов. При ошибке активная версия остаётся прежней. Для графа Geek на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; все колонки «Задание N» становятся вариантами темы с критериями из колонки того же номера по порядку. CSV и однолистовые импорты обучения сохраняют прежний маршрут.
       operationId: importCourseGraphCompetencyMap
       parameters:
         - description: ID предмета
@@ -4236,7 +4236,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
         "413":
           content:
             application/json:
@@ -4248,7 +4248,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY
+          description: COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH
         "503":
           content:
             application/json:
@@ -5378,7 +5378,7 @@ paths:
       x-implementation: implemented
   /learn/admin/subjects/{subject_id}/competency-map/import:
     post:
-      description: Доступно только admin. Импорт атомарно заменяет карту указанного предмета.
+      description: Доступно только admin. Совместимый импорт CSV и однолистовой XLSX атомарно заменяет учебную карту. Двухлистовую XLSX-карту нужно загрузить через единый импорт графа курса; независимая публикация её учебного листа отклоняется.
       operationId: importSubjectCompetencyMap
       parameters:
         - description: ID предмета
@@ -5437,7 +5437,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: Conflict
+          description: COMPETENCY_MAP_CHANGED или UNIFIED_COMPETENCY_MAP_REQUIRED
         "413":
           content:
             application/json:

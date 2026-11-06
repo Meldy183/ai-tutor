@@ -16,8 +16,41 @@ type Repository interface {
 	Read(ctx context.Context, subjectID string) (competencymap.Snapshot, error)
 }
 
+// StageForSubject stores the learning side of a paired map while the Geek graph
+// is prepared. It stays invisible until the graph publisher activates it.
+func (s *Service) StageForSubject(ctx context.Context, actor user.User, subjectID string, data []byte) (competencymap.ImportResult, error) {
+	if err := s.Authorize(actor); err != nil {
+		return competencymap.ImportResult{}, err
+	}
+	parsed, err := s.parser.Parse(data)
+	if err != nil {
+		return competencymap.ImportResult{}, err
+	}
+	stager, ok := s.repo.(interface {
+		Stage(context.Context, string, string, competencymap.Map, int64) (competencymap.ImportResult, error)
+	})
+	if !ok {
+		return competencymap.ImportResult{}, fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Подготовка единой карты компетенций не настроена.")
+	}
+	return stager.Stage(ctx, subjectID, actor.ID, parsed, s.now().Unix())
+}
+
+func (s *Service) DiscardStaged(ctx context.Context, subjectID string, revision int64) error {
+	stager, ok := s.repo.(interface {
+		DiscardStaged(context.Context, string, int64) error
+	})
+	if !ok {
+		return fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Очистка неподтверждённой карты не настроена.")
+	}
+	return stager.DiscardStaged(ctx, subjectID, revision)
+}
+
 type Parser interface {
 	Parse(data []byte) (competencymap.Map, error)
+}
+
+type XLSXSheetCounter interface {
+	XLSXSheetCount(data []byte) (int, error)
 }
 
 type Service struct {
@@ -50,6 +83,17 @@ func (s *Service) ImportForSubject(ctx context.Context, actor user.User, subject
 	if media != "text/csv" && media != "application/csv" && media != "application/vnd.ms-excel" &&
 		media != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
 		return competencymap.ImportResult{}, fault.New(fault.Unsupported, "UNSUPPORTED_MEDIA_TYPE", "Ожидается файл CSV или XLSX.")
+	}
+	if media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
+		if counter, ok := s.parser.(XLSXSheetCounter); ok {
+			count, countErr := counter.XLSXSheetCount(data)
+			if countErr != nil {
+				return competencymap.ImportResult{}, countErr
+			}
+			if count > 1 {
+				return competencymap.ImportResult{}, fault.New(fault.Conflict, "UNIFIED_COMPETENCY_MAP_REQUIRED", "Двухлистовую карту загрузите один раз через импорт графа курса: так обе части карты будут опубликованы вместе.")
+			}
+		}
 	}
 	parsed, err := s.parser.Parse(data)
 	if err != nil {

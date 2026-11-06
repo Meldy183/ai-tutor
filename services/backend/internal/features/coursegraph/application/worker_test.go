@@ -261,13 +261,16 @@ func TestImportMapQueuesTheGraphOfTheMap(t *testing.T) {
 	}
 	repo := mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}, saved: &saved, sheet: &sheet, queued: true}
 	w := New(repo, nil, nil, nil, nil, read)
+	w.SetLearningMapStager(func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (int64, error) {
+		return 42, nil
+	})
 	if _, err := w.ImportMap(context.Background(), user.User{ID: "s", Role: user.Student}, "subject", "map.xlsx", nil); !isFault(err, "FORBIDDEN") {
 		t.Fatalf("student import: %v", err)
 	}
 	if _, err := w.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil); err != nil {
 		t.Fatal(err)
 	}
-	if sheet != "Карта" || !strings.Contains(string(saved), `"version":"competency-map-v1"`) {
+	if sheet != "Карта" || !strings.Contains(string(saved), `"version":"competency-map-v1"`) || !strings.Contains(string(saved), `"learning_revision":42`) {
 		t.Fatalf("saved sheet %q graph %s", sheet, saved)
 	}
 	busy := New(mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "processing"}}, saved: &saved, sheet: &sheet}, nil, nil, nil, nil, read)

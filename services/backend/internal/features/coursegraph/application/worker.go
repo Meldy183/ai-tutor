@@ -70,17 +70,24 @@ type Questions interface {
 	Prepare(ctx context.Context, graph json.RawMessage) (json.RawMessage, error)
 }
 
+// LearningMapStager stores the second workbook sheet as an inactive learning
+// projection and returns its revision for atomic publication with the graph.
+type LearningMapStager func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (int64, error)
+type LearningMapAborter func(context.Context, string, int64) error
+
 // MapReader reads the worksheets of an imported competency map book.
 type MapReader func(data []byte) ([]coursegraph.MapSheet, error)
 
 type Worker struct {
-	repo      Repository
-	materials Materials
-	storage   Storage
-	builder   Builder
-	voices    Voices
-	questions Questions
-	maps      MapReader
+	repo             Repository
+	materials        Materials
+	storage          Storage
+	builder          Builder
+	voices           Voices
+	questions        Questions
+	maps             MapReader
+	stageLearningMap LearningMapStager
+	abortLearningMap LearningMapAborter
 	// progress of running builds by subject, shown in snapshots.
 	mu            sync.Mutex
 	progress      map[string]coursegraph.BuildProgress
@@ -98,6 +105,9 @@ func New(repo Repository, materials Materials, storage Storage, builder Builder,
 // SetQuestions makes builds prepare their questions before publication;
 // without it a build is published with the questions course-graph wrote.
 func (w *Worker) SetQuestions(q Questions) { w.questions = q }
+
+func (w *Worker) SetLearningMapStager(stager LearningMapStager)    { w.stageLearningMap = stager }
+func (w *Worker) SetLearningMapAborter(aborter LearningMapAborter) { w.abortLearningMap = aborter }
 
 func (w *Worker) setProgress(subjectID string, p *coursegraph.BuildProgress) {
 	w.mu.Lock()
@@ -251,8 +261,7 @@ func (w *Worker) snapshot(ctx context.Context, subjectID string) (coursegraph.Sn
 // ImportMap builds the course graph from a competency map instead of the
 // materials (the admin's "import competency map" button): the map is read
 // and checked at once, its questions are prepared and published by the
-// worker like those of a build. The graph is read from the first sheet of
-// the book; the second one is the diagnostic's.
+// worker like those of a build.
 func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, filename string, data []byte) (coursegraph.Snapshot, error) {
 	if actor.Role != user.Admin {
 		return coursegraph.Snapshot{}, fault.New(fault.Forbidden, "FORBIDDEN", "Доступно только admin.")
@@ -279,6 +288,27 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, err
 	}
+	var stagedRevision int64
+	if len(sheets) > 1 && w.stageLearningMap != nil {
+		revision, stageErr := w.stageLearningMap(ctx, actor, subjectID, data, sheets)
+		if stageErr != nil {
+			return coursegraph.Snapshot{}, stageErr
+		}
+		var graph map[string]json.RawMessage
+		if err := json.Unmarshal(built.Graph, &graph); err != nil {
+			return coursegraph.Snapshot{}, err
+		}
+		version, _ := json.Marshal(revision)
+		graph["learning_revision"] = version
+		built.Graph, err = json.Marshal(graph)
+		if err != nil {
+			if w.abortLearningMap != nil {
+				_ = w.abortLearningMap(ctx, subjectID, revision)
+			}
+			return coursegraph.Snapshot{}, err
+		}
+		stagedRevision = revision
+	}
 	var assessment struct {
 		Warnings []coursegraph.MapIssue `json:"assessment_warnings"`
 	}
@@ -287,9 +317,19 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	}
 	queued, err := w.repo.SaveMap(ctx, subjectID, filename, built.Sheet, built.Graph, time.Now())
 	if err != nil {
+		if stagedRevision > 0 && w.abortLearningMap != nil {
+			if abortErr := w.abortLearningMap(ctx, subjectID, stagedRevision); abortErr != nil {
+				return coursegraph.Snapshot{}, errors.Join(err, abortErr)
+			}
+		}
 		return coursegraph.Snapshot{}, err
 	}
 	if !queued {
+		if stagedRevision > 0 && w.abortLearningMap != nil {
+			if err := w.abortLearningMap(ctx, subjectID, stagedRevision); err != nil {
+				return coursegraph.Snapshot{}, err
+			}
+		}
 		return coursegraph.Snapshot{}, fault.New(fault.Conflict, "GRAPH_BUILD_IN_PROGRESS", "Граф курса уже собирается.")
 	}
 	for _, warning := range assessment.Warnings {

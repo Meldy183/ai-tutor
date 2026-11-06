@@ -23,11 +23,13 @@ WHERE course_graph_jobs.status NOT IN ('pending', 'processing')
 RETURNING subject_id;
 
 -- name: SaveCourseGraphMap :exec
-INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at)
-SELECT sqlc.arg(subject_id), sqlc.arg(filename), sqlc.arg(sheet), sqlc.arg(fingerprint), sqlc.arg(graph)::jsonb, sqlc.arg(now)::bigint
+INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at, learning_revision)
+SELECT sqlc.arg(subject_id), sqlc.arg(filename), sqlc.arg(sheet), sqlc.arg(fingerprint), sqlc.arg(graph)::jsonb, sqlc.arg(now)::bigint,
+       NULLIF(sqlc.arg(graph)::jsonb->>'learning_revision','')::bigint
 WHERE EXISTS (SELECT 1 FROM subjects s WHERE s.id=sqlc.arg(subject_id))
 ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded.sheet,
-    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at;
+    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at,
+    learning_revision=excluded.learning_revision;
 
 -- name: ReadCourseGraphMap :one
 SELECT graph FROM course_graph_maps WHERE subject_id = $1;
@@ -63,12 +65,25 @@ WITH accepted AS (
       AND j.fingerprint=sqlc.arg(fingerprint)
       AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=sqlc.arg(subject_id)
                  AND i.source=j.source AND i.fingerprint=sqlc.arg(fingerprint))
+      AND (j.source <> 'competency_map' OR NOT EXISTS (
+          SELECT 1 FROM course_graph_maps m WHERE m.subject_id=j.subject_id AND m.learning_revision IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM learning_subject_state state
+                            WHERE state.subject_id=j.subject_id
+                              AND (state.pending_revision=m.learning_revision OR state.active_revision=m.learning_revision))))
     RETURNING j.subject_id, j.source, j.fingerprint
-)
+), published AS (
 INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at)
-SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb,sqlc.arg(now)::bigint FROM accepted
+SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb-'learning_revision',sqlc.arg(now)::bigint FROM accepted
 ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,updated_at=excluded.updated_at
-RETURNING subject_id;
+RETURNING subject_id
+), activated AS (
+ UPDATE learning_subject_state state SET active_revision=state.pending_revision,pending_revision=NULL
+ FROM course_graph_maps map, accepted
+ WHERE state.subject_id=accepted.subject_id AND map.subject_id=accepted.subject_id
+   AND accepted.source='competency_map' AND map.learning_revision=state.pending_revision
+ RETURNING state.subject_id
+)
+SELECT subject_id FROM published;
 
 -- name: FailCourseGraph :exec
 UPDATE course_graph_jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,
@@ -117,7 +132,11 @@ ORDER BY g.updated_at DESC, g.subject_id;
 -- concurrent map update checks its fingerprint before changing any data.
 UPDATE course_graph_maps m
 SET filename=sqlc.arg(filename), sheet=sqlc.arg(sheet),
-    fingerprint=sqlc.arg(fingerprint), graph=sqlc.arg(graph)::jsonb, uploaded_at=sqlc.arg(now)::bigint
+    fingerprint=sqlc.arg(fingerprint), graph=sqlc.arg(graph)::jsonb, uploaded_at=sqlc.arg(now)::bigint,
+    learning_revision=CASE WHEN EXISTS (SELECT 1 FROM learning_subject_state state
+                                        WHERE state.subject_id=m.subject_id
+                                          AND state.active_revision=m.learning_revision)
+                           THEN m.learning_revision ELSE NULL END
 WHERE m.subject_id=sqlc.arg(subject_id) AND m.fingerprint=sqlc.arg(expected_fingerprint)
   AND EXISTS (SELECT 1 FROM course_graphs g WHERE g.subject_id=m.subject_id
               AND g.source='competency_map' AND g.fingerprint=m.fingerprint)
