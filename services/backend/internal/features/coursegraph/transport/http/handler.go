@@ -82,7 +82,7 @@ func New(service *application.Worker) *Handler { return &Handler{service} }
 
 // Read returns the latest successful graph and current build status.
 // @Summary Граф курса и состояние построения
-// @Description Доступно только admin. Сборку запускает POST .../graph/build. stale — источник графа (материалы или карта) изменился после публикации; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source — откуда граф: built (собран из материалов), competency_map (собран по карте компетенций) или none — графа нет, курс студентам не виден. build_source — что читает последняя запрошенная сборка; map — последняя импортированная карта.
+// @Description Доступно только admin. Сборку запускает POST .../graph/build. stale — источник опубликованного Geek-графа изменился; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source, graph_fingerprint и graph_map_revision описывают опубликованную версию Geek; status, build_source и error_message — последнюю подготовку. map и map.learning_revision описывают последнюю сохранённую карту. Для двухлистовой карты учебная версия активируется при сохранении карты; опубликованный Geek-граф остаётся доступен до успешной подготовки новой версии.
 // @ID getCourseGraph
 // @Tags Материалы
 // @Security accessCookie

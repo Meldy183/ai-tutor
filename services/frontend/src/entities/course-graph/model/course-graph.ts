@@ -48,6 +48,8 @@ export type CourseGraphBuild = {
   // What the build reads: the course materials or an imported competency map.
   source?: CourseGraphSource | null
   map?: CourseGraphMapFile | null
+  graphFingerprint?: string
+  graphMapRevision?: number | null
 }
 
 export type CourseGraphSource = 'materials' | 'competency_map'
@@ -57,6 +59,7 @@ export type CourseGraphMapFile = {
   fingerprint?: string
   filename: string
   sheet: string
+  learningRevision?: number | null
 }
 
 export type CourseGraphNode = {

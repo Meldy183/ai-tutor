@@ -54,12 +54,15 @@ function setup({
   assessmentWarnings = [],
   buildProgress,
   mapState = { fingerprint: 'map-a', stale: false, failed: false },
+  learningMapRevision,
 }: {
   mapState?: {
     fingerprint: string
     stale: boolean
     failed: boolean
     pending?: boolean
+    learningRevision?: number
+    publishedRevision?: number | null
   }
   processing?: boolean
   pending?: boolean
@@ -69,6 +72,7 @@ function setup({
   materials?: (typeof material)[]
   buildGate?: Promise<void>
   learningMapImported?: boolean
+  learningMapRevision?: number
   learningWarnings?: {
     row: number
     column_index: number
@@ -91,8 +95,13 @@ function setup({
 } = {}) {
   let graphRequested = false
   let mapImported = false
-  let learningMapImported = initiallyLearningMapImported
-  const hasSavedMap = assessmentWarnings.length > 0 || mapState.failed
+  let pairedMapImported = false
+  let activeLearningRevision =
+    learningMapRevision ?? (initiallyLearningMapImported ? 1 : 0)
+  const hasSavedMap =
+    assessmentWarnings.length > 0 ||
+    mapState.failed ||
+    mapState.publishedRevision !== undefined
   const courseMaterials = materials ?? [material]
   const calls = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/auth/me')) return Response.json(admin)
@@ -107,44 +116,50 @@ function setup({
           id: 'subject-a',
           name: 'Первый курс',
           ready: false,
-          learning_ready: learningMapImported || mapImported,
+          learning_ready: activeLearningRevision > 0,
           exam_ready: false,
           preparation: {
             exam: { state: 'empty', source: null, stale: false },
-            learn: {
-              state: learningMapImported || mapImported ? 'ready' : 'empty',
-            },
+            learn: { state: activeLearningRevision > 0 ? 'ready' : 'empty' },
           },
         },
         {
           id: 'subject-b',
           name: 'Второй курс',
-          ready: graphReady,
-          learning_ready: learningMapImported || mapImported,
-          exam_ready: graphReady,
+          ready: graphReady || hasSavedMap || (mapImported && !pairedMapImported),
+          learning_ready: activeLearningRevision > 0,
+          exam_ready: graphReady || hasSavedMap || (mapImported && !pairedMapImported),
           preparation: {
             exam:
-              graphReady
+              graphReady ||
+              (mapImported && !pairedMapImported) ||
+              (hasSavedMap && !mapImported)
                 ? {
                     state: 'ready',
                     source: mapImported ? 'competency_map' : 'materials',
                     stale: false,
                   }
-                : mapImported
+                : mapState.failed
+                  ? {
+                      state: 'failed',
+                      source: 'competency_map',
+                      stale: mapState.stale,
+                    }
+                  : mapImported || mapState.pending
                   ? { state: 'queued', source: 'competency_map', stale: false }
                   : { state: 'empty', source: null, stale: false },
             learn: {
-              state: learningMapImported || mapImported ? 'ready' : 'empty',
+              state: activeLearningRevision > 0 ? 'ready' : 'empty',
             },
           },
         },
       ])
     if (url.includes('/learn/subjects/') && url.endsWith('/competency-map'))
       return Response.json({
-        revision: learningMapImported || mapImported ? 1 : 0,
-        imported_at: learningMapImported || mapImported ? 2 : null,
+        revision: activeLearningRevision,
+        imported_at: activeLearningRevision > 0 ? 2 : null,
         competencies:
-          learningMapImported || mapImported
+          activeLearningRevision > 0
             ? [
                 {
                   constituents: [
@@ -161,9 +176,9 @@ function setup({
       url.includes('/learn/admin/subjects/') &&
       url.endsWith('/competency-map/import')
     ) {
-      learningMapImported = true
+      activeLearningRevision += 1
       return Response.json({
-        revision: 1,
+        revision: activeLearningRevision,
         imported_at: 2,
         competency_count: 1,
         constituent_count: 1,
@@ -249,10 +264,21 @@ function setup({
           attempts: 0,
           error_message: '',
           graph: null,
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: false,
           updated_at: 1,
           build_source: 'competency_map',
+          map: mapState.learningRevision
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision,
+              }
+            : null,
         },
         { status: 202 },
       )
@@ -277,10 +303,21 @@ function setup({
           attempts: 1,
           error_message: '',
           graph: null,
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: true,
           updated_at: 3,
           build_source: 'competency_map',
+          map: mapState.learningRevision
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision,
+              }
+            : null,
         },
         { status: 202 },
       )
@@ -303,25 +340,64 @@ function setup({
           { status: 422 },
         )
       mapImported = true
+      const uploadedFile = (init?.body as FormData).get('file') as File
+      pairedMapImported = uploadedFile.name === 'paired-map.xlsx'
+      if (pairedMapImported) {
+        activeLearningRevision =
+          mapState.learningRevision ?? activeLearningRevision + 1
+      }
       return Response.json(
         {
           status: 'pending',
           attempts: 0,
           error_message: '',
           graph: null,
-          graph_source: 'none',
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
           build_source: 'competency_map',
           map: {
             filename: 'map.xlsx',
             sheet: 'Карта компетенций v2',
             fingerprint: mapState.fingerprint,
+            learning_revision: pairedMapImported ? activeLearningRevision : null,
           },
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: true,
           updated_at: 0,
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
         },
         { status: 202 },
       )
+    }
+    if (mapImported && url.endsWith('/graph') && pairedMapImported) {
+      await buildGate
+      return Response.json({
+        status: 'ready',
+        attempts: 1,
+        error_message: '',
+        graph: {
+          assessment_warnings: assessmentWarnings,
+          topics: [
+            { id: 'basic', title: 'Называет части агента' },
+            { id: 'main', title: 'Выбирает тип агента' },
+          ],
+          prerequisites: [{ source: 'basic', target: 'main' }],
+          hierarchy: [{ source: 'main', target: 'basic' }],
+        },
+        graph_source: 'competency_map',
+        graph_fingerprint: mapState.fingerprint,
+        graph_map_revision: activeLearningRevision,
+        build_source: 'competency_map',
+        map: {
+          filename: 'paired-map.xlsx',
+          sheet: 'Карта компетенций v2',
+          fingerprint: mapState.fingerprint,
+          learning_revision: activeLearningRevision,
+        },
+        stale: mapState.stale,
+        inputs_ready: true,
+        updated_at: 2,
+      })
     }
     if (mapImported && url.endsWith('/graph')) {
       await buildGate
@@ -339,11 +415,15 @@ function setup({
           hierarchy: [{ source: 'main', target: 'basic' }],
         },
         graph_source: 'competency_map',
+        graph_fingerprint: mapState.fingerprint,
+        graph_map_revision: mapState.learningRevision ?? activeLearningRevision,
         build_source: 'competency_map',
         map: {
           filename: 'map.xlsx',
           sheet: 'Карта компетенций v2',
           fingerprint: mapState.fingerprint,
+          learning_revision:
+            mapState.learningRevision ?? activeLearningRevision,
         },
         stale: mapState.stale,
         inputs_ready: true,
@@ -400,8 +480,11 @@ function setup({
                 filename: 'map.xlsx',
                 sheet: 'Карта компетенций v2',
                 fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision ?? null,
               }
             : null,
+        graph_fingerprint: hasSavedMap ? 'published-map' : '',
+        graph_map_revision: mapState.publishedRevision ?? null,
       })
     }
     throw new Error(`Unexpected API call: ${url}`)
@@ -621,47 +704,17 @@ function pairedWorkbook() {
   )
 }
 
-it('shows a backend pending map after page reload without marking it active', async () => {
+it('shows immediate learning readiness and a pending Geek build after page reload', async () => {
   setup({
     materials: [],
+    learningMapImported: true,
+    learningMapRevision: 4,
     mapState: {
       fingerprint: 'pending-map',
       stale: false,
       failed: false,
       pending: true,
-    },
-  })
-  open('/admin/courses/subject-b')
-  const state = await screen.findByRole('region', {
-    name: 'Текущее состояние карты',
-  })
-
-  expect(
-    within(state).getByText('Карта «map.xlsx» готовится к публикации.'),
-  ).toBeVisible()
-  expect(
-    within(state).getByText(
-      'Статистика появится после публикации. До этого активной остаётся предыдущая версия карты.',
-    ),
-  ).toBeVisible()
-  expect(
-    within(state).queryByText('Карта ещё не загружена.'),
-  ).not.toBeInTheDocument()
-  expect(
-    within(state).queryByText('Карта компетенций успешно загружена'),
-  ).not.toBeInTheDocument()
-  expect(within(state).queryByText('Компетенции')).not.toBeInTheDocument()
-})
-
-it('keeps the previous active map statistics visible while a replacement is pending', async () => {
-  setup({
-    materials: [],
-    learningMapImported: true,
-    mapState: {
-      fingerprint: 'replacement-map',
-      stale: false,
-      failed: false,
-      pending: true,
+      learningRevision: 4,
     },
   })
   open('/admin/courses/subject-b')
@@ -673,8 +726,39 @@ it('keeps the previous active map statistics visible while a replacement is pend
     within(state).getByText('Карта компетенций успешно загружена'),
   ).toBeVisible()
   expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByText('Обучение: версия 4 доступна')).toBeVisible()
+  expect(within(state).getByText('Geek: готовится версия 4')).toBeVisible()
   expect(
-    within(state).getByText('Карта «map.xlsx» готовится к публикации.'),
+    within(state).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+})
+
+it('shows active learning and published Geek versions separately during replacement', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    learningMapRevision: 2,
+    mapState: {
+      fingerprint: 'replacement-map',
+      stale: false,
+      failed: false,
+      pending: true,
+      learningRevision: 2,
+      publishedRevision: 1,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByText('Обучение: версия 2 доступна')).toBeVisible()
+  expect(
+    within(state).getByText('Geek: версия 1 работает; готовится версия 2'),
   ).toBeVisible()
   expect(
     within(state).queryByText('Карта ещё не загружена.'),
@@ -685,7 +769,14 @@ it('keeps the previous active map visible and reports a failed pending replaceme
   setup({
     materials: [],
     learningMapImported: true,
-    mapState: { fingerprint: 'failed-replacement', stale: true, failed: true },
+    learningMapRevision: 2,
+    mapState: {
+      fingerprint: 'failed-replacement',
+      stale: true,
+      failed: true,
+      learningRevision: 2,
+      publishedRevision: 1,
+    },
   })
   open('/admin/courses/subject-b')
   const state = await screen.findByRole('region', {
@@ -699,6 +790,12 @@ it('keeps the previous active map visible and reports a failed pending replaceme
   expect(within(state).getByRole('alert')).toHaveTextContent(
     'Не удалось подготовить граф.',
   )
+  expect(within(state).getByText('Обучение: версия 2 доступна')).toBeVisible()
+  expect(
+    within(state).getByText(
+      'Geek: версия 1 работает; версия 2 не опубликована',
+    ),
+  ).toBeVisible()
 })
 
 it('shows the learning map statistics separately from the one shared upload', async () => {
@@ -749,10 +846,12 @@ it('refreshes learning map statistics after the shared background build complete
     name: 'Текущее состояние карты',
   })
   expect(
-    within(stateWhileBuilding).getByText(
-      'Карта «map.xlsx» готовится к публикации.',
-    ),
+    await within(stateWhileBuilding).findByText('Обучение: версия 1 доступна'),
   ).toBeVisible()
+  expect(
+    within(stateWhileBuilding).getByText('Geek: готовится версия 1'),
+  ).toBeVisible()
+  expect(within(stateWhileBuilding).getByText('Готовые задания')).toBeVisible()
   expect(
     within(stateWhileBuilding).queryByText('Карта ещё не загружена.'),
   ).not.toBeInTheDocument()
@@ -765,9 +864,7 @@ it('refreshes learning map statistics after the shared background build complete
   expect(
     within(state).getByText('Карта компетенций успешно загружена'),
   ).toBeVisible()
-  expect(
-    within(state).queryByText('Карта «map.xlsx» готовится к публикации.'),
-  ).not.toBeInTheDocument()
+  expect(within(state).getByText('Geek: версия 1 опубликована')).toBeVisible()
 })
 
 it('keeps imported learning warnings in a readable row and reason table', async () => {
@@ -836,24 +933,42 @@ it('builds the graph from the first sheet of a competency map', async () => {
   expect(screen.queryByLabelText('Лист карты')).not.toBeInTheDocument()
 }, 15000)
 
-it('shows learning ready while Geek prepares a map-only course', async () => {
-  const calls = setup({ competencyMap: 'valid', materials: [] })
+it('imports a map through the shared course ID and activates learning while Geek prepares', async () => {
+  let finishBuild!: () => void
+  const buildGate = new Promise<void>((resolve) => {
+    finishBuild = resolve
+  })
+  const calls = setup({ competencyMap: 'valid', materials: [], buildGate })
   const router = open('/admin/courses/subject-b?direction=exam')
   expect(
     await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
   ).toBeVisible()
   expect(await screen.findByText(/Материалов: 0/)).toBeVisible()
-  await chooseMap()
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [pairedWorkbook()] },
+  })
   fireEvent.click(
     await screen.findByRole('button', {
-      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
+      name: 'Подготовить для обучения и Geek',
     }),
   )
-  const dialog = await screen.findByRole('alertdialog')
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
-  await screen.findByText('По карте компетенций', undefined, { timeout: 8000 })
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith('/graph/competency-map'),
+      ),
+    ).toBe(true),
+  )
   expect(await screen.findByText('Обучение: готово')).toBeVisible()
   expect(await screen.findByText('Экзамен: подготовка в очереди')).toBeVisible()
+  expect(await screen.findByText(/Обучение: версия 1 доступна/)).toBeVisible()
+  expect(await screen.findByText(/Geek: готовится версия 1/)).toBeVisible()
+  finishBuild()
+  expect(
+    await screen.findByText('Курс готов для студентов. В графе тем: 2.', {
+      timeout: 8000,
+    }),
+  ).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-b')
   expect(router.state.location.search).toEqual({ direction: 'exam' })
   expect(

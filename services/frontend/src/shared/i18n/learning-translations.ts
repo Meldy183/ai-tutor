@@ -71,17 +71,26 @@ export const learningTranslations = {
     checkingWorkbook: 'Проверяем число листов…',
     preparingUnified:
       'Карта проверена. Подготавливаем единый граф для обучения и Geek…',
-    pendingMap: 'Карта «{{filename}}» готовится к публикации.',
+    pendingMap:
+      'Карта «{{filename}}» сохранена. Подготавливаем отдельную версию Geek.',
     pendingMapHelp:
-      'Статистика появится после публикации. До этого активной остаётся предыдущая версия карты.',
+      'Учебная часть уже активна. Geek станет доступен после подготовки графа.',
     pendingMapPreviousActive:
-      'Предыдущая опубликованная карта и её статистика остаются активными до завершения подготовки.',
+      'В Geek продолжает работать опубликованная версия до успешной подготовки новой.',
     failedMap:
       'Не удалось подготовить граф по карте «{{filename}}». {{message}}',
     failedMapPreviousActive:
-      'Предыдущая опубликованная карта и её статистика остаются активными.',
-    publishingMap:
-      'Граф по карте «{{filename}}» подготовлен. Обновляем статистику опубликованной карты…',
+      'Новая версия карты уже активна в обучении; опубликованный граф Geek не изменился.',
+    publishingMap: 'Обновляем данные обучения для версии {{revision}}…',
+    learningVersionReady: 'Обучение: версия {{revision}} доступна',
+    learningVersionUpdating: 'Обучение: загружаем версию {{revision}}…',
+    geekVersionReady: 'Geek: версия {{revision}} опубликована',
+    geekVersionPreparing: 'Geek: готовится версия {{revision}}',
+    geekVersionPreparingWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; готовится версия {{revision}}',
+    geekVersionFailed: 'Geek: версия {{revision}} не опубликована',
+    geekVersionFailedWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; версия {{revision}} не опубликована',
     unifiedBuildFailed:
       'Не удалось подготовить граф. Откройте карту курса в разделе Geek, чтобы повторить подготовку.',
     openGeekMap: 'Открыть подготовку в Geek',

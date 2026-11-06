@@ -341,12 +341,17 @@ function backend(
           : null,
         stale: false,
         graph_source: unifiedMapRequested ? 'competency_map' : 'none',
+        graph_fingerprint: unifiedMapRequested
+          ? 'published-paired-fingerprint'
+          : '',
+        graph_map_revision: unifiedMapRequested && options.graph ? 1 : null,
         build_source: unifiedMapRequested ? 'competency_map' : null,
         map: unifiedMapRequested
           ? {
               filename: 'map.xlsx',
               sheet: 'Geek',
               fingerprint: 'paired-fingerprint',
+              learning_revision: 1,
             }
           : null,
         inputs_ready:
@@ -365,11 +370,14 @@ function backend(
         graph: null,
         stale: false,
         graph_source: 'none',
+        graph_fingerprint: '',
+        graph_map_revision: null,
         build_source: 'competency_map',
         map: {
           filename: 'map.xlsx',
           sheet: 'Geek',
           fingerprint: 'paired-fingerprint',
+          learning_revision: 1,
         },
         inputs_ready: false,
         updated_at: 1,

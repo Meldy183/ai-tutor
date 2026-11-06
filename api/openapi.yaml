@@ -511,11 +511,16 @@ components:
           type: string
         fingerprint:
           type: string
+        learning_revision:
+          type:
+            - integer
+            - "null"
         sheet:
           type: string
       required:
         - filename
         - fingerprint
+        - learning_revision
         - sheet
       type: object
     coursegraph.Snapshot:
@@ -539,6 +544,14 @@ components:
         graph:
           type:
             - object
+            - "null"
+        graph_fingerprint:
+          description: GraphFingerprint identifies the currently published Geek graph.
+          type: string
+        graph_map_revision:
+          description: GraphMapRevision is the learning-map revision used to build the published Geek graph.
+          type:
+            - integer
             - "null"
         graph_source:
           enum:
@@ -577,6 +590,8 @@ components:
         - build_source
         - error_message
         - graph
+        - graph_fingerprint
+        - graph_map_revision
         - graph_source
         - inputs_ready
         - map
@@ -4026,7 +4041,7 @@ paths:
       x-implementation: planned
   /exam/admin/subjects/{subject_id}/graph:
     get:
-      description: 'Доступно только admin. Сборку запускает POST .../graph/build. stale — источник графа (материалы или карта) изменился после публикации; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source — откуда граф: built (собран из материалов), competency_map (собран по карте компетенций) или none — графа нет, курс студентам не виден. build_source — что читает последняя запрошенная сборка; map — последняя импортированная карта.'
+      description: Доступно только admin. Сборку запускает POST .../graph/build. stale — источник опубликованного Geek-графа изменился; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source, graph_fingerprint и graph_map_revision описывают опубликованную версию Geek; status, build_source и error_message — последнюю подготовку. map и map.learning_revision описывают последнюю сохранённую карту. Для двухлистовой карты учебная версия активируется при сохранении карты; опубликованный Geek-граф остаётся доступен до успешной подготовки новой версии.
       operationId: getCourseGraph
       parameters:
         - description: ID предмета

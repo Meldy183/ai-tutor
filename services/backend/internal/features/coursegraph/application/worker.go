@@ -258,10 +258,9 @@ func (w *Worker) snapshot(ctx context.Context, subjectID string) (coursegraph.Sn
 	return snapshot, nil
 }
 
-// ImportMap builds the course graph from a competency map instead of the
-// materials (the admin's "import competency map" button): the map is read
-// and checked at once, its questions are prepared and published by the
-// worker like those of a build.
+// ImportMap validates and saves a competency map instead of the materials.
+// For a paired workbook, the learning projection becomes active with the
+// saved map and queued job; the worker prepares and publishes Geek later.
 func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, filename string, data []byte) (coursegraph.Snapshot, error) {
 	if actor.Role != user.Admin {
 		return coursegraph.Snapshot{}, fault.New(fault.Forbidden, "FORBIDDEN", "Доступно только admin.")

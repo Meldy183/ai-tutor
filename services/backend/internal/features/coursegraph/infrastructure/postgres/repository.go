@@ -56,12 +56,14 @@ func (r *Repository) Read(ctx context.Context, subjectID string) (coursegraph.Sn
 		return coursegraph.Snapshot{}, err
 	}
 	snapshot := coursegraph.Snapshot{Status: row.Status, Attempts: row.Attempts, ErrorMessage: row.ErrorMessage, Graph: row.Graph,
-		GraphSource: row.GraphSource, UpdatedAt: row.UpdatedAt, Stale: row.Stale, InputsReady: row.InputsReady}
+		GraphSource: row.GraphSource, GraphFingerprint: row.GraphFingerprint, GraphMapRevision: row.GraphMapRevision,
+		UpdatedAt: row.UpdatedAt, Stale: row.Stale, InputsReady: row.InputsReady}
 	if row.JobSource != "" {
 		snapshot.BuildSource = &row.JobSource
 	}
 	if row.MapFilename != "" {
-		snapshot.Map = &coursegraph.MapFile{Filename: row.MapFilename, Sheet: row.MapSheet, Fingerprint: row.MapFingerprint}
+		snapshot.Map = &coursegraph.MapFile{Filename: row.MapFilename, Sheet: row.MapSheet,
+			Fingerprint: row.MapFingerprint, LearningRevision: row.MapLearningRevision}
 	}
 	return snapshot, nil
 }
@@ -114,6 +116,31 @@ func (r *Repository) saveMap(ctx context.Context, subjectID, filename, sheet str
 	}
 	if err != nil {
 		return false, err
+	}
+	var paired struct {
+		LearningRevision *int64 `json:"learning_revision"`
+	}
+	if err = json.Unmarshal(graph, &paired); err != nil {
+		return false, err
+	}
+	if paired.LearningRevision != nil {
+		activated, activateErr := q.LearningActivatePendingRevision(ctx, db.LearningActivatePendingRevisionParams{
+			SubjectID: subjectID, PendingRevision: paired.LearningRevision,
+		})
+		if activateErr != nil {
+			return false, activateErr
+		}
+		if activated != 1 {
+			active, activeErr := q.LearningSubjectHasActiveRevision(ctx, db.LearningSubjectHasActiveRevisionParams{
+				SubjectID: subjectID, ActiveRevision: paired.LearningRevision,
+			})
+			if activeErr != nil {
+				return false, activeErr
+			}
+			if !active {
+				return false, fault.New(fault.Conflict, "COMPETENCY_MAP_IMPORT_CHANGED", "Учебная часть карты изменилась во время сохранения. Повторите загрузку.")
+			}
+		}
 	}
 	return true, tx.Commit(ctx)
 }

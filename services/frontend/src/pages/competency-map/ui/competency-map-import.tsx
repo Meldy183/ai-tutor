@@ -215,9 +215,9 @@ export function CompetencyMapImport({
             build.status === 'queued' || build.status === 'running',
           )
           setFile(null)
+          void learningMap.refetch()
           if (build.status === 'succeeded') {
             setPairedFingerprint(null)
-            void learningMap.refetch()
           }
           void graphBuild.refetch()
         },
@@ -319,6 +319,18 @@ export function CompetencyMapImport({
   const mapBuildFilename = visibleMapBuild?.map?.filename ?? ''
   const hasActiveMap =
     learningMap.data?.importedAt !== null && learningMap.data !== undefined
+  const pairedLearningRevision =
+    uploadedMapBuild?.map?.learningRevision ??
+    latestMapBuild?.map?.learningRevision ??
+    map?.learningRevision ??
+    null
+  const activeLearningVersionMatches =
+    pairedLearningRevision !== null &&
+    learningMap.data?.revision === pairedLearningRevision
+  const publishedGeekRevision =
+    visibleMapBuild !== null
+      ? (visibleMapBuild.graphMapRevision ?? null)
+      : (graphBuild.data?.graphMapRevision ?? null)
 
   return (
     <>
@@ -343,6 +355,12 @@ export function CompetencyMapImport({
               {t('trainer.retry')}
             </Button>
           </Flex>
+        ) : pairedLearningRevision !== null && !activeLearningVersionMatches ? (
+          <Text as="p" role="status" color="gray" size="2">
+            {t('learningCompetencyMap.learningVersionUpdating', {
+              revision: pairedLearningRevision,
+            })}
+          </Text>
         ) : learningMap.data.importedAt === null ? (
           !mapBuildPending && !mapBuildFailed && !mapBuildSucceeded ? (
             <Text as="p" color="gray" size="2">
@@ -367,7 +385,7 @@ export function CompetencyMapImport({
             </Text>
             <Text as="p" color="gray" size="2">
               {t(
-                hasActiveMap
+                publishedGeekRevision !== null
                   ? 'learningCompetencyMap.pendingMapPreviousActive'
                   : 'learningCompetencyMap.pendingMapHelp',
               )}
@@ -377,7 +395,7 @@ export function CompetencyMapImport({
         {mapBuildSucceeded && !hasActiveMap && (
           <Text as="p" role="status" size="2">
             {t('learningCompetencyMap.publishingMap', {
-              filename: mapBuildFilename,
+              revision: pairedLearningRevision,
             })}
           </Text>
         )}
@@ -394,6 +412,43 @@ export function CompetencyMapImport({
                 {t('learningCompetencyMap.failedMapPreviousActive')}
               </Text>
             )}
+          </>
+        )}
+        {pairedLearningRevision !== null && (
+          <>
+            {activeLearningVersionMatches ? (
+              <Text as="p" role="status" size="2">
+                {t('learningCompetencyMap.learningVersionReady', {
+                  revision: pairedLearningRevision,
+                })}
+              </Text>
+            ) : null}
+            <Text as="p" role="status" size="2">
+              {publishedGeekRevision === pairedLearningRevision
+                ? t('learningCompetencyMap.geekVersionReady', {
+                    revision: pairedLearningRevision,
+                  })
+                : mapBuildFailed
+                  ? publishedGeekRevision !== null
+                    ? t('learningCompetencyMap.geekVersionFailedWithPrevious', {
+                        publishedRevision: publishedGeekRevision,
+                        revision: pairedLearningRevision,
+                      })
+                    : t('learningCompetencyMap.geekVersionFailed', {
+                        revision: pairedLearningRevision,
+                      })
+                  : publishedGeekRevision !== null
+                    ? t(
+                        'learningCompetencyMap.geekVersionPreparingWithPrevious',
+                        {
+                          publishedRevision: publishedGeekRevision,
+                          revision: pairedLearningRevision,
+                        },
+                      )
+                    : t('learningCompetencyMap.geekVersionPreparing', {
+                        revision: pairedLearningRevision,
+                      })}
+            </Text>
           </>
         )}
       </section>

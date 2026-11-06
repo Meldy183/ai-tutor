@@ -27,6 +27,7 @@ type CourseGraph struct {
 	Graph       []byte
 	UpdatedAt   int64
 	Source      string
+	MapRevision *int64
 }
 
 type CourseGraphInput struct {

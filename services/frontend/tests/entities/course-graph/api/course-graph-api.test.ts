@@ -47,6 +47,9 @@ const snapshot = (status = 'ready', overrides = {}) => ({
   stale: false,
   inputs_ready: true,
   updated_at: 42,
+  graph_fingerprint: '',
+  graph_map_revision: null,
+  map: null,
   ...overrides,
 })
 function respond(value: unknown, status = 200) {
@@ -299,7 +302,11 @@ it('imports a competency map as multipart and reads the graph of the map', async
       graph: null,
       graph_source: 'none',
       build_source: 'competency_map',
-      map: { filename: 'map.xlsx', sheet: 'Карта' },
+      map: {
+        filename: 'map.xlsx',
+        sheet: 'Карта',
+        learning_revision: 7,
+      },
     }),
     202,
   )
@@ -322,7 +329,14 @@ it('imports a competency map as multipart and reads the graph of the map', async
   respond(
     snapshot('ready', {
       graph_source: 'competency_map',
-      map: { filename: 'map.xlsx', sheet: 'Карта' },
+      graph_fingerprint: 'geek-map-a',
+      graph_map_revision: 7,
+      map: {
+        filename: 'map.xlsx',
+        sheet: 'Карта',
+        fingerprint: 'map-a',
+        learning_revision: 7,
+      },
       graph: {
         topics: [{ id: 'm', title: 'ОР', question: 'Устно?', variants }],
         prerequisites: [],
@@ -334,7 +348,12 @@ it('imports a competency map as multipart and reads the graph of the map', async
   expect(read.view?.topics[0].variants).toEqual(variants)
   expect(read.nodes[0].questions).toEqual(['Устно?', 'Академически?'])
   expect(read.source).toBe('competency_map')
-  expect(read.map).toEqual({ filename: 'map.xlsx', sheet: 'Карта' })
+  expect(read.map).toEqual({
+    filename: 'map.xlsx',
+    sheet: 'Карта',
+    fingerprint: 'map-a',
+    learningRevision: 7,
+  })
 })
 
 it('keeps the details of a rejected competency map', async () => {
@@ -373,6 +392,7 @@ it('reads saved map metadata after preparation fails before first publication', 
     filename: 'map.xlsx',
     sheet: 'Карта',
     fingerprint: 'filtered-b',
+    learning_revision: null,
   }
   respond(
     snapshot('failed', {
@@ -385,7 +405,12 @@ it('reads saved map metadata after preparation fails before first publication', 
   expect(await readLatestCourseGraphBuild('s', signal())).toMatchObject({
     status: 'failed',
     source: 'competency_map',
-    map,
+    map: {
+      filename: map.filename,
+      sheet: map.sheet,
+      fingerprint: map.fingerprint,
+      learningRevision: null,
+    },
   })
 })
 

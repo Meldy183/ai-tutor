@@ -32,6 +32,12 @@ ON CONFLICT (subject_id) DO UPDATE SET pending_revision = EXCLUDED.pending_revis
 UPDATE learning_subject_state SET active_revision=pending_revision, pending_revision=NULL
 WHERE subject_id=$1 AND pending_revision=$2;
 
+-- name: LearningSubjectHasActiveRevision :one
+SELECT EXISTS (
+    SELECT 1 FROM learning_subject_state
+    WHERE subject_id=$1 AND active_revision=$2
+);
+
 -- name: LearningDiscardPendingRevision :execrows
 WITH cleared AS (
     UPDATE learning_subject_state SET pending_revision=NULL

@@ -1076,6 +1076,25 @@ func (q *Queries) LearningStageSubjectRevision(ctx context.Context, arg Learning
 	return err
 }
 
+const learningSubjectHasActiveRevision = `-- name: LearningSubjectHasActiveRevision :one
+SELECT EXISTS (
+    SELECT 1 FROM learning_subject_state
+    WHERE subject_id=$1 AND active_revision=$2
+)
+`
+
+type LearningSubjectHasActiveRevisionParams struct {
+	SubjectID      string
+	ActiveRevision *int64
+}
+
+func (q *Queries) LearningSubjectHasActiveRevision(ctx context.Context, arg LearningSubjectHasActiveRevisionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, learningSubjectHasActiveRevision, arg.SubjectID, arg.ActiveRevision)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const learningUpdateCompetencyMapRevision = `-- name: LearningUpdateCompetencyMapRevision :exec
 UPDATE learning_map_state SET revision = $1 WHERE singleton = true
 `

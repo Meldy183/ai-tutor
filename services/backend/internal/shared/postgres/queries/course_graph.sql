@@ -68,20 +68,15 @@ WITH accepted AS (
       AND (j.source <> 'competency_map' OR NOT EXISTS (
           SELECT 1 FROM course_graph_maps m WHERE m.subject_id=j.subject_id AND m.learning_revision IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM learning_subject_state state
-                            WHERE state.subject_id=j.subject_id
-                              AND (state.pending_revision=m.learning_revision OR state.active_revision=m.learning_revision))))
+                            WHERE state.subject_id=j.subject_id AND state.active_revision=m.learning_revision)))
     RETURNING j.subject_id, j.source, j.fingerprint
 ), published AS (
-INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at)
-SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb-'learning_revision',sqlc.arg(now)::bigint FROM accepted
-ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,updated_at=excluded.updated_at
+INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at,map_revision)
+SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb-'learning_revision',sqlc.arg(now)::bigint,
+       NULLIF(sqlc.arg(graph)::jsonb->>'learning_revision','')::bigint FROM accepted
+ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,
+    updated_at=excluded.updated_at,map_revision=excluded.map_revision
 RETURNING subject_id
-), activated AS (
- UPDATE learning_subject_state state SET active_revision=state.pending_revision,pending_revision=NULL
- FROM course_graph_maps map, accepted
- WHERE state.subject_id=accepted.subject_id AND map.subject_id=accepted.subject_id
-   AND accepted.source='competency_map' AND map.learning_revision=state.pending_revision
- RETURNING state.subject_id
 )
 SELECT subject_id FROM published;
 
@@ -96,13 +91,16 @@ SELECT s.id, coalesce(j.status,'not_requested')::text AS status,
        coalesce(g.graph,'null'::jsonb)::jsonb AS graph,
        coalesce(g.updated_at,0)::bigint AS updated_at,
        coalesce(g.source,'')::text AS graph_source,
+       coalesce(g.fingerprint,'')::text AS graph_fingerprint,
+       g.map_revision AS graph_map_revision,
        -- Stale: the source the graph was built from changed since.
        (g.fingerprint IS NOT NULL AND g.fingerprint IS DISTINCT FROM
            CASE g.source WHEN 'competency_map' THEN m.fingerprint ELSE i.fingerprint END)::boolean AS stale,
        (i.subject_id IS NOT NULL)::boolean AS inputs_ready,
        coalesce(j.source,'')::text AS job_source,
        coalesce(m.fingerprint,'')::text AS map_fingerprint,
-       coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet
+       coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet,
+       m.learning_revision AS map_learning_revision
 FROM subjects s LEFT JOIN course_graph_jobs j ON j.subject_id=s.id
 LEFT JOIN course_graphs g ON g.subject_id=s.id
 LEFT JOIN course_graph_inputs i ON i.subject_id=s.id

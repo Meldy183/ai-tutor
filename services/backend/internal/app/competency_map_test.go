@@ -89,10 +89,10 @@ func pairedMapBook(t *testing.T, mismatch bool) []byte {
 		{"3", "", "", "Выбирает тип агента", "Анализировать", "5", "TRUE", "Какой агент нужен роботу-уборщику и почему?", "Эталон: агент с моделью мира.\nБалл (макс. 1): 1 — тип и причина."},
 	}
 	learningRows := [][]interface{}{
-		{"Ком", "Сост", "ОР", "Что должно войти в тест", "Уровень ОР", "Таксономия", "Важность темы", "Уровень ALDs", "Задание 1", "Критерии 1"},
-		{"К1. Агент", "1.1 Описывает агента", "Называет части агента", "TRUE", "Помнить", "Знание", "4", "базовый", "Учебное: назовите части агента.", "Учебный эталон частей агента."},
-		{"", "", "Объясняет рациональность", "TRUE", "Понимать", "Понимание", "3", "базовый", "Учебное: объясните рациональность.", "Учебный эталон рациональности."},
-		{"", "", "Выбирает тип агента", "TRUE", "Анализировать", "Анализ", "5", "средний", "Учебное: выберите тип агента.", "Учебный эталон типа агента."},
+		{"Компетенция", "Уровень темы", "Составляющая", "Образовательный результат", "Что должно войти в тест", "Таксономия", "Уровень ALDs", "Важность", "Раздел РПД · компетенции РПД", "Задание 1", "ОС"},
+		{"К1. Агент", "базовый", "1.1 Описывает агента", "Называет части агента", "TRUE", "Знание", "базовый", "4", "", "Назовите части агента.\n\n\n[]\n\n\nОтветьте устно.\n\n\nСенсоры и исполнительные механизмы.", "Учебный эталон частей агента."},
+		{"", "", "", "Объясняет рациональность", "TRUE", "Понимание", "базовый", "3", "", "Объясните рациональность агента.\n\n\n[]\n\n\nОтветьте устно.\n\n\nОн выбирает действие, максимизирующее ожидаемую меру эффективности.", "Учебный эталон рациональности."},
+		{"", "", "", "Выбирает тип агента", "TRUE", "Анализ", "средний", "5", "", "Выберите тип агента для робота-уборщика.\n\n\n[]\n\n\nОтветьте устно.\n\n\nАгент с моделью мира учитывает состояние помещения.", "Учебный эталон типа агента."},
 	}
 	if mismatch {
 		learningRows[1][2] = "Называет части модели"
@@ -111,8 +111,17 @@ func pairedMapBook(t *testing.T, mismatch bool) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := csvparser.ParseXLSXSheet(buffer.Bytes(), 1); err != nil {
+	parsed, err := csvparser.ParseXLSXSheet(buffer.Bytes(), 1)
+	if err != nil {
 		t.Fatalf("generated learning sheet: %+v", err)
+	}
+	if len(parsed.Tasks) != 3 || len(parsed.Outcomes) != 3 {
+		t.Fatalf("generated learning sheet must contain three usable tasks and outcomes: tasks=%d outcomes=%d warnings=%+v", len(parsed.Tasks), len(parsed.Outcomes), parsed.Warnings)
+	}
+	for _, task := range parsed.Tasks {
+		if task.VoiceInstruction == "" || task.ReferenceAnswer == "" {
+			t.Fatalf("generated learning task is incomplete: %+v", task)
+		}
 	}
 	return buffer.Bytes()
 }
@@ -159,7 +168,7 @@ func TestImportMapStartsForSharedCourseWithoutMaterials(t *testing.T) {
 	}
 }
 
-func TestPairedMapActivatesLearningAndGeekTogether(t *testing.T) {
+func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	admin := f.admin(t)
@@ -171,19 +180,44 @@ func TestPairedMapActivatesLearningAndGeekTogether(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision,pending_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active, &pending); err != nil {
 		t.Fatal(err)
 	}
-	if active != nil || pending == nil {
-		t.Fatalf("learning map activated before Geek preparation: active=%v pending=%v", active, pending)
+	if active == nil || pending != nil {
+		t.Fatalf("learning map should activate after the paired version is saved: active=%v pending=%v", active, pending)
 	}
 	var mapRevision *int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != *pending {
-		t.Fatalf("paired revisions differ: map=%v pending=%v err=%v", mapRevision, pending, err)
+	if err := f.pool.QueryRow(context.Background(), `SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != *active {
+		t.Fatalf("paired revisions differ: map=%v active=%v pending=%v err=%v", mapRevision, active, pending, err)
+	}
+	subjectsResponse := f.request(http.MethodGet, "/subjects", "", admin)
+	var subjects []struct {
+		ID            string `json:"id"`
+		LearningReady bool   `json:"learning_ready"`
+		ExamReady     bool   `json:"exam_ready"`
+	}
+	if subjectsResponse.Code != http.StatusOK || json.Unmarshal(subjectsResponse.Body.Bytes(), &subjects) != nil {
+		t.Fatalf("read course readiness: %d %s", subjectsResponse.Code, subjectsResponse.Body.String())
+	}
+	if len(subjects) != 1 || subjects[0].ID != "subject:test" || !subjects[0].LearningReady || subjects[0].ExamReady {
+		t.Fatalf("first paired map should make only learning ready before Geek preparation: %+v", subjects)
 	}
 	graphRepo := postgres.New(f.pool)
+	beforeGeek, err := graphRepo.Read(context.Background(), "subject:test")
+	if err != nil || (beforeGeek.GraphSource != "" && beforeGeek.GraphSource != "none") || beforeGeek.Map == nil || beforeGeek.Map.LearningRevision == nil || *beforeGeek.Map.LearningRevision != *active || beforeGeek.GraphMapRevision != nil {
+		t.Fatalf("versions/readiness before Geek preparation: %+v err=%v", beforeGeek, err)
+	}
 	job, err := graphRepo.Claim(context.Background(), "paired-map-worker", time.Now())
 	if err != nil || job.SubjectID != "subject:test" {
 		t.Fatalf("claim paired map: %+v %v", job, err)
 	}
-	if ok, err := graphRepo.Finish(context.Background(), job, json.RawMessage(`{"topics":[],"prerequisites":[],"hierarchy":[]}`), time.Now()); err != nil || !ok {
+	graphWithRevision, err := json.Marshal(map[string]interface{}{
+		"learning_revision": *mapRevision,
+		"topics":            []interface{}{},
+		"prerequisites":     []interface{}{},
+		"hierarchy":         []interface{}{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := graphRepo.Finish(context.Background(), job, graphWithRevision, time.Now()); err != nil || !ok {
 		t.Fatalf("publish paired map: ok=%v err=%v", ok, err)
 	}
 	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision,pending_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active, &pending); err != nil {
@@ -197,8 +231,80 @@ func TestPairedMapActivatesLearningAndGeekTogether(t *testing.T) {
 		t.Fatalf("learning consumer did not read the paired map: %#v err=%v", learningSnapshot, err)
 	}
 	geekSnapshot, err := graphRepo.Read(context.Background(), "subject:test")
-	if err != nil || geekSnapshot.GraphSource != "competency_map" || len(geekSnapshot.Graph) == 0 {
+	if err != nil || geekSnapshot.GraphSource != "competency_map" || len(geekSnapshot.Graph) == 0 || geekSnapshot.GraphMapRevision == nil || *geekSnapshot.GraphMapRevision != *mapRevision {
 		t.Fatalf("Geek consumer did not read the paired graph: %+v err=%v", geekSnapshot, err)
+	}
+}
+
+func TestPairedMapReplacementActivatesLearningButKeepsOldGeekOnFailure(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	importMap := func() *int64 {
+		t.Helper()
+		response := upload(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
+		}
+		var revision *int64
+		if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&revision); err != nil || revision == nil {
+			t.Fatalf("learning version should be active as soon as the map is saved: revision=%v err=%v", revision, err)
+		}
+		return revision
+	}
+	graphRepo := postgres.New(f.pool)
+	firstRevision := importMap()
+	claimAndPublish := func(title string, revision int64) {
+		t.Helper()
+		job, err := graphRepo.Claim(context.Background(), "paired-map-worker", time.Now())
+		if err != nil || job.SubjectID != "subject:test" {
+			t.Fatalf("claim map build: %+v %v", job, err)
+		}
+		graph, err := json.Marshal(map[string]interface{}{
+			"learning_revision": revision,
+			"topics":            []map[string]string{{"id": title, "title": title}},
+			"prerequisites":     []interface{}{},
+			"hierarchy":         []interface{}{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := graphRepo.Finish(context.Background(), job, graph, time.Now()); err != nil || !ok {
+			t.Fatalf("publish map build: ok=%v err=%v", ok, err)
+		}
+	}
+	claimAndPublish("old-version", *firstRevision)
+	secondRevision := importMap()
+	if *secondRevision == *firstRevision {
+		t.Fatalf("replacement reused learning version %d", *firstRevision)
+	}
+	duringReplacement, err := graphRepo.Read(context.Background(), "subject:test")
+	if err != nil || duringReplacement.Status != "pending" || duringReplacement.GraphMapRevision == nil || *duringReplacement.GraphMapRevision != *firstRevision || duringReplacement.Map == nil || duringReplacement.Map.LearningRevision == nil || *duringReplacement.Map.LearningRevision != *secondRevision {
+		t.Fatalf("replacement should expose new learning and old Geek versions separately: %+v err=%v", duringReplacement, err)
+	}
+	now := time.Now()
+	for attempt := 0; attempt < 3; attempt++ {
+		job, err := graphRepo.Claim(context.Background(), "paired-map-worker", now)
+		if err != nil || job.SubjectID != "subject:test" {
+			t.Fatalf("claim failed replacement attempt %d: %+v err=%v", attempt+1, job, err)
+		}
+		if err := graphRepo.Fail(context.Background(), job, "Geek preparation failed", now); err != nil {
+			t.Fatalf("fail replacement attempt %d: %v", attempt+1, err)
+		}
+		now = now.Add(time.Duration(30*(attempt+1)+1) * time.Second)
+	}
+	afterFailure, err := graphRepo.Read(context.Background(), "subject:test")
+	if err != nil || afterFailure.Status != "failed" || afterFailure.GraphMapRevision == nil || *afterFailure.GraphMapRevision != *firstRevision || afterFailure.Map == nil || afterFailure.Map.LearningRevision == nil || *afterFailure.Map.LearningRevision != *secondRevision || !strings.Contains(string(afterFailure.Graph), "old-version") {
+		t.Fatalf("failed replacement should keep old Geek graph and new learning map: %+v err=%v", afterFailure, err)
+	}
+	subjectsResponse := f.request(http.MethodGet, "/subjects", "", admin)
+	var subjects []struct {
+		ID            string `json:"id"`
+		LearningReady bool   `json:"learning_ready"`
+		ExamReady     bool   `json:"exam_ready"`
+	}
+	if subjectsResponse.Code != http.StatusOK || json.Unmarshal(subjectsResponse.Body.Bytes(), &subjects) != nil || len(subjects) != 1 || !subjects[0].LearningReady || !subjects[0].ExamReady {
+		t.Fatalf("failed replacement should keep both independent modes available: %d %s %+v", subjectsResponse.Code, subjectsResponse.Body.String(), subjects)
 	}
 }
 

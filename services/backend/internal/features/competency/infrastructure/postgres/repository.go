@@ -29,8 +29,9 @@ func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, par
 	return r.replace(ctx, subjectID, actorID, parsed, importedAt, expectedRevision, false)
 }
 
-// Stage stores a learning projection without making it visible until the paired
-// course graph is ready. The course graph publisher activates both versions.
+// Stage stores a validated learning projection under a temporary import lock.
+// SaveMap activates it in the same transaction that persists the shared map
+// and queues the Geek graph build.
 func (r *Repository) Stage(ctx context.Context, subjectID, actorID string, parsed competencymap.Map, importedAt int64) (competencymap.ImportResult, error) {
 	return r.replace(ctx, subjectID, actorID, parsed, importedAt, nil, true)
 }

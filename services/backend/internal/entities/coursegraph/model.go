@@ -40,6 +40,10 @@ type Snapshot struct {
 	ErrorMessage string          `json:"error_message"`
 	Graph        json.RawMessage `json:"graph" swaggertype:"object" extensions:"x-nullable"`
 	GraphSource  string          `json:"graph_source" enums:"built,competency_map,none"`
+	// GraphFingerprint identifies the currently published Geek graph.
+	GraphFingerprint string `json:"graph_fingerprint"`
+	// GraphMapRevision is the learning-map revision used to build the published Geek graph.
+	GraphMapRevision *int64 `json:"graph_map_revision" extensions:"x-nullable"`
 	// BuildSource is what the last requested build reads: materials or
 	// competency_map; null before the first request.
 	BuildSource *string `json:"build_source" enums:"materials,competency_map" extensions:"x-nullable"`
@@ -55,9 +59,10 @@ type Snapshot struct {
 
 // MapFile is the competency map imported last and the sheet it was read from.
 type MapFile struct {
-	Fingerprint string `json:"fingerprint"`
-	Filename    string `json:"filename"`
-	Sheet       string `json:"sheet"`
+	Fingerprint      string `json:"fingerprint"`
+	Filename         string `json:"filename"`
+	Sheet            string `json:"sheet"`
+	LearningRevision *int64 `json:"learning_revision" extensions:"x-nullable"`
 }
 
 // BuildProgress is stage StageIndex of StageCount of a running build and the

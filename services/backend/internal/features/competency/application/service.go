@@ -16,8 +16,9 @@ type Repository interface {
 	Read(ctx context.Context, subjectID string) (competencymap.Snapshot, error)
 }
 
-// StageForSubject stores the learning side of a paired map while the Geek graph
-// is prepared. It stays invisible until the graph publisher activates it.
+// StageForSubject stores a validated learning projection under a temporary
+// import lock. The course graph repository activates it with the paired map
+// and build job in one transaction.
 func (s *Service) StageForSubject(ctx context.Context, actor user.User, subjectID string, data []byte) (competencymap.ImportResult, error) {
 	if err := s.Authorize(actor); err != nil {
 		return competencymap.ImportResult{}, err
