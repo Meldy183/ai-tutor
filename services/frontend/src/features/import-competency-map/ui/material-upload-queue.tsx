@@ -90,13 +90,23 @@ export function MaterialUploadQueueToolbar({
   disabled?: boolean
 }) {
   const { t } = useTranslation()
+  const unavailable = disabled || queue.isPending || queue.preparing
   return (
     <div className={styles.queue}>
       <label
         className={styles.add}
-        data-disabled={
-          disabled || queue.isPending || queue.preparing || undefined
-        }
+        aria-disabled={unavailable || undefined}
+        data-disabled={unavailable || undefined}
+        onDragOver={(event) => {
+          if (!unavailable) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+        onDrop={(event) => {
+          if (!unavailable) return
+          event.preventDefault()
+          event.stopPropagation()
+        }}
       >
         <span className={styles.addIcon} aria-hidden="true">
           <Upload size={22} />
@@ -111,10 +121,10 @@ export function MaterialUploadQueueToolbar({
           className={styles.addInput}
           type="file"
           accept=".pdf,.zip,application/pdf,application/zip"
-          disabled={disabled || queue.isPending || queue.preparing}
+          disabled={unavailable}
           aria-label={t('competencyMap.queueAdd')}
           onChange={(event) => {
-            void queue.addFile(event.currentTarget.files?.[0])
+            if (!unavailable) void queue.addFile(event.currentTarget.files?.[0])
             event.currentTarget.value = ''
           }}
         />

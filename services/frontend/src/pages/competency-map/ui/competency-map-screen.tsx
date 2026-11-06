@@ -437,7 +437,15 @@ function CompetencyMapAdmin({
                 </Text>
               )}
 
-            <MaterialUploadQueueToolbar queue={queue} disabled={busy} />
+            <MaterialUploadQueueToolbar
+              queue={queue}
+              disabled={busy || graphBuilding}
+            />
+            {graphBuilding && (
+              <Text as="p" role="status" color="gray" size="2">
+                {t('competencyMap.materialUploadBlockedByGraph')}
+              </Text>
+            )}
 
             {replaceMaterial.isError && (
               <Text as="p" role="alert" color="red">
@@ -590,7 +598,10 @@ function CompetencyMapAdmin({
                 })}
               </div>
             )}
-            <MaterialUploadSubmit queue={queue} disabled={busy} />
+            <MaterialUploadSubmit
+              queue={queue}
+              disabled={busy || graphBuilding}
+            />
           </section>
 
           <section className={styles.card} aria-labelledby="graph-title">

@@ -53,6 +53,8 @@ function setup({
   learningWarnings = [],
   assessmentWarnings = [],
   buildProgress,
+  buildSource,
+  buildStatus,
   mapState = { fingerprint: 'map-a', stale: false, failed: false },
   learningMapRevision,
 }: {
@@ -92,6 +94,8 @@ function setup({
     total: number
     remaining_seconds?: number
   }
+  buildSource?: 'materials' | 'competency_map'
+  buildStatus?: 'pending' | 'processing' | 'ready' | 'failed'
 } = {}) {
   let graphRequested = false
   let mapImported = false
@@ -440,20 +444,23 @@ function setup({
             : 'built',
         progress: buildProgress,
         build_source:
-          buildProgress || hasSavedMap || mapState.pending
+          buildSource ??
+          (buildProgress || hasSavedMap || mapState.pending
             ? 'competency_map'
-            : 'materials',
-        status: mapState.failed
-          ? 'failed'
-          : mapState.pending
-            ? 'pending'
-            : buildProgress
-              ? 'processing'
-              : graphRequested
-                ? 'pending'
-                : graphReady
-                  ? 'ready'
-                  : 'not_requested',
+            : 'materials'),
+        status:
+          buildStatus ??
+          (mapState.failed
+            ? 'failed'
+            : mapState.pending
+              ? 'pending'
+              : buildProgress
+                ? 'processing'
+                : graphRequested
+                  ? 'pending'
+                  : graphReady
+                    ? 'ready'
+                    : 'not_requested'),
         attempts: 0,
         error_message: mapState.failed ? 'Не удалось подготовить граф.' : '',
         graph: graphReady
@@ -599,6 +606,135 @@ it('shows actual question preparation and estimate without PDF blockers for a ma
     screen.queryByText('Загрузите хотя бы один материал курса.'),
   ).not.toBeInTheDocument()
 })
+
+it.each([
+  ['queued build from materials', 'pending', 'materials'],
+  ['processing build from competency map', 'processing', 'competency_map'],
+] as const)(
+  'disables material uploads during a reloaded %s',
+  async (_name, status, source) => {
+    setup({
+      materials: [],
+      buildStatus: status,
+      buildSource: source,
+      mapState: {
+        fingerprint: 'building-map',
+        stale: false,
+        failed: false,
+        pending: status === 'pending',
+      },
+      buildProgress:
+        status === 'processing'
+          ? {
+              stage: 'topics',
+              stage_index: 1,
+              stage_count: 2,
+              done: 1,
+              total: 2,
+            }
+          : undefined,
+    })
+    open()
+
+    const input = await screen.findByLabelText('Добавить PDF или ZIP')
+    expect(input).toBeDisabled()
+    expect(
+      screen.getByText(
+        'Загрузка материалов недоступна, пока собирается граф курса.',
+      ),
+    ).toBeVisible()
+  },
+)
+
+it('ignores dropped files on the disabled upload area during graph preparation', async () => {
+  const calls = setup({
+    materials: [],
+    buildStatus: 'processing',
+    buildSource: 'materials',
+    buildProgress: {
+      stage: 'topics',
+      stage_index: 1,
+      stage_count: 2,
+      done: 1,
+      total: 2,
+    },
+  })
+  open()
+
+  const upload = await screen.findByLabelText('Добавить PDF или ZIP')
+  const dropArea = upload.closest('label')
+  expect(dropArea).not.toBeNull()
+  const over = fireEvent.dragOver(dropArea!, {
+    dataTransfer: { files: [new File(['pdf'], 'drop.pdf')] },
+  })
+  fireEvent.drop(dropArea!, {
+    dataTransfer: { files: [new File(['pdf'], 'drop.pdf')] },
+  })
+
+  expect(over).toBe(false)
+  expect(screen.queryByText('drop.pdf')).not.toBeInTheDocument()
+  expect(
+    calls.mock.calls.some(
+      ([url, init]) =>
+        String(url).endsWith('/materials') && init?.method === 'POST',
+    ),
+  ).toBe(false)
+})
+
+it('keeps actions on already uploaded materials available during graph preparation', async () => {
+  setup({
+    materials: [material],
+    graphReady: true,
+    buildStatus: 'processing',
+    buildSource: 'materials',
+    buildProgress: {
+      stage: 'topics',
+      stage_index: 1,
+      stage_count: 2,
+      done: 1,
+      total: 2,
+    },
+  })
+  open()
+
+  expect(await screen.findByLabelText('Добавить PDF или ZIP')).toBeDisabled()
+  const materials = await screen.findByRole('region', {
+    name: 'Загруженные лекции и лабораторные',
+  })
+  expect(
+    within(materials).getByRole('button', { name: 'Заменить PDF' }),
+  ).toBeEnabled()
+  expect(
+    within(materials).getByRole('button', { name: 'Удалить' }),
+  ).toBeEnabled()
+})
+
+it.each([
+  ['ready', true],
+  ['failed', false],
+] as const)(
+  'enables material uploads again after graph build is %s',
+  async (status, ready) => {
+    setup({
+      materials: [],
+      graphReady: ready,
+      buildStatus: status,
+      mapState: {
+        fingerprint: 'finished-map',
+        stale: false,
+        failed: status === 'failed',
+      },
+    })
+    open()
+
+    expect(await screen.findByLabelText('Добавить PDF или ZIP')).toBeEnabled()
+    expect(
+      screen.queryByText(
+        'Загрузка материалов недоступна, пока собирается граф курса.',
+      ),
+    ).not.toBeInTheDocument()
+  },
+)
 
 it('shows the master pipeline stage while translation is running and blocks graph builds', async () => {
   setup({ processing: true })

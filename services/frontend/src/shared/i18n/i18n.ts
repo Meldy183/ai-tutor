@@ -196,6 +196,8 @@ void i18n.init({
           confirm: 'Подтвердить',
           queueAdd: 'Добавить PDF или ZIP',
           queueAddHint: 'Выберите PDF или ZIP-архив для материалов курса',
+          materialUploadBlockedByGraph:
+            'Загрузка материалов недоступна, пока собирается граф курса.',
           queueMoveUp: 'Переместить {{name}} выше',
           queueMoveDown: 'Переместить {{name}} ниже',
           queueDragItem: 'Перетащить {{name}}',
