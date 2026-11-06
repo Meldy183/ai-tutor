@@ -55,7 +55,12 @@ function setup({
   buildProgress,
   mapState = { fingerprint: 'map-a', stale: false, failed: false },
 }: {
-  mapState?: { fingerprint: string; stale: boolean; failed: boolean }
+  mapState?: {
+    fingerprint: string
+    stale: boolean
+    failed: boolean
+    pending?: boolean
+  }
   processing?: boolean
   pending?: boolean
   cleaning?: boolean
@@ -348,28 +353,29 @@ function setup({
     if (url.endsWith('/graph') || url.endsWith('/graph/build')) {
       if (init?.method === 'POST') graphRequested = true
       return Response.json({
-        graph_source: hasSavedMap ? 'competency_map' : 'built',
-        map: hasSavedMap
-          ? {
-              filename: 'map.xlsx',
-              sheet: 'Карта',
-              fingerprint: mapState.fingerprint,
-            }
-          : null,
+        graph_source: hasSavedMap
+          ? 'competency_map'
+          : mapState.pending
+            ? 'none'
+            : 'built',
         progress: buildProgress,
         build_source:
-          buildProgress || hasSavedMap ? 'competency_map' : 'materials',
+          buildProgress || hasSavedMap || mapState.pending
+            ? 'competency_map'
+            : 'materials',
         status: mapState.failed
           ? 'failed'
-          : buildProgress
-            ? 'processing'
-            : graphRequested
-              ? 'pending'
-              : graphReady
-                ? 'ready'
-                : 'not_requested',
+          : mapState.pending
+            ? 'pending'
+            : buildProgress
+              ? 'processing'
+              : graphRequested
+                ? 'pending'
+                : graphReady
+                  ? 'ready'
+                  : 'not_requested',
         attempts: 0,
-        error_message: '',
+        error_message: mapState.failed ? 'Не удалось подготовить граф.' : '',
         graph: graphReady
           ? {
               assessment_warnings: assessmentWarnings,
@@ -388,6 +394,14 @@ function setup({
         stale: mapState.stale,
         inputs_ready: !processing && !cleaningFailed,
         updated_at: 1,
+        map:
+          hasSavedMap || mapState.pending
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+              }
+            : null,
       })
     }
     throw new Error(`Unexpected API call: ${url}`)
@@ -607,6 +621,86 @@ function pairedWorkbook() {
   )
 }
 
+it('shows a backend pending map after page reload without marking it active', async () => {
+  setup({
+    materials: [],
+    mapState: {
+      fingerprint: 'pending-map',
+      stale: false,
+      failed: false,
+      pending: true,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта «map.xlsx» готовится к публикации.'),
+  ).toBeVisible()
+  expect(
+    within(state).getByText(
+      'Статистика появится после публикации. До этого активной остаётся предыдущая версия карты.',
+    ),
+  ).toBeVisible()
+  expect(
+    within(state).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+  expect(
+    within(state).queryByText('Карта компетенций успешно загружена'),
+  ).not.toBeInTheDocument()
+  expect(within(state).queryByText('Компетенции')).not.toBeInTheDocument()
+})
+
+it('keeps the previous active map statistics visible while a replacement is pending', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    mapState: {
+      fingerprint: 'replacement-map',
+      stale: false,
+      failed: false,
+      pending: true,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(
+    within(state).getByText('Карта «map.xlsx» готовится к публикации.'),
+  ).toBeVisible()
+  expect(
+    within(state).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+})
+
+it('keeps the previous active map visible and reports a failed pending replacement after reload', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    mapState: { fingerprint: 'failed-replacement', stale: true, failed: true },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByRole('alert')).toHaveTextContent(
+    'Не удалось подготовить граф.',
+  )
+})
+
 it('shows the learning map statistics separately from the one shared upload', async () => {
   setup({ learningMapImported: true })
   open()
@@ -651,6 +745,17 @@ it('refreshes learning map statistics after the shared background build complete
     ).toBe(true),
   )
   expect(await screen.findByText(/Подготавливаем единый граф/)).toBeVisible()
+  const stateWhileBuilding = screen.getByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+  expect(
+    within(stateWhileBuilding).getByText(
+      'Карта «map.xlsx» готовится к публикации.',
+    ),
+  ).toBeVisible()
+  expect(
+    within(stateWhileBuilding).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
 
   finishBuild()
   const state = await screen.findByRole('region', {
@@ -660,6 +765,9 @@ it('refreshes learning map statistics after the shared background build complete
   expect(
     within(state).getByText('Карта компетенций успешно загружена'),
   ).toBeVisible()
+  expect(
+    within(state).queryByText('Карта «map.xlsx» готовится к публикации.'),
+  ).not.toBeInTheDocument()
 })
 
 it('keeps imported learning warnings in a readable row and reason table', async () => {

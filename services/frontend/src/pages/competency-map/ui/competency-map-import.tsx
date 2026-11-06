@@ -80,6 +80,8 @@ export function CompetencyMapImport({
     null,
   )
   const [buildObserved, setBuildObserved] = useState(false)
+  const previousBuildId = useRef<string | null>(null)
+  const refreshedBuildId = useRef<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -113,6 +115,7 @@ export function CompetencyMapImport({
     const build = graphBuild.data
     if (!pairedFingerprint || build?.map?.fingerprint !== pairedFingerprint)
       return
+    if (build.id === previousBuildId.current) return
     if (build.status === 'queued' || build.status === 'running') {
       setBuildObserved(true)
       return
@@ -129,6 +132,18 @@ export function CompetencyMapImport({
     buildObserved,
     learningMap.refetch,
   ])
+
+  useEffect(() => {
+    const build = graphBuild.data
+    if (
+      build?.source !== 'competency_map' ||
+      build.status !== 'succeeded' ||
+      refreshedBuildId.current === build.id
+    )
+      return
+    refreshedBuildId.current = build.id
+    void learningMap.refetch()
+  }, [graphBuild.data, learningMap.refetch])
 
   useEffect(() => {
     if (
@@ -190,6 +205,7 @@ export function CompetencyMapImport({
 
   function sendCourseMap() {
     if (!file) return
+    previousBuildId.current = graphBuild.data?.id ?? null
     importCourseMap.mutate(
       { file },
       {
@@ -280,6 +296,30 @@ export function CompetencyMapImport({
         t('learningCompetencyMap.unifiedBuildFailed'))
       : null
 
+  const latestMapBuild =
+    graphBuild.data?.source === 'competency_map' && graphBuild.data.map
+      ? graphBuild.data
+      : null
+  const uploadedMapBuild =
+    pairedFingerprint &&
+    importCourseMap.data?.map?.fingerprint === pairedFingerprint
+      ? importCourseMap.data
+      : null
+  const latestBuildIsNewImport =
+    latestMapBuild !== null && latestMapBuild.id !== previousBuildId.current
+  const visibleMapBuild =
+    uploadedMapBuild ??
+    (latestBuildIsNewImport ? latestMapBuild : null) ??
+    (pairedFingerprint === null ? latestMapBuild : null)
+  const mapBuildPending =
+    visibleMapBuild?.status === 'queued' ||
+    visibleMapBuild?.status === 'running'
+  const mapBuildFailed = visibleMapBuild?.status === 'failed'
+  const mapBuildSucceeded = visibleMapBuild?.status === 'succeeded'
+  const mapBuildFilename = visibleMapBuild?.map?.filename ?? ''
+  const hasActiveMap =
+    learningMap.data?.importedAt !== null && learningMap.data !== undefined
+
   return (
     <>
       <section className={styles.card} aria-labelledby="learning-map-state">
@@ -304,9 +344,11 @@ export function CompetencyMapImport({
             </Button>
           </Flex>
         ) : learningMap.data.importedAt === null ? (
-          <Text as="p" color="gray" size="2">
-            {t('learningCompetencyMap.empty')}
-          </Text>
+          !mapBuildPending && !mapBuildFailed && !mapBuildSucceeded ? (
+            <Text as="p" color="gray" size="2">
+              {t('learningCompetencyMap.empty')}
+            </Text>
+          ) : null
         ) : (
           <>
             <Text as="p" role="status" className={styles.success}>
@@ -314,6 +356,44 @@ export function CompetencyMapImport({
               {t('learningCompetencyMap.success')}
             </Text>
             <MapSummary summary={learningMap.data} />
+          </>
+        )}
+        {mapBuildPending && (
+          <>
+            <Text as="p" role="status" size="2">
+              {t('learningCompetencyMap.pendingMap', {
+                filename: mapBuildFilename,
+              })}
+            </Text>
+            <Text as="p" color="gray" size="2">
+              {t(
+                hasActiveMap
+                  ? 'learningCompetencyMap.pendingMapPreviousActive'
+                  : 'learningCompetencyMap.pendingMapHelp',
+              )}
+            </Text>
+          </>
+        )}
+        {mapBuildSucceeded && !hasActiveMap && (
+          <Text as="p" role="status" size="2">
+            {t('learningCompetencyMap.publishingMap', {
+              filename: mapBuildFilename,
+            })}
+          </Text>
+        )}
+        {mapBuildFailed && (
+          <>
+            <Text as="p" role="alert" color="red" size="2">
+              {t('learningCompetencyMap.failedMap', {
+                filename: mapBuildFilename,
+                message: visibleMapBuild.error?.message ?? '',
+              })}
+            </Text>
+            {hasActiveMap && (
+              <Text as="p" color="gray" size="2">
+                {t('learningCompetencyMap.failedMapPreviousActive')}
+              </Text>
+            )}
           </>
         )}
       </section>
