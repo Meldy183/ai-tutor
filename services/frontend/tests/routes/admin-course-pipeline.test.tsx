@@ -74,6 +74,7 @@ function setup({
 } = {}) {
   let graphRequested = false
   let mapImported = false
+  let learningMapImported = false
   const hasSavedMap = assessmentWarnings.length > 0 || mapState.failed
   const courseMaterials = materials ?? [material]
   const calls = vi.fn(async (url: string, init?: RequestInit) => {
@@ -89,32 +90,60 @@ function setup({
           id: 'subject-a',
           name: 'Первый курс',
           ready: false,
-          learning_ready: false,
+          learning_ready: learningMapImported || mapImported,
           exam_ready: false,
           preparation: {
             exam: { state: 'empty', source: null, stale: false },
-            learn: { state: 'empty' },
+            learn: {
+              state: learningMapImported || mapImported ? 'ready' : 'empty',
+            },
           },
         },
         {
           id: 'subject-b',
           name: 'Второй курс',
-          ready: graphReady || mapImported,
-          learning_ready: false,
-          exam_ready: graphReady || mapImported,
+          ready: graphReady,
+          learning_ready: learningMapImported || mapImported,
+          exam_ready: graphReady,
           preparation: {
             exam:
-              graphReady || mapImported
+              graphReady
                 ? {
                     state: 'ready',
                     source: mapImported ? 'competency_map' : 'materials',
                     stale: false,
                   }
-                : { state: 'empty', source: null, stale: false },
-            learn: { state: 'empty' },
+                : mapImported
+                  ? { state: 'queued', source: 'competency_map', stale: false }
+                  : { state: 'empty', source: null, stale: false },
+            learn: {
+              state: learningMapImported || mapImported ? 'ready' : 'empty',
+            },
           },
         },
       ])
+    if (url.includes('/learn/subjects/') && url.endsWith('/competency-map'))
+      return Response.json({
+        revision: learningMapImported ? 1 : 0,
+        imported_at: learningMapImported ? 2 : null,
+        competencies: [],
+      })
+    if (
+      url.includes('/learn/admin/subjects/') &&
+      url.endsWith('/competency-map/import')
+    ) {
+      learningMapImported = true
+      return Response.json({
+        revision: 1,
+        imported_at: 2,
+        competency_count: 1,
+        constituent_count: 1,
+        outcome_count: 3,
+        task_count: 3,
+        unparsed_task_cell_count: 0,
+        warnings: [],
+      })
+    }
     if (url.endsWith('/materials') && init?.method === 'POST') {
       await uploadGate
       const files = (init.body as FormData).getAll('file') as File[]
@@ -476,22 +505,18 @@ it('keeps the master graph viewer for a published graph', async () => {
   ).not.toBeInTheDocument()
 })
 
-it('keeps the competency map import inside the selected course graph card', async () => {
+it('keeps the legacy exam route on the unified course preparation screen', async () => {
   setup()
-  open('/admin/courses/subject-b?direction=exam')
-  const graphSection = await screen.findByRole('region', {
-    name: 'Граф тем курса',
-  })
+  const router = open('/admin/courses/subject-b?direction=exam')
   expect(
-    within(graphSection).getByText(
-      /Вместо материалов загрузите карту компетенций/,
-    ),
+    await screen.findByRole('heading', { name: 'Подготовка курса' }),
   ).toBeVisible()
   expect(
-    within(graphSection).getByRole('button', {
+    await screen.findByRole('button', {
       name: 'Импортировать карту компетенций',
     }),
   ).toBeVisible()
+  expect(router.state.location.search).toEqual({ direction: 'exam' })
   expect(
     screen.queryByRole('heading', {
       name: 'Карта для экзаменационного графа',
@@ -499,22 +524,53 @@ it('keeps the competency map import inside the selected course graph card', asyn
   ).not.toBeInTheDocument()
 })
 
+it('lets admins choose the destination of a one-sheet workbook on the legacy exam URL', async () => {
+  const calls = setup({ materials: [] })
+  open('/admin/courses/subject-b?direction=exam')
+  await chooseMap()
+
+  const modePicker = await screen.findByRole('radiogroup', {
+    name: 'Куда загрузить однолистовую карту?',
+  })
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  fireEvent.click(
+    within(modePicker).getByRole('radio', { name: 'Карта обучения' }),
+  )
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
+  )
+
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith(
+          '/learn/admin/subjects/subject-b/competency-map/import',
+        ),
+      ),
+    ).toBe(true),
+  )
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+})
+
 function chooseMap() {
-  return screen
-    .findByLabelText('Импортировать карту компетенций', { selector: 'input' })
-    .then((input) =>
-      fireEvent.change(input, {
-        target: {
-          files: [new File(['PK'], 'map.xlsx', { type: 'application/zip' })],
-        },
-      }),
-    )
+  return screen.findByLabelText('Файл карты компетенций').then((input) =>
+    fireEvent.change(input, {
+      target: {
+        files: [new File(['PK'], 'map.xlsx', { type: 'application/zip' })],
+      },
+    }),
+  )
 }
 
 it('builds the graph from the first sheet of a competency map', async () => {
   const calls = setup({ competencyMap: 'valid' })
   open()
   await chooseMap()
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
+    }),
+  )
   const dialog = await screen.findByRole('alertdialog')
   expect(within(dialog).getByText(/по карте «map\.xlsx»/)).toBeVisible()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
@@ -538,7 +594,7 @@ it('builds the graph from the first sheet of a competency map', async () => {
   expect(screen.queryByLabelText('Лист карты')).not.toBeInTheDocument()
 }, 15000)
 
-it('imports a map through the shared course ID and makes a map-only course ready', async () => {
+it('shows learning ready while Geek prepares a map-only course', async () => {
   const calls = setup({ competencyMap: 'valid', materials: [] })
   const router = open('/admin/courses/subject-b?direction=exam')
   expect(
@@ -546,10 +602,16 @@ it('imports a map through the shared course ID and makes a map-only course ready
   ).toBeVisible()
   expect(await screen.findByText(/Материалов: 0/)).toBeVisible()
   await chooseMap()
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
+    }),
+  )
   const dialog = await screen.findByRole('alertdialog')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
   await screen.findByText('По карте компетенций', undefined, { timeout: 8000 })
-  expect(await screen.findByText('Экзамен: готов')).toBeVisible()
+  expect(await screen.findByText('Обучение: готово')).toBeVisible()
+  expect(await screen.findByText('Экзамен: подготовка в очереди')).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-b')
   expect(router.state.location.search).toEqual({ direction: 'exam' })
   expect(
@@ -564,45 +626,46 @@ it('imports a map through the shared course ID and makes a map-only course ready
   ).toBe(true)
 }, 15000)
 
-it('keeps the common course heading and exactly one selected direction tab', async () => {
+it('opens the same course preparation flow from both legacy directions', async () => {
   setup()
   const router = open('/admin/courses/subject-b?direction=exam')
   expect(
     await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
   ).toBeVisible()
-  const navigation = screen.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  const selected = () =>
-    within(navigation)
-      .getAllByRole('link')
-      .filter((tab) => tab.getAttribute('aria-current') === 'page')
-  expect(selected()).toHaveLength(1)
-  expect(selected()[0]).toHaveAccessibleName('Материалы для экзамена')
-  fireEvent.click(
-    within(navigation).getByRole('link', { name: 'Материалы для обучения' }),
-  )
   expect(
-    await screen.findByRole('heading', { name: 'Материалы для обучения' }),
+    screen.getByRole('region', { name: 'Загруженные лекции и лабораторные' }),
   ).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Граф тем курса' })).toBeVisible()
+  expect(
+    screen.queryByRole('navigation', { name: 'Разделы администрирования' }),
+  ).not.toBeInTheDocument()
+
+  await router.navigate({
+    to: '/admin/courses/$subjectId',
+    params: { subjectId: 'subject-b' },
+    search: { direction: 'learn' },
+  })
+  expect(
+    await screen.findByRole('region', {
+      name: 'Загруженные лекции и лабораторные',
+    }),
+  ).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Граф тем курса' })).toBeVisible()
+  expect(
+    screen.queryByRole('navigation', { name: 'Разделы администрирования' }),
+  ).not.toBeInTheDocument()
   expect(router.state.location.search).toEqual({ direction: 'learn' })
-  const navigationAfterSwitch = screen.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  const selectedAfterSwitch = within(navigationAfterSwitch)
-    .getAllByRole('link')
-    .filter((tab) => tab.getAttribute('aria-current') === 'page')
-  expect(selectedAfterSwitch).toHaveLength(1)
-  expect(selectedAfterSwitch[0]).toHaveAccessibleName('Материалы для обучения')
-  expect(
-    await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
-  ).toBeVisible()
 })
 
 it('names the bad cells of a rejected competency map', async () => {
   setup({ competencyMap: 'invalid' })
   open()
   await chooseMap()
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
+    }),
+  )
   const dialog = await screen.findByRole('alertdialog')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
   const alert = await screen.findByText(

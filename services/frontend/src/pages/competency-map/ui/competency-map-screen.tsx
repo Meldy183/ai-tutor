@@ -88,7 +88,13 @@ type MaterialListRow =
   | { id: string; week: string; queued: MaterialQueueItem }
   | { id: string; week: string; saved: CourseMaterial }
 
-export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
+export function CompetencyMapAdminScreen({
+  subjectId,
+  direction,
+}: {
+  subjectId: string
+  direction?: 'learn' | 'exam'
+}) {
   const { t } = useTranslation()
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -109,6 +115,7 @@ export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
       key={subjectId}
       userId={user.id}
       subjectId={subjectId}
+      legacyDirection={direction}
     />
   )
 }
@@ -116,9 +123,11 @@ export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
 function CompetencyMapAdmin({
   userId,
   subjectId,
+  legacyDirection,
 }: {
   userId: string
   subjectId: string
+  legacyDirection?: 'learn' | 'exam'
 }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -340,10 +349,11 @@ function CompetencyMapAdmin({
       subjectName={subject?.name}
       courseMissing={subjects.isSuccess && !subjects.isError && !subject}
       course={subject}
+      showBothStatuses
       statusRefreshError={subjects.isRefetchError}
       onRetryStatus={() => void subjects.refetch()}
-      title={t('courseGraph.title')}
-      description={t('courseGraph.subtitle')}
+      title={t('adminCourses.preparationTitle')}
+      description={t('adminCourses.preparationSubtitle')}
     >
       {subjects.isPending ? (
         <Text as="p" role="status">
@@ -385,6 +395,15 @@ function CompetencyMapAdmin({
               <Text weight="bold">{t('courseGraph.readyStep')}</Text>
             </div>
           </nav>
+
+          <CompetencyMapImport
+            userId={userId}
+            subjectId={subjectId}
+            hasGraph={hasGraph}
+            disabled={graphBuilding}
+            map={courseGraph.data?.map}
+            legacyDirection={legacyDirection ?? 'learn'}
+          />
 
           <section
             className={styles.card}
@@ -762,13 +781,6 @@ function CompetencyMapAdmin({
                 </Flex>
               </AlertDialog.Content>
             </AlertDialog.Root>
-            <CompetencyMapImport
-              userId={userId}
-              subjectId={subjectId}
-              hasGraph={hasGraph}
-              disabled={!graphStateResolved || graphBuilding}
-              map={courseGraph.data?.map}
-            />
             <CourseGraphViewer
               graph={courseGraph.data?.view}
               fromMap={courseGraph.data?.source === 'competency_map'}

@@ -450,12 +450,12 @@ it.each(['/admin', '/admin/'])('opens the course list at %s', async (path) => {
   ).toBeVisible()
   fireEvent.click(screen.getByRole('link', { name: /Машинное обучение/ }))
   expect(
-    await screen.findByRole('heading', { name: 'Материалы для обучения' }),
+    await screen.findByRole('heading', { name: 'Подготовка курса' }),
   ).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-a')
 })
 
-it('opens course preparation after the common course list and keeps its ID across tabs', async () => {
+it('opens one course preparation flow from the course list and old direction links', async () => {
   backend()
   const router = renderApp('/admin/courses')
   expect(
@@ -479,7 +479,7 @@ it('opens course preparation after the common course list and keeps its ID acros
   fireEvent.click(readyCourse)
   expect(
     await screen.findByRole('heading', {
-      name: 'Материалы для обучения',
+      name: 'Подготовка курса',
       level: 2,
     }),
   ).toBeVisible()
@@ -487,15 +487,9 @@ it('opens course preparation after the common course list and keeps its ID acros
   expect(
     await screen.findByRole('heading', { name: 'Машинное обучение', level: 1 }),
   ).toBeVisible()
-  const navigation = screen.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  fireEvent.click(
-    within(navigation).getByRole('link', { name: 'Материалы для экзамена' }),
-  )
   expect(
     await screen.findByRole('heading', {
-      name: 'Материалы для экзамена',
+      name: 'Загруженные лекции и лабораторные',
       level: 2,
     }),
   ).toBeVisible()
@@ -503,6 +497,17 @@ it('opens course preparation after the common course list and keeps its ID acros
     screen.getByRole('heading', { name: 'Машинное обучение', level: 1 }),
   ).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-a')
+  expect(
+    screen.queryByRole('navigation', { name: 'Разделы администрирования' }),
+  ).not.toBeInTheDocument()
+  await router.navigate({
+    to: '/admin/courses/$subjectId',
+    params: { subjectId: 'subject-a' },
+    search: { direction: 'exam' },
+  })
+  expect(
+    await screen.findByRole('heading', { name: 'Подготовка курса', level: 2 }),
+  ).toBeVisible()
   expect(router.state.location.search).toEqual({ direction: 'exam' })
   fireEvent.click(screen.getByRole('link', { name: 'Ко всем курсам' }))
   expect(
@@ -926,10 +931,7 @@ it('denies students direct access to the admin screen without fetching materials
 it('shows the shared account without a logout in the admin panel', async () => {
   backend()
   renderApp()
-  await screen.findByRole('heading', { name: 'Материалы для экзамена' })
-  expect(
-    screen.getByRole('navigation', { name: 'Разделы администрирования' }),
-  ).toBeVisible()
+  await screen.findByRole('heading', { name: 'Подготовка курса' })
   expect(screen.getByLabelText('Профиль: Администратор')).toBeVisible()
   expect(
     screen.queryByRole('button', { name: /Меню профиля/ }),
@@ -973,7 +975,7 @@ it('restores the admin screen after reload with an expired access cookie', async
   )
   renderApp('/admin/courses/subject-a?direction=exam')
   expect(
-    await screen.findByRole('heading', { name: 'Материалы для экзамена' }),
+    await screen.findByRole('heading', { name: 'Подготовка курса' }),
   ).toBeVisible()
   expect(screen.queryByText('Открываем админ-панель…')).not.toBeInTheDocument()
 })
@@ -988,7 +990,7 @@ it('retries a failed session check without exposing the lesson', async () => {
   expect(screen.queryByText('Машинное обучение')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Попробовать снова' }))
   expect(
-    await screen.findByRole('heading', { name: 'Материалы для экзамена' }),
+    await screen.findByRole('heading', { name: 'Подготовка курса' }),
   ).toBeVisible()
 })
 
