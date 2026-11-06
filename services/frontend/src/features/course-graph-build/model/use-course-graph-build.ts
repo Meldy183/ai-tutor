@@ -274,9 +274,9 @@ export function useImportCompetencyMapMutation(
         unregister()
       }
     },
-    onSuccess: async () => {
+    onSuccess: () => {
       if (!isCurrentSession(cache, tokenRef.current)) return
-      await Promise.all([
+      void Promise.all([
         cache.invalidateQueries({
           queryKey: courseGraphQueryKeys.build(userId, subjectId),
         }),

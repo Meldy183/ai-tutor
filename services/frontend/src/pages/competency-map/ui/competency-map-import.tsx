@@ -4,6 +4,7 @@ import {
   Flex,
   Heading,
   RadioGroup,
+  Table,
   Text,
 } from '@radix-ui/themes'
 import {
@@ -16,6 +17,7 @@ import {
   ListChecks,
   Shapes,
   Target,
+  TriangleAlert,
   Upload,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
@@ -197,6 +199,10 @@ export function CompetencyMapImport({
             build.status === 'queued' || build.status === 'running',
           )
           setFile(null)
+          if (build.status === 'succeeded') {
+            setPairedFingerprint(null)
+            void learningMap.refetch()
+          }
           void graphBuild.refetch()
         },
         onError: (error) => {
@@ -275,169 +281,243 @@ export function CompetencyMapImport({
       : null
 
   return (
-    <section className={styles.card} aria-labelledby="competency-map-title">
-      <div className={styles.sectionHeading}>
-        <FileSpreadsheet aria-hidden="true" />
-        <Heading as="h3" size="4" id="competency-map-title">
+    <>
+      <section className={styles.card} aria-labelledby="learning-map-state">
+        <Heading as="h3" size="4" id="learning-map-state">
           {t('learningCompetencyMap.currentMap')}
         </Heading>
-      </div>
-      {learningMap.isPending ? (
-        <Text as="p" role="status" color="gray" size="2">
-          {t('learningCompetencyMap.loading')}
-        </Text>
-      ) : learningMap.isError ? (
-        <Flex gap="3" align="center" wrap="wrap">
-          <Text role="alert" color="red" size="2">
-            {t('learningCompetencyMap.loadError')}
+        {learningMap.isPending ? (
+          <Text as="p" role="status" color="gray" size="2">
+            {t('learningCompetencyMap.loading')}
           </Text>
-          <Button
-            variant="ghost"
-            size="1"
-            onClick={() => void learningMap.refetch()}
-          >
-            {t('trainer.retry')}
-          </Button>
-        </Flex>
-      ) : learningMap.data.importedAt === null ? (
-        <Text as="p" color="gray" size="2">
-          {t('learningCompetencyMap.empty')}
-        </Text>
-      ) : (
-        <>
-          <Text as="p" role="status" className={styles.success}>
-            <CheckCircle2 size={20} aria-hidden="true" />
-            {t('learningCompetencyMap.success')}
-          </Text>
-          <MapSummary summary={learningMap.data} />
-        </>
-      )}
-
-      <Text as="p" color="gray" size="2">
-        {t('courseGraph.mapImportHint')}
-      </Text>
-      {map && (
-        <Text as="p" size="2">
-          {t('courseGraph.mapImported', {
-            filename: map.filename,
-            sheet: map.sheet,
-          })}
-        </Text>
-      )}
-      <input
-        ref={input}
-        type="file"
-        accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        hidden
-        aria-label={t('learningCompetencyMap.file')}
-        onChange={(event) => {
-          selectFile(event.target.files?.[0])
-          event.target.value = ''
-        }}
-      />
-      <Flex gap="3" align="center" wrap="wrap">
-        <Button
-          className={styles.mapImportButton}
-          size="3"
-          variant="soft"
-          disabled={busy || learningMap.isError}
-          onClick={() => input.current?.click()}
-        >
-          <Upload size={17} aria-hidden="true" />
-          {file ? file.name : t('courseGraph.mapImport')}
-        </Button>
-        {file && (
-          <Button
-            ref={submitRef}
-            size="3"
-            color="green"
-            disabled={busy || !learningMap.data}
-            onClick={startImport}
-          >
-            <Check size={18} aria-hidden="true" />
-            {mode === 'both'
-              ? t('learningCompetencyMap.submitUnified')
-              : mode === 'exam'
-                ? t('courseGraph.mapImportStart')
-                : t('learningCompetencyMap.submitEdit')}
-          </Button>
-        )}
-      </Flex>
-      {checkingWorkbook && (
-        <Text as="p" role="status" size="2">
-          {t('learningCompetencyMap.checkingWorkbook')}
-        </Text>
-      )}
-      {file &&
-        sheetCount === 1 &&
-        file.name.toLowerCase().endsWith('.xlsx') && (
-          <fieldset className={styles.mapMode} disabled={busy}>
-            <legend>{t('learningCompetencyMap.singleSheetMode')}</legend>
-            <RadioGroup.Root
-              value={mode}
-              onValueChange={(value) => setMode(value as ImportMode)}
-              aria-label={t('learningCompetencyMap.singleSheetMode')}
+        ) : learningMap.isError ? (
+          <Flex gap="3" align="center" wrap="wrap">
+            <Text role="alert" color="red" size="2">
+              {t('learningCompetencyMap.loadError')}
+            </Text>
+            <Button
+              variant="ghost"
+              size="1"
+              onClick={() => void learningMap.refetch()}
             >
-              <RadioGroup.Item value="learn">
-                {t('learningCompetencyMap.modeLearning')}
-              </RadioGroup.Item>
-              <RadioGroup.Item value="exam">
-                {t('learningCompetencyMap.modeGeek')}
-              </RadioGroup.Item>
-            </RadioGroup.Root>
-          </fieldset>
+              {t('trainer.retry')}
+            </Button>
+          </Flex>
+        ) : learningMap.data.importedAt === null ? (
+          <Text as="p" color="gray" size="2">
+            {t('learningCompetencyMap.empty')}
+          </Text>
+        ) : (
+          <>
+            <Text as="p" role="status" className={styles.success}>
+              <CheckCircle2 size={20} aria-hidden="true" />
+              {t('learningCompetencyMap.success')}
+            </Text>
+            <MapSummary summary={learningMap.data} />
+          </>
         )}
-      {fileError && (
-        <Text as="p" role="alert" color="red" size="2">
-          {fileError}
-        </Text>
-      )}
-      {revisionChanged && (
-        <Text as="p" role="alert" color="red" size="2">
-          {t('learningCompetencyMap.revisionChanged')}
-        </Text>
-      )}
-      {file && !busy && (
-        <Button
-          size="2"
-          variant="soft"
-          color="gray"
-          onClick={() => selectFile(undefined)}
-        >
-          {t('learningCompetencyMap.cancelEdit')}
-        </Button>
-      )}
-      {importLearningMap.isPending || importCourseMap.isPending ? (
-        <Text as="p" role="status" size="2">
-          {t('learningCompetencyMap.uploading')}
-        </Text>
-      ) : null}
-      {pairedFingerprint && !buildError && (
-        <Text as="p" role="status" size="2">
-          {t('learningCompetencyMap.preparingUnified')}
-        </Text>
-      )}
-      {buildError && (
-        <Text as="p" role="alert" color="red" size="2">
-          {buildError}
-        </Text>
-      )}
-      {error && (
-        <div className={styles.error} role="alert">
-          <Text as="p">{error.message}</Text>
-          {details.length > 0 && (
-            <ul>
-              {details.map((detail, index) => (
-                <li key={`${detail.path ?? ''}:${index}`}>{detail.message}</li>
-              ))}
-            </ul>
-          )}
+      </section>
+
+      <section
+        className={styles.card}
+        aria-labelledby="competency-map-import-title"
+      >
+        <div className={styles.sectionHeading}>
+          <FileSpreadsheet aria-hidden="true" />
+          <Heading as="h3" size="4" id="competency-map-import-title">
+            {t('learningCompetencyMap.edit')}
+          </Heading>
         </div>
-      )}
+        <Text as="p" color="gray" size="2">
+          {t('courseGraph.mapImportHint')}
+        </Text>
+        {map && (
+          <Text as="p" size="2">
+            {t('courseGraph.mapImported', {
+              filename: map.filename,
+              sheet: map.sheet,
+            })}
+          </Text>
+        )}
+        <input
+          ref={input}
+          type="file"
+          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          hidden
+          aria-label={t('learningCompetencyMap.file')}
+          onChange={(event) => {
+            selectFile(event.target.files?.[0])
+            event.target.value = ''
+          }}
+        />
+        <Flex gap="3" align="center" wrap="wrap">
+          <Button
+            className={styles.mapImportButton}
+            size="3"
+            variant="soft"
+            disabled={busy || learningMap.isError}
+            onClick={() => input.current?.click()}
+          >
+            <Upload size={17} aria-hidden="true" />
+            {file ? file.name : t('courseGraph.mapImport')}
+          </Button>
+          {file && (
+            <Button
+              ref={submitRef}
+              size="3"
+              color="green"
+              disabled={busy || !learningMap.data}
+              onClick={startImport}
+            >
+              <Check size={18} aria-hidden="true" />
+              {mode === 'both'
+                ? t('learningCompetencyMap.submitUnified')
+                : mode === 'exam'
+                  ? t('courseGraph.mapImportStart')
+                  : t('learningCompetencyMap.submitEdit')}
+            </Button>
+          )}
+        </Flex>
+        {checkingWorkbook && (
+          <Text as="p" role="status" size="2">
+            {t('learningCompetencyMap.checkingWorkbook')}
+          </Text>
+        )}
+        {file &&
+          sheetCount === 1 &&
+          file.name.toLowerCase().endsWith('.xlsx') && (
+            <fieldset className={styles.mapMode} disabled={busy}>
+              <legend>{t('learningCompetencyMap.singleSheetMode')}</legend>
+              <RadioGroup.Root
+                value={mode}
+                onValueChange={(value) => setMode(value as ImportMode)}
+                aria-label={t('learningCompetencyMap.singleSheetMode')}
+              >
+                <RadioGroup.Item value="learn">
+                  {t('learningCompetencyMap.modeLearning')}
+                </RadioGroup.Item>
+                <RadioGroup.Item value="exam">
+                  {t('learningCompetencyMap.modeGeek')}
+                </RadioGroup.Item>
+              </RadioGroup.Root>
+            </fieldset>
+          )}
+        {fileError && (
+          <Text as="p" role="alert" color="red" size="2">
+            {fileError}
+          </Text>
+        )}
+        {revisionChanged && (
+          <Text as="p" role="alert" color="red" size="2">
+            {t('learningCompetencyMap.revisionChanged')}
+          </Text>
+        )}
+        {file && !busy && (
+          <Button
+            size="2"
+            variant="soft"
+            color="gray"
+            onClick={() => selectFile(undefined)}
+          >
+            {t('learningCompetencyMap.cancelEdit')}
+          </Button>
+        )}
+        {importLearningMap.isPending || importCourseMap.isPending ? (
+          <Text as="p" role="status" size="2">
+            {t('learningCompetencyMap.uploading')}
+          </Text>
+        ) : null}
+        {pairedFingerprint && !buildError && (
+          <Text as="p" role="status" size="2">
+            {t('learningCompetencyMap.preparingUnified')}
+          </Text>
+        )}
+        {buildError && (
+          <Text as="p" role="alert" color="red" size="2">
+            {buildError}
+          </Text>
+        )}
+        {error && (
+          <div className={styles.error} role="alert">
+            <Text as="p">{error.message}</Text>
+            {details.length > 0 && (
+              <ul>
+                {details.map((detail, index) => (
+                  <li key={`${detail.path ?? ''}:${index}`}>
+                    {detail.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        <AlertDialog.Root
+          open={confirming}
+          onOpenChange={(open) => {
+            if (!open) setConfirming(false)
+          }}
+        >
+          <AlertDialog.Content
+            maxWidth="440px"
+            onCloseAutoFocus={(event) => {
+              event.preventDefault()
+              submitRef.current?.focus()
+            }}
+          >
+            <AlertDialog.Title>
+              {t('learningCompetencyMap.confirmTitle')}
+            </AlertDialog.Title>
+            <AlertDialog.Description>
+              {t(
+                mode === 'both'
+                  ? 'learningCompetencyMap.confirmHelpUnified'
+                  : mode === 'exam'
+                    ? hasGraph
+                      ? 'courseGraph.mapImportReplace'
+                      : 'courseGraph.mapImportConfirm'
+                    : 'learningCompetencyMap.confirmHelp',
+                { filename: file?.name ?? '' },
+              )}
+            </AlertDialog.Description>
+            <Flex gap="3" mt="4" justify="end">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('learningCompetencyMap.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action>
+                <Button
+                  color="red"
+                  disabled={
+                    busy ||
+                    (mode === 'learn' &&
+                      (confirmedRevision === null ||
+                        learningMap.data?.revision !== confirmedRevision))
+                  }
+                  onClick={confirmImport}
+                >
+                  {mode === 'learn'
+                    ? t('learningCompetencyMap.confirm')
+                    : t('courseGraph.mapImportStart')}
+                </Button>
+              </AlertDialog.Action>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      </section>
       {importLearningMap.data &&
         (importLearningMap.data.unparsedTaskCellCount > 0 ||
           warnings.length > 0) && (
-          <div role="status">
+          <section
+            className={styles.card}
+            aria-labelledby="import-warnings-title"
+          >
+            <div className={styles.sectionHeading} data-tone="warning">
+              <TriangleAlert aria-hidden="true" />
+              <Heading as="h3" size="4" id="import-warnings-title">
+                {t('learningCompetencyMap.warnings')}
+              </Heading>
+            </div>
             {importLearningMap.data.unparsedTaskCellCount > 0 && (
               <Text as="p" color="gray" size="2">
                 {t('learningCompetencyMap.unparsed', {
@@ -446,96 +526,69 @@ export function CompetencyMapImport({
                 })}
               </Text>
             )}
-            {warnings.map((warning) => (
-              <Text as="p" key={warning.row} size="2">
-                {t('learningCompetencyMap.rowError', {
-                  row: warning.row,
-                  message: warning.reasons
-                    .map((reason) =>
-                      t(`learningCompetencyMap.warning.${reason.code}`, {
-                        defaultValue: t(
-                          'learningCompetencyMap.warning.unknown',
-                          { code: reason.code },
-                        ),
-                      }),
-                    )
-                    .join('; '),
-                })}
-              </Text>
-            ))}
-          </div>
-        )}
-
-      <AlertDialog.Root
-        open={confirming}
-        onOpenChange={(open) => {
-          if (!open) setConfirming(false)
-        }}
-      >
-        <AlertDialog.Content
-          maxWidth="440px"
-          onCloseAutoFocus={(event) => {
-            event.preventDefault()
-            submitRef.current?.focus()
-          }}
-        >
-          <AlertDialog.Title>
-            {t('learningCompetencyMap.confirmTitle')}
-          </AlertDialog.Title>
-          <AlertDialog.Description>
-            {t(
-              mode === 'both'
-                ? 'learningCompetencyMap.confirmHelpUnified'
-                : mode === 'exam'
-                  ? hasGraph
-                    ? 'courseGraph.mapImportReplace'
-                    : 'courseGraph.mapImportConfirm'
-                  : 'learningCompetencyMap.confirmHelp',
-              { filename: file?.name ?? '' },
+            {warnings.length > 0 && (
+              <div className={styles.tableScroll}>
+                <Table.Root variant="surface">
+                  <Table.Header>
+                    <Table.Row>
+                      <Table.ColumnHeaderCell>
+                        {t('learningCompetencyMap.row')}
+                      </Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>
+                        {t('learningCompetencyMap.reason')}
+                      </Table.ColumnHeaderCell>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
+                    {warnings.map((warning) => (
+                      <Table.Row key={warning.row}>
+                        <Table.RowHeaderCell>{warning.row}</Table.RowHeaderCell>
+                        <Table.Cell>
+                          {warning.reasons.map((reason) => (
+                            <Text
+                              as="p"
+                              size="2"
+                              key={reason.code}
+                              className={styles.warningReason}
+                            >
+                              <strong>{reason.columns.join(', ')}:</strong>{' '}
+                              {t(
+                                `learningCompetencyMap.warning.${reason.code}`,
+                                {
+                                  defaultValue: t(
+                                    'learningCompetencyMap.warning.unknown',
+                                    { code: reason.code },
+                                  ),
+                                },
+                              )}
+                            </Text>
+                          ))}
+                        </Table.Cell>
+                      </Table.Row>
+                    ))}
+                  </Table.Body>
+                </Table.Root>
+              </div>
             )}
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end">
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray">
-                {t('learningCompetencyMap.cancel')}
-              </Button>
-            </AlertDialog.Cancel>
-            <AlertDialog.Action>
-              <Button
-                color="red"
-                disabled={
-                  busy ||
-                  (mode === 'learn' &&
-                    (confirmedRevision === null ||
-                      learningMap.data?.revision !== confirmedRevision))
-                }
-                onClick={confirmImport}
-              >
-                {mode === 'learn'
-                  ? t('learningCompetencyMap.confirm')
-                  : t('courseGraph.mapImportStart')}
-              </Button>
-            </AlertDialog.Action>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
-    </section>
+          </section>
+        )}
+    </>
   )
 }
 
 const summaryRows = [
-  { key: 'competencyCount', icon: Layers },
-  { key: 'constituentCount', icon: Shapes },
-  { key: 'outcomeCount', icon: Target },
-  { key: 'taskCount', icon: ListChecks },
+  { key: 'competencyCount', icon: Layers, tone: 'blue' },
+  { key: 'constituentCount', icon: Shapes, tone: 'violet' },
+  { key: 'outcomeCount', icon: Target, tone: 'green' },
+  { key: 'taskCount', icon: ListChecks, tone: 'amber' },
 ] as const
 
 function MapSummary({ summary }: { summary: CompetencyMapSummary }) {
   const { t, i18n } = useTranslation()
   return (
     <dl className={styles.stats}>
-      {summaryRows.map(({ key, icon: Icon }) => (
-        <div key={key} className={styles.statRow}>
+      {summaryRows.map(({ key, icon: Icon, tone }) => (
+        <div key={key} className={styles.statRow} data-tone={tone}>
           <span className={styles.statIcon} aria-hidden="true">
             <Icon size={16} />
           </span>
@@ -544,17 +597,24 @@ function MapSummary({ summary }: { summary: CompetencyMapSummary }) {
         </div>
       ))}
       {summary.importedAt !== null && (
-        <div className={styles.statRow}>
+        <div className={styles.statRow} data-tone="gray">
           <span className={styles.statIcon} aria-hidden="true">
             <Clock size={16} />
           </span>
           <dt>{t('learningCompetencyMap.stats.importedAt')}</dt>
           <dd>
-            {new Date(summary.importedAt * 1000).toLocaleString(i18n.language)}
+            {new Date(summary.importedAt * 1000).toLocaleDateString(
+              i18n.language,
+              { dateStyle: 'medium' },
+            )}{' '}
+            {new Date(summary.importedAt * 1000).toLocaleTimeString(
+              i18n.language,
+              { timeStyle: 'short' },
+            )}
           </dd>
         </div>
       )}
-      <div className={styles.statRow}>
+      <div className={styles.statRow} data-tone="gray">
         <span className={styles.statIcon} aria-hidden="true">
           <History size={16} />
         </span>
