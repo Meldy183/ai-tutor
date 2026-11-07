@@ -117,6 +117,24 @@ func TestMapGraphSkipsACompetencyWithoutThreeOutcomes(t *testing.T) {
 	}
 }
 
+func TestCompetencyMapStructureKeysIncludesFalseAndUntaskedOutcomes(t *testing.T) {
+	rows := [][]string{mapHeaderRow,
+		mapRow("К1. Агент", "Входит в тест", "Помнить", "4", "TRUE", "Задание"),
+		mapRow("", "Не входит в тест", "Понимать", "3", "FALSE", "Задание"),
+		mapRow("", "Без задания", "Создавать", "2", "TRUE", ""),
+	}
+	keys, err := CompetencyMapStructureKeys(MapSheet{Name: "Geek", Rows: rows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{"входит в тест", "не входит в тест", "без задания"} {
+		want := "ор/к1. агент/1.1 составляющая/" + outcome
+		if !slices.Contains(keys, want) {
+			t.Errorf("structure keys %v missing %q", keys, want)
+		}
+	}
+}
+
 func TestMapGraphRenamesTheRubricOfTheMap(t *testing.T) {
 	reference, guidance := splitCriteria("Эталон: конфликт законов.\nДопустимо: «вред».\nАналитическая рубрика (макс. 2):\nК1 «Конфликт»: 1 — названы законы.\nК2 «Решение»: 1 — обосновано.")
 	if reference != "Эталон: конфликт законов.\nДопустимо: «вред»." {

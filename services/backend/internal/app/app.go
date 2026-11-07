@@ -189,7 +189,7 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 		}
 		learningMap, err := csvparser.ParseXLSXSheet(data, 1)
 		if err != nil {
-			return nil, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для обучения.")
+			return nil, nil, learningSheetParseFailure(err)
 		}
 		if err := competencymap.ValidateStructureKeys(geekMapKeys, learningMap); err != nil {
 			return nil, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_STRUCTURE_MISMATCH", err.Error())
@@ -206,6 +206,19 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	a.graphWorker.SetQuestions(builtQuestions{examiner: examiner, logger: logger.With(zap.String("worker", "graph_questions"))})
 
 	return a, nil
+}
+
+func learningSheetParseFailure(cause error) *fault.Error {
+	failure := fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для обучения.").WithCause(cause)
+	var parserFailure *fault.Error
+	if errors.As(cause, &parserFailure) {
+		failure.Details = make([]fault.Detail, len(parserFailure.Details))
+		for i, detail := range parserFailure.Details {
+			detail.Path = "sheet:2/" + detail.Path
+			failure.Details[i] = detail
+		}
+	}
+	return failure
 }
 
 // Close releases the app's connections once requests have finished.

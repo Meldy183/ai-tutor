@@ -55,15 +55,16 @@ func (s *Service) ImportForSubject(ctx context.Context, actor user.User, subject
 		media != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
 		return competencymap.ImportResult{}, fault.New(fault.Unsupported, "UNSUPPORTED_MEDIA_TYPE", "Ожидается файл CSV или XLSX.")
 	}
-	if media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
-		if counter, ok := s.parser.(XLSXSheetCounter); ok {
-			count, countErr := counter.XLSXSheetCount(data)
-			if countErr != nil {
-				return competencymap.ImportResult{}, countErr
-			}
-			if count > 1 {
-				return competencymap.ImportResult{}, fault.New(fault.Conflict, "UNIFIED_COMPETENCY_MAP_REQUIRED", "Двухлистовую карту загрузите один раз через импорт графа курса: так обе части карты будут опубликованы вместе.")
-			}
+	if counter, ok := s.parser.(XLSXSheetCounter); ok {
+		count, countErr := counter.XLSXSheetCount(data)
+		if countErr == nil && count > 1 {
+			return competencymap.ImportResult{}, fault.New(fault.Conflict, "UNIFIED_COMPETENCY_MAP_REQUIRED", "Двухлистовую карту загрузите один раз через импорт графа курса: так обе части карты будут опубликованы вместе.")
+		}
+		// Content may be an XLSX even when the client supplies a CSV MIME type.
+		// If it is not valid XLSX, let Parse return the format-specific error;
+		// only trust the counter's error when the request claims XLSX.
+		if countErr != nil && media == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
+			return competencymap.ImportResult{}, countErr
 		}
 	}
 	parsed, err := s.parser.Parse(data)

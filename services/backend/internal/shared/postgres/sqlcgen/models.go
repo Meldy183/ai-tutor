@@ -338,8 +338,9 @@ type LearningSession struct {
 }
 
 type LearningSubjectState struct {
-	SubjectID      string
-	ActiveRevision *int64
+	SubjectID       string
+	ActiveRevision  *int64
+	PendingRevision *int64
 }
 
 type LearningTask struct {

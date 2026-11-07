@@ -39,6 +39,7 @@ import {
   useImportCompetencyMapMutation as useImportCourseMapMutation,
   useLatestCourseGraphBuildQuery,
 } from '@/features/course-graph-build'
+import { selectVisibleMapBuild } from '../model/select-visible-map-build'
 import styles from './competency-map.module.scss'
 
 type ImportMode = 'learn' | 'exam' | 'both'
@@ -330,12 +331,12 @@ export function CompetencyMapImport({
     importCourseMap.data?.map?.fingerprint === pairedFingerprint
       ? importCourseMap.data
       : null
-  const latestBuildIsNewImport =
-    latestMapBuild !== null && latestMapBuild.id !== previousBuildId.current
-  const visibleMapBuild =
-    uploadedMapBuild ??
-    (latestBuildIsNewImport ? latestMapBuild : null) ??
-    (pairedFingerprint === null ? latestMapBuild : null)
+  const visibleMapBuild = selectVisibleMapBuild({
+    latest: latestMapBuild,
+    uploaded: uploadedMapBuild,
+    pairedFingerprint,
+    previousBuildId: previousBuildId.current,
+  })
   const mapBuildPending =
     visibleMapBuild?.status === 'queued' ||
     visibleMapBuild?.status === 'running'
@@ -606,7 +607,19 @@ export function CompetencyMapImport({
               <ul>
                 {details.map((detail, index) => (
                   <li key={`${detail.path ?? ''}:${index}`}>
-                    {detail.message}
+                    {(() => {
+                      const location = /^(?:sheet:(\d+)\/)?row:(\d+)$/.exec(
+                        detail.path ?? '',
+                      )
+                      return location
+                        ? t('learningCompetencyMap.rowError', {
+                            row: location[1]
+                              ? `лист ${location[1]}, ${location[2]}`
+                              : location[2],
+                            message: detail.message,
+                          })
+                        : detail.message
+                    })()}
                   </li>
                 ))}
               </ul>

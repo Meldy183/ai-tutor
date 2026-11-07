@@ -27,16 +27,10 @@ import { CompetencyMapApiError } from '@/entities/learning-competency-map'
 import { useAuth } from '@/features/auth'
 import {
   useCompetencyMapQuery,
-  hasMultipleXlsxSheets,
   useImportCompetencyMapMutation,
 } from '@/features/import-learning-competency-map'
 import type { CompetencyMapSummary } from '@/entities/learning-competency-map'
 import { useSubjectsQuery } from '@/features/learning-subject-selection'
-import {
-  useImportCompetencyMapMutation as useImportUnifiedMapMutation,
-  useLatestCourseGraphBuildQuery,
-} from '@/features/course-graph-build'
-import { CourseGraphApiError } from '@/entities/course-graph'
 import styles from '@/pages/learning-competency-map/ui/competency-map.module.scss'
 import { groupWarnings } from '../model/import-warnings'
 import { AdminCourseDetailShell } from '@/widgets/admin-course-detail-shell'
@@ -76,8 +70,6 @@ function CompetencyMapAdmin({
   const subjectId = selectedSubjectId
   const query = useCompetencyMapQuery(userId, subjectId)
   const upload = useImportCompetencyMapMutation(userId, subjectId)
-  const unifiedUpload = useImportUnifiedMapMutation(userId, subjectId)
-  const graphBuild = useLatestCourseGraphBuildQuery(userId, subjectId)
   const refetchSubjects = subjects.refetch
   const missingMapCourse =
     subject !== undefined &&
@@ -112,61 +104,6 @@ function CompetencyMapAdmin({
   const submitRef = useRef<HTMLButtonElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
-  const [pairedWorkbook, setPairedWorkbook] = useState(false)
-  const [checkingWorkbook, setCheckingWorkbook] = useState(false)
-  const [unifiedFingerprint, setUnifiedFingerprint] = useState<string | null>(
-    null,
-  )
-  const [unifiedBuildObserved, setUnifiedBuildObserved] = useState(false)
-
-  useEffect(() => {
-    if (!file || !/\.xlsx$/i.test(file.name)) {
-      setPairedWorkbook(false)
-      setCheckingWorkbook(false)
-      return
-    }
-    setCheckingWorkbook(true)
-    let cancelled = false
-    void hasMultipleXlsxSheets(file)
-      .then((paired) => {
-        if (!cancelled) {
-          setPairedWorkbook(paired)
-          setCheckingWorkbook(false)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPairedWorkbook(false)
-          setCheckingWorkbook(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [file])
-
-  useEffect(() => {
-    const build = graphBuild.data
-    if (!unifiedFingerprint || build?.map?.fingerprint !== unifiedFingerprint)
-      return
-    if (build.status === 'queued' || build.status === 'running') {
-      setUnifiedBuildObserved(true)
-      return
-    }
-    if (build.status === 'succeeded' && unifiedBuildObserved) {
-      setUnifiedFingerprint(null)
-      setUnifiedBuildObserved(false)
-      setFile(null)
-      void query.refetch()
-    }
-  }, [
-    graphBuild.data?.map?.fingerprint,
-    graphBuild.data?.status,
-    unifiedFingerprint,
-    unifiedBuildObserved,
-    query.refetch,
-  ])
-
   // A file the server rejected (format or size) is dropped, so there is
   // nothing left to confirm; technical failures keep it for a retry.
   const settleFile = {
@@ -182,11 +119,6 @@ function CompetencyMapAdmin({
 
   function selectFile(selected: File | undefined) {
     upload.reset()
-    unifiedUpload.reset()
-    setUnifiedFingerprint(null)
-    setUnifiedBuildObserved(false)
-    setPairedWorkbook(false)
-    setCheckingWorkbook(false)
     setRevisionChanged(false)
     setFile(null)
     setFileError(null)
@@ -204,53 +136,16 @@ function CompetencyMapAdmin({
       return
     }
     setFile(selected)
-    setCheckingWorkbook(/\.xlsx$/i.test(selected.name))
   }
 
   function submitMap(expectedRevision: number) {
-    if (!file) return
-    if (pairedWorkbook) {
-      unifiedUpload.mutate(
-        { file },
-        {
-          onSuccess: (build) => {
-            setUnifiedFingerprint(build.map?.fingerprint ?? null)
-            setUnifiedBuildObserved(
-              build.status === 'queued' || build.status === 'running',
-            )
-            void graphBuild.refetch()
-          },
-          onError: (error) => {
-            if (
-              error instanceof CourseGraphApiError &&
-              [400, 413, 415, 422].includes(error.status)
-            )
-              setFile(null)
-          },
-        },
-      )
-      return
-    }
-    upload.mutate({ file, subjectId, expectedRevision }, settleFile)
+    if (file) upload.mutate({ file, subjectId, expectedRevision }, settleFile)
   }
 
-  const unifiedBuildError =
-    unifiedFingerprint &&
-    graphBuild.data?.map?.fingerprint === unifiedFingerprint &&
-    graphBuild.data.status === 'failed'
-      ? (graphBuild.data.error?.message ??
-        t('learningCompetencyMap.unifiedBuildFailed'))
-      : null
-  const unifiedBuildRunning =
-    unifiedFingerprint !== null && unifiedBuildError === null
-  const busy =
-    upload.isPending ||
-    unifiedUpload.isPending ||
-    unifiedBuildRunning ||
-    checkingWorkbook
+  const busy = upload.isPending
   const mapUnavailable = busy || query.isFetching || !query.isSuccess
   const warningGroups = groupWarnings(upload.data?.warnings ?? [])
-  const error = upload.error ?? unifiedUpload.error
+  const error = upload.error
   return (
     <AdminCourseDetailShell
       active="learn"
@@ -329,50 +224,19 @@ function CompetencyMapAdmin({
                 {fileError}
               </Text>
             )}
-            {checkingWorkbook && (
-              <Text as="p" role="status" size="2">
-                {t('learningCompetencyMap.checkingWorkbook')}
-              </Text>
-            )}
-            {busy && !checkingWorkbook && (
+            {busy && (
               <Text as="p" role="status" size="2">
                 {t('learningCompetencyMap.uploading')}
               </Text>
             )}
-            {unifiedFingerprint && !unifiedBuildError && (
-              <Text as="p" role="status" size="2">
-                {t('learningCompetencyMap.preparingUnified')}
-              </Text>
-            )}
-            {unifiedBuildError && (
-              <Flex gap="3" align="center" wrap="wrap">
-                <Text as="p" role="alert" color="red" size="2">
-                  {unifiedBuildError}
-                </Text>
-                <Button
-                  variant="soft"
-                  onClick={() =>
-                    void navigate({
-                      to: '/admin/courses/$subjectId',
-                      params: { subjectId },
-                      search: { direction: 'exam' },
-                    })
-                  }
-                >
-                  {t('learningCompetencyMap.openGeekMap')}
-                </Button>
-              </Flex>
-            )}
             {error && (
               <div role="alert" className={styles.error}>
                 <Text as="p">
-                  {error instanceof CompetencyMapApiError ||
-                  error instanceof CourseGraphApiError
+                  {error instanceof CompetencyMapApiError
                     ? error.message
                     : t('learningCompetencyMap.unknownResult')}
                 </Text>
-                {(error instanceof CompetencyMapApiError ||
-                  error instanceof CourseGraphApiError) &&
+                {error instanceof CompetencyMapApiError &&
                   error.details.length > 0 && (
                     <ul>
                       {error.details.map((detail, index) => (
@@ -425,11 +289,7 @@ function CompetencyMapAdmin({
                       {t('learningCompetencyMap.confirmTitle')}
                     </AlertDialog.Title>
                     <AlertDialog.Description>
-                      {t(
-                        pairedWorkbook
-                          ? 'learningCompetencyMap.confirmHelpUnified'
-                          : 'learningCompetencyMap.confirmHelp',
-                      )}
+                      {t('learningCompetencyMap.confirmHelp')}
                     </AlertDialog.Description>
                     <Flex gap="3" mt="5" justify="end" wrap="wrap">
                       <AlertDialog.Cancel>

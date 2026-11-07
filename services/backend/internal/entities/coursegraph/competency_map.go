@@ -234,7 +234,7 @@ func CompetencyMapStructureKeys(sheet MapSheet) ([]string, error) {
 	if !valid {
 		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("На листе «%s» нет обязательных колонок карты.", sheet.Name)}
 	}
-	outcomes, groups, issues := readMapOutcomes(sheet.Rows)
+	_, groups, issues := readMapOutcomes(sheet.Rows)
 	if len(issues) > 0 {
 		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet.Name), Issues: issues}
 	}
@@ -254,8 +254,32 @@ func CompetencyMapStructureKeys(sheet MapSheet) ([]string, error) {
 			keys = append(keys, constituentKey)
 		}
 	}
-	for _, outcome := range outcomes {
-		keys = append(keys, "ор/"+normalizeMapKey(outcome.competency)+"/"+normalizeMapKey(outcome.constituent)+"/"+normalizeMapKey(outcome.outcome))
+	layout, _ := mapHeader(sheet.Rows)
+	competency, constituent := "", ""
+	for i := layout.header + 1; i < len(sheet.Rows); i++ {
+		row := sheet.Rows[i]
+		if blank(row) {
+			continue
+		}
+		cell := func(key string) string {
+			index, ok := layout.columns[key]
+			if !ok || index >= len(row) {
+				return ""
+			}
+			return strings.TrimSpace(row[index])
+		}
+		if value := cell("competency"); value != "" {
+			if value != competency {
+				constituent = ""
+			}
+			competency = value
+		}
+		if value := cell("constituent"); value != "" {
+			constituent = value
+		}
+		if outcome := cell("outcome"); outcome != "" {
+			keys = append(keys, "ор/"+normalizeMapKey(competency)+"/"+normalizeMapKey(constituent)+"/"+normalizeMapKey(outcome))
+		}
 	}
 	slices.Sort(keys)
 	return keys, nil

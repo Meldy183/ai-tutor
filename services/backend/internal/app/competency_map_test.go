@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/csvparser"
 	competencypg "github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/postgres"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/infrastructure/postgres"
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
 )
 
 // mapBook is a competency map book of one sheet in the course template:
@@ -462,6 +464,88 @@ func TestLearningImportRejectsPairedWorkbookToPreventIndependentPublication(t *t
 	}
 	if imports != 0 || maps != 0 {
 		t.Fatalf("rejected independent import stored data: learning=%d graph=%d", imports, maps)
+	}
+}
+
+func TestLearningImportRejectsPairedWorkbookRegardlessOfMime(t *testing.T) {
+	t.Parallel()
+	for _, media := range []string{"application/vnd.ms-excel", "application/csv", "text/csv"} {
+		t.Run(media, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			admin := f.admin(t)
+			response := upload(f, "/learn/admin/subjects/subject:test/competency-map/import", "file", "map.xlsx", media, pairedMapBook(t, false), admin)
+			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "UNIFIED_COMPETENCY_MAP_REQUIRED") {
+				t.Fatalf("mislabeled paired workbook should require unified upload: %d %s", response.Code, response.Body.String())
+			}
+			var imports int
+			if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'`).Scan(&imports); err != nil {
+				t.Fatal(err)
+			}
+			if imports != 0 {
+				t.Fatalf("rejected paired workbook persisted %d learning maps", imports)
+			}
+		})
+	}
+}
+
+func TestPairedMapReportsLearningSheetParserDetails(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	book := excelize.NewFile()
+	defer book.Close()
+	first := book.GetSheetName(0)
+	if err := book.SetSheetName(first, "Карта компетенций"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := book.NewSheet("Учебная карта"); err != nil {
+		t.Fatal(err)
+	}
+	for _, sheet := range []string{"Карта компетенций", "Учебная карта"} {
+		rows := [][]interface{}{
+			{"№", "Субкомпетенция (Proficiency)", "Составляющая (Observe)", "Образовательный результат (Observe Behaviour)", "Уровень по Блуму", "Важность (1–5)", "Что должно войти в тест", "Задание (устная инструкция)", "Критерии оценивания"},
+			{"1", "К1", "Составляющая", "ОР 1", "Помнить", "4", "TRUE", "Задание 1", "Критерий"},
+			{"2", "", "", "ОР 2", "Понимать", "3", "TRUE", "Задание 2", "Критерий"},
+			{"3", "", "", "ОР 3", "Применять", "3", "TRUE", "Задание 3", "Критерий"},
+		}
+		if sheet == "Учебная карта" {
+			rows[0][0] = "Неизвестная колонка"
+		}
+		for i, row := range rows {
+			if err := book.SetSheetRow(sheet, fmt.Sprintf("A%d", i+1), &row); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	buffer, err := book.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer.Bytes(), admin, "X-Expected-Learning-Revision", "0")
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"path":"sheet:2/row:1"`) || !strings.Contains(response.Body.String(), `"details"`) {
+		t.Fatalf("learning parser detail should identify sheet and row: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLearningSheetParseFailurePreservesSafeDetailsAndCause(t *testing.T) {
+	underlying := errors.New("internal parser diagnostic")
+	parserFailure := fault.New(fault.Invalid, "CSV_INVALID", "Некорректная карта.").WithCause(underlying)
+	parserFailure.Details = []fault.Detail{{Path: "row:7", Code: "CSV_INVALID", Message: "Важность: ожидается число."}}
+
+	failure := learningSheetParseFailure(parserFailure)
+	if !errors.Is(failure, underlying) {
+		t.Fatalf("parser cause was not preserved: %v", failure)
+	}
+	if len(failure.Details) != 1 || failure.Details[0].Path != "sheet:2/row:7" || failure.Details[0].Message != "Важность: ожидается число." {
+		t.Fatalf("safe parser detail lost sheet/row context: %+v", failure.Details)
+	}
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), underlying.Error()) {
+		t.Fatalf("internal cause leaked to the client: %s", encoded)
 	}
 }
 
