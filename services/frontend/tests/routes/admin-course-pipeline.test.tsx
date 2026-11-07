@@ -130,9 +130,11 @@ function setup({
         {
           id: 'subject-b',
           name: 'Второй курс',
-          ready: graphReady || hasSavedMap || (mapImported && !pairedMapImported),
+          ready:
+            graphReady || hasSavedMap || (mapImported && !pairedMapImported),
           learning_ready: activeLearningRevision > 0,
-          exam_ready: graphReady || hasSavedMap || (mapImported && !pairedMapImported),
+          exam_ready:
+            graphReady || hasSavedMap || (mapImported && !pairedMapImported),
           preparation: {
             exam:
               graphReady ||
@@ -150,8 +152,12 @@ function setup({
                       stale: mapState.stale,
                     }
                   : mapImported || mapState.pending
-                  ? { state: 'queued', source: 'competency_map', stale: false }
-                  : { state: 'empty', source: null, stale: false },
+                    ? {
+                        state: 'queued',
+                        source: 'competency_map',
+                        stale: false,
+                      }
+                    : { state: 'empty', source: null, stale: false },
             learn: {
               state: activeLearningRevision > 0 ? 'ready' : 'empty',
             },
@@ -362,7 +368,9 @@ function setup({
             filename: 'map.xlsx',
             sheet: 'Карта компетенций v2',
             fingerprint: mapState.fingerprint,
-            learning_revision: pairedMapImported ? activeLearningRevision : null,
+            learning_revision: pairedMapImported
+              ? activeLearningRevision
+              : null,
           },
           graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
@@ -420,14 +428,17 @@ function setup({
         },
         graph_source: 'competency_map',
         graph_fingerprint: mapState.fingerprint,
-        graph_map_revision: mapState.learningRevision ?? activeLearningRevision,
+        graph_map_revision:
+          mapState.publishedRevision ??
+          (activeLearningRevision > 0 ? activeLearningRevision : null),
         build_source: 'competency_map',
         map: {
           filename: 'map.xlsx',
           sheet: 'Карта компетенций v2',
           fingerprint: mapState.fingerprint,
           learning_revision:
-            mapState.learningRevision ?? activeLearningRevision,
+            mapState.learningRevision ??
+            (activeLearningRevision > 0 ? activeLearningRevision : null),
         },
         stale: mapState.stale,
         inputs_ready: true,
@@ -840,6 +851,19 @@ function pairedWorkbook() {
   )
 }
 
+function singleWorkbook() {
+  return new File(
+    [
+      zipSync({
+        'xl/workbook.xml': new TextEncoder().encode(
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Карта" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        ),
+      }),
+    ],
+    'map.xlsx',
+  )
+}
+
 it('shows immediate learning readiness and a pending Geek build after page reload', async () => {
   setup({
     materials: [],
@@ -1040,15 +1064,28 @@ it('keeps imported learning warnings in a readable row and reason table', async 
 it('builds the graph from the first sheet of a competency map', async () => {
   const calls = setup({ competencyMap: 'valid' })
   open()
-  await chooseMap()
-  fireEvent.click(
-    await screen.findByRole('button', {
-      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
-    }),
-  )
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [singleWorkbook()] },
+  })
+  const modePicker = await screen.findByRole('radiogroup', {
+    name: 'Куда загрузить однолистовую карту?',
+  })
+  fireEvent.click(within(modePicker).getByRole('radio', { name: 'Граф Geek' }))
+  const submit = screen.getByRole('button', { name: 'Импортировать' })
+  await waitFor(() => expect(submit).toBeEnabled())
+  fireEvent.click(submit)
   const dialog = await screen.findByRole('alertdialog')
   expect(within(dialog).getByText(/по карте «map\.xlsx»/)).toBeVisible()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
+  const confirm = within(dialog).getByRole('button', { name: 'Импортировать' })
+  await waitFor(() => expect(confirm).toBeEnabled())
+  fireEvent.click(confirm)
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith('/graph/competency-map'),
+      ),
+    ).toBe(true),
+  )
   expect(
     await screen.findByText('По карте компетенций', undefined, {
       timeout: 8000,
@@ -1101,9 +1138,11 @@ it('imports a map through the shared course ID and activates learning while Geek
   expect(await screen.findByText(/Geek: готовится версия 1/)).toBeVisible()
   finishBuild()
   expect(
-    await screen.findByText('Курс готов для студентов. В графе тем: 2.', {
-      timeout: 8000,
-    }),
+    await screen.findByText(
+      'Курс готов для студентов. В графе тем: 2.',
+      undefined,
+      { timeout: 8000 },
+    ),
   ).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-b')
   expect(router.state.location.search).toEqual({ direction: 'exam' })
