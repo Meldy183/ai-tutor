@@ -354,15 +354,19 @@ function delayedTurnAudio(delay: number) {
       (_url, options: RequestInit) =>
         new Promise<Response>((resolve, reject) => {
           const signal = options.signal!
-          const timer = setTimeout(
-            () =>
-              resolve(
-                new Response(new Uint8Array([82, 73, 70, 70]), {
-                  headers: { 'Content-Type': 'audio/wav' },
-                }),
-              ),
-            delay,
-          )
+          const timer = setTimeout(() => {
+            const response = new Response(null, {
+              headers: { 'Content-Type': 'audio/wav' },
+            })
+            // Node 22 fetch and jsdom use different Blob realms. Model a
+            // browser response whose blob belongs to the application's realm.
+            vi.spyOn(response, 'blob').mockResolvedValue(
+              new Blob([new Uint8Array([82, 73, 70, 70])], {
+                type: 'audio/wav',
+              }),
+            )
+            resolve(response)
+          }, delay)
           const abort = () => {
             clearTimeout(timer)
             reject(signal.reason)
@@ -377,8 +381,11 @@ function delayedTurnAudio(delay: number) {
 it('waits for a queued multi-part turn synthesis within the backend budget', async () => {
   delayedTurnAudio(325_000)
   const checked = expect(
-    fetchTurnAudio('d1', 't1', signal()),
-  ).resolves.toMatchObject({ type: 'audio/wav', size: 4 })
+    fetchTurnAudio('d1', 't1', signal()).then((audio) => ({
+      type: audio.type,
+      size: audio.size,
+    })),
+  ).resolves.toEqual({ type: 'audio/wav', size: 4 })
   await vi.advanceTimersByTimeAsync(325_000)
   await checked
 })
