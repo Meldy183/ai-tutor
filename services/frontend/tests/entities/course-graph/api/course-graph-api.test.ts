@@ -307,18 +307,35 @@ it('imports a competency map as multipart and reads the graph of the map', async
         sheet: 'Карта',
         learning_revision: 7,
       },
+      learning_warnings: [
+        {
+          row: 9,
+          column_index: 5,
+          column: 'Важность',
+          code: 'LEGACY_IMPORTANCE_UNPARSED',
+        },
+      ],
     }),
     202,
   )
   const file = new File(['PK'], 'map.xlsx')
-  const build = await importCompetencyMap('course/1', file, signal())
+  const build = await importCompetencyMap('course/1', file, signal(), 7)
   expect(build.status).toBe('queued')
   expect(build.source).toBe('competency_map')
+  expect(build.learningWarnings).toEqual([
+    {
+      row: 9,
+      column_index: 5,
+      column: 'Важность',
+      code: 'LEGACY_IMPORTANCE_UNPARSED',
+    },
+  ])
   const [url, init] = fetchMock.mock.calls[0]
   expect(url).toBe(
     '/api/v1/exam/admin/subjects/course%2F1/graph/competency-map',
   )
   expect(init.method).toBe('POST')
+  expect(init.headers).toMatchObject({ 'X-Expected-Learning-Revision': '7' })
   expect((init.body as FormData).get('file')).toBe(file)
   expect((init.body as FormData).has('sheet')).toBe(false)
 

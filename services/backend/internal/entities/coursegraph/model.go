@@ -55,6 +55,16 @@ type Snapshot struct {
 	// Progress is where a running build is; only while Status is processing.
 	// It lives in API memory, so after a restart it returns with the next poll.
 	Progress *BuildProgress `json:"progress" extensions:"x-nullable"`
+	// LearningWarnings are parser warnings from the second sheet of the
+	// just-imported paired workbook; they are not persisted in the map snapshot.
+	LearningWarnings []ImportWarning `json:"learning_warnings"`
+}
+
+type ImportWarning struct {
+	Row         int    `json:"row"`
+	ColumnIndex int    `json:"column_index"`
+	Column      string `json:"column"`
+	Code        string `json:"code"`
 }
 
 // MapFile is the competency map imported last and the sheet it was read from.

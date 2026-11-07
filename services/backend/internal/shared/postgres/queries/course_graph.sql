@@ -65,10 +65,6 @@ WITH accepted AS (
       AND j.fingerprint=sqlc.arg(fingerprint)
       AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=sqlc.arg(subject_id)
                  AND i.source=j.source AND i.fingerprint=sqlc.arg(fingerprint))
-      AND (j.source <> 'competency_map' OR NOT EXISTS (
-          SELECT 1 FROM course_graph_maps m WHERE m.subject_id=j.subject_id AND m.learning_revision IS NOT NULL
-            AND NOT EXISTS (SELECT 1 FROM learning_subject_state state
-                            WHERE state.subject_id=j.subject_id AND state.active_revision=m.learning_revision)))
     RETURNING j.subject_id, j.source, j.fingerprint
 ), published AS (
 INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at,map_revision)

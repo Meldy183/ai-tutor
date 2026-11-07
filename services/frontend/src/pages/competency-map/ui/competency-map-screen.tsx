@@ -220,6 +220,7 @@ function CompetencyMapAdmin({
     startBuild.isPending ||
     latestBuild.data?.status === 'queued' ||
     latestBuild.data?.status === 'running'
+  const uploadsBlocked = busy || graphBuilding || !latestBuild.isSuccess
   const canSkipCriteria =
     !graphBuilding &&
     !courseGraph.data?.stale &&
@@ -400,7 +401,7 @@ function CompetencyMapAdmin({
             userId={userId}
             subjectId={subjectId}
             hasGraph={hasGraph}
-            disabled={graphBuilding}
+            disabled={uploadsBlocked}
             map={courseGraph.data?.map}
             legacyDirection={legacyDirection ?? 'learn'}
           />
@@ -439,7 +440,7 @@ function CompetencyMapAdmin({
 
             <MaterialUploadQueueToolbar
               queue={queue}
-              disabled={busy || graphBuilding}
+              disabled={uploadsBlocked}
             />
             {graphBuilding && (
               <Text as="p" role="status" color="gray" size="2">
@@ -590,7 +591,7 @@ function CompetencyMapAdmin({
                               file,
                             })
                           }
-                          busy={busy}
+                          busy={busy || !latestBuild.isSuccess}
                         />
                       )}
                     </div>
@@ -598,10 +599,7 @@ function CompetencyMapAdmin({
                 })}
               </div>
             )}
-            <MaterialUploadSubmit
-              queue={queue}
-              disabled={busy || graphBuilding}
-            />
+            <MaterialUploadSubmit queue={queue} disabled={uploadsBlocked} />
           </section>
 
           <section className={styles.card} aria-labelledby="graph-title">

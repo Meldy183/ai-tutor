@@ -77,12 +77,26 @@ func newFixture(t *testing.T) *fixture {
 	return newFixtureWithConfig(t, testConfig())
 }
 
+func newFixtureWithMaxConns(t *testing.T, maxConns int32) *fixture {
+	t.Helper()
+	return newFixtureWithMaxConnsConfig(t, testConfig(), maxConns)
+}
+
 func newFixtureWithConfig(t *testing.T, cfg Config) *fixture {
 	t.Helper()
 	return newFixtureWithPasswordHasher(t, cfg, fixturePasswordHasher{})
 }
 
 func newFixtureWithPasswordHasher(t *testing.T, cfg Config, hasher authapp.PasswordHasher) *fixture {
+	return newFixtureWithMaxConnsConfigAndHasher(t, cfg, 4, hasher)
+}
+
+func newFixtureWithMaxConnsConfig(t *testing.T, cfg Config, maxConns int32) *fixture {
+	t.Helper()
+	return newFixtureWithMaxConnsConfigAndHasher(t, cfg, maxConns, fixturePasswordHasher{})
+}
+
+func newFixtureWithMaxConnsConfigAndHasher(t *testing.T, cfg Config, maxConns int32, hasher authapp.PasswordHasher) *fixture {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -106,7 +120,7 @@ func newFixtureWithPasswordHasher(t *testing.T, cfg Config, hasher authapp.Passw
 		t.Fatal(err)
 	}
 	pc.ConnConfig.RuntimeParams["search_path"] = schema
-	pc.MaxConns = 4
+	pc.MaxConns = maxConns
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		t.Fatal(err)
@@ -470,6 +484,10 @@ func TestAuthPostRequestsHaveNoSharedIPLimit(t *testing.T) {
 }
 
 func upload(f *fixture, path, field, filename, media string, data []byte, cookie *http.Cookie) *httptest.ResponseRecorder {
+	return uploadWithHeader(f, path, field, filename, media, data, cookie, "", "")
+}
+
+func uploadWithHeader(f *fixture, path, field, filename, media string, data []byte, cookie *http.Cookie, key, value string) *httptest.ResponseRecorder {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	h := make(textproto.MIMEHeader)
@@ -480,6 +498,9 @@ func upload(f *fixture, path, field, filename, media string, data []byte, cookie
 	_ = mw.Close()
 	r := httptest.NewRequest("POST", "https://api.example"+examTestPath(path), &body)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
+	if key != "" {
+		r.Header.Set(key, value)
+	}
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}

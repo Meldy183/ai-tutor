@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/material"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
@@ -45,6 +46,9 @@ func (r requestRepo) RetryMap(context.Context, string, string, time.Time) (bool,
 }
 func (r requestRepo) SaveMap(context.Context, string, string, string, json.RawMessage, time.Time) (bool, error) {
 	return r.queued, nil
+}
+func (r requestRepo) SaveMapWithLearning(context.Context, string, string, string, json.RawMessage, time.Time, string, int64, *competencymap.Map) (bool, int64, error) {
+	return r.queued, 1, nil
 }
 func (r requestRepo) SaveMapIfCurrent(context.Context, string, string, string, json.RawMessage, string, time.Time) (bool, error) {
 	return r.queued, nil
@@ -239,6 +243,17 @@ func (r mapRepo) SaveMap(_ context.Context, _, _, sheet string, graph json.RawMe
 	*r.saved, *r.sheet = graph, sheet
 	return true, nil
 }
+func (r mapRepo) SaveMapWithLearning(_ context.Context, _, _, sheet string, graph json.RawMessage, _ time.Time, _ string, _ int64, _ *competencymap.Map) (bool, int64, error) {
+	if !r.queued {
+		return false, 0, nil
+	}
+	var payload map[string]json.RawMessage
+	_ = json.Unmarshal(graph, &payload)
+	payload["learning_revision"], _ = json.Marshal(42)
+	graph, _ = json.Marshal(payload)
+	*r.saved, *r.sheet = graph, sheet
+	return true, 42, nil
+}
 
 func mapRows(competencies ...string) [][]string {
 	rows := [][]string{{"№", "Субкомпетенция (Proficiency)", "Составляющая (Observe)", "Образовательный результат (Observe Behaviour)",
@@ -261,20 +276,24 @@ func TestImportMapQueuesTheGraphOfTheMap(t *testing.T) {
 	}
 	repo := mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}, saved: &saved, sheet: &sheet, queued: true}
 	w := New(repo, nil, nil, nil, nil, read)
-	w.SetLearningMapStager(func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (int64, error) {
-		return 42, nil
+	w.SetLearningMapImporter(func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (*competencymap.Map, []coursegraph.ImportWarning, error) {
+		return &competencymap.Map{}, []coursegraph.ImportWarning{{Row: 5, ColumnIndex: 4, Column: "Задание", Code: "TASK_FRAGMENT"}}, nil
 	})
-	if _, err := w.ImportMap(context.Background(), user.User{ID: "s", Role: user.Student}, "subject", "map.xlsx", nil); !isFault(err, "FORBIDDEN") {
+	if _, err := w.ImportMap(context.Background(), user.User{ID: "s", Role: user.Student}, "subject", "map.xlsx", nil, 0); !isFault(err, "FORBIDDEN") {
 		t.Fatalf("student import: %v", err)
 	}
-	if _, err := w.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil); err != nil {
+	snapshot, err := w.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil, 0)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(snapshot.LearningWarnings) != 1 || snapshot.LearningWarnings[0].Code != "TASK_FRAGMENT" {
+		t.Fatalf("learning parser warnings were lost: %+v", snapshot.LearningWarnings)
 	}
 	if sheet != "Карта" || !strings.Contains(string(saved), `"version":"competency-map-v1"`) || !strings.Contains(string(saved), `"learning_revision":42`) {
 		t.Fatalf("saved sheet %q graph %s", sheet, saved)
 	}
 	busy := New(mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "processing"}}, saved: &saved, sheet: &sheet}, nil, nil, nil, nil, read)
-	if _, err := busy.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil); !isFault(err, "GRAPH_BUILD_IN_PROGRESS") {
+	if _, err := busy.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil, 0); !isFault(err, "GRAPH_BUILD_IN_PROGRESS") {
 		t.Fatalf("import during a build: %v", err)
 	}
 }
@@ -286,14 +305,14 @@ func TestImportMapReadsTheFirstSheetAndNamesBadCells(t *testing.T) {
 		return []coursegraph.MapSheet{{Name: "Карта", Rows: bad}, {Name: "Карта_ВСЯ", Rows: mapRows("К1. Агенты")}}, nil
 	}
 	w := New(mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}}, nil, nil, nil, nil, read)
-	_, err := w.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil)
+	_, err := w.ImportMap(context.Background(), admin, "subject", "map.xlsx", nil, 0)
 	var f *fault.Error
 	if !errors.As(err, &f) || f.Code != "COMPETENCY_MAP_INVALID" || len(f.Details) != 1 || !strings.Contains(f.Details[0].Message, "Строка 3, «Уровень по Блуму»") {
 		t.Fatalf("bad cell: %+v", err)
 	}
 	unreadable := New(mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}}, nil, nil, nil, nil,
 		func([]byte) ([]coursegraph.MapSheet, error) { return nil, errors.New("zip") })
-	if _, err := unreadable.ImportMap(context.Background(), admin, "subject", "map.pdf", nil); !isFault(err, "COMPETENCY_MAP_INVALID") {
+	if _, err := unreadable.ImportMap(context.Background(), admin, "subject", "map.pdf", nil, 0); !isFault(err, "COMPETENCY_MAP_INVALID") {
 		t.Fatalf("unreadable book: %v", err)
 	}
 }
@@ -305,7 +324,7 @@ func TestImportMapKeepsTheExactNameOfTheFirstSheet(t *testing.T) {
 		return []coursegraph.MapSheet{{Name: "Карта ", Rows: mapRows("К1. Агенты")}, {Name: "Карта_ВСЯ", Rows: mapRows("К2. Логика")}}, nil
 	}
 	repo := mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}, saved: &saved, sheet: &sheet, queued: true}
-	if _, err := New(repo, nil, nil, nil, nil, read).ImportMap(context.Background(), admin, "subject", "map.xlsx", nil); err != nil {
+	if _, err := New(repo, nil, nil, nil, nil, read).ImportMap(context.Background(), admin, "subject", "map.xlsx", nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if sheet != "Карта " || !strings.Contains(string(saved), "К1. Агенты") {
@@ -511,7 +530,7 @@ func TestImportMapLogsFallbackCriteriaOnlyAfterSaving(t *testing.T) {
 			var saved json.RawMessage
 			var sheet string
 			repo := mapRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready"}}, saved: &saved, sheet: &sheet, queued: tc.queued}
-			_, err := New(repo, nil, nil, nil, nil, read).ImportMap(ctx, admin, "subject", "map.xlsx", nil)
+			_, err := New(repo, nil, nil, nil, nil, read).ImportMap(ctx, admin, "subject", "map.xlsx", nil, 0)
 			if tc.queued && err != nil {
 				t.Fatal(err)
 			}

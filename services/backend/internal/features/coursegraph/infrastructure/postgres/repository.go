@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/application"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
@@ -20,6 +21,7 @@ import (
 type Repository struct{ pool *pgxpool.Pool }
 
 func New(pool *pgxpool.Pool) *Repository { return &Repository{pool} }
+
 func (r *Repository) Claim(ctx context.Context, token string, now time.Time) (coursegraph.Job, error) {
 	job, err := db.New(r.pool).ClaimCourseGraph(ctx, db.ClaimCourseGraphParams{Token: token, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -75,6 +77,20 @@ func (r *Repository) SaveMap(ctx context.Context, subjectID, filename, sheet str
 	return r.saveMap(ctx, subjectID, filename, sheet, graph, "", now)
 }
 
+func (r *Repository) SaveMapWithLearning(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time, _ string, _ int64, learningMap *competencymap.Map) (bool, int64, error) {
+	// The composition adapter handles paired imports. This repository alone is
+	// sufficient only when the workbook has no learning sheet.
+	if learningMap != nil {
+		return false, 0, fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Совместное сохранение учебной карты не настроено.")
+	}
+	queued, err := r.SaveMap(ctx, subjectID, filename, sheet, graph, now)
+	return queued, 0, err
+}
+
+func (r *Repository) SaveMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) error {
+	return persistMapTx(ctx, tx, subjectID, filename, sheet, graph, now)
+}
+
 // SaveMapIfCurrent atomically replaces only the confirmed, published map.
 func (r *Repository) SaveMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, expectedFingerprint string, now time.Time) (bool, error) {
 	if expectedFingerprint == "" {
@@ -117,32 +133,17 @@ func (r *Repository) saveMap(ctx context.Context, subjectID, filename, sheet str
 	if err != nil {
 		return false, err
 	}
-	var paired struct {
-		LearningRevision *int64 `json:"learning_revision"`
-	}
-	if err = json.Unmarshal(graph, &paired); err != nil {
-		return false, err
-	}
-	if paired.LearningRevision != nil {
-		activated, activateErr := q.LearningActivatePendingRevision(ctx, db.LearningActivatePendingRevisionParams{
-			SubjectID: subjectID, PendingRevision: paired.LearningRevision,
-		})
-		if activateErr != nil {
-			return false, activateErr
-		}
-		if activated != 1 {
-			active, activeErr := q.LearningSubjectHasActiveRevision(ctx, db.LearningSubjectHasActiveRevisionParams{
-				SubjectID: subjectID, ActiveRevision: paired.LearningRevision,
-			})
-			if activeErr != nil {
-				return false, activeErr
-			}
-			if !active {
-				return false, fault.New(fault.Conflict, "COMPETENCY_MAP_IMPORT_CHANGED", "Учебная часть карты изменилась во время сохранения. Повторите загрузку.")
-			}
-		}
-	}
 	return true, tx.Commit(ctx)
+}
+
+func persistMapTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) error {
+	q := db.New(tx)
+	sum := sha256.Sum256(graph)
+	if err := q.SaveCourseGraphMap(ctx, db.SaveCourseGraphMapParams{SubjectID: subjectID, Filename: filename, Sheet: sheet, Fingerprint: hex.EncodeToString(sum[:]), Graph: graph, Now: now.Unix()}); err != nil {
+		return err
+	}
+	_, err := q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()})
+	return err
 }
 
 // MapGraph is the graph of the imported competency map of a course.

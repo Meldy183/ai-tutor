@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	_ "github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
@@ -148,6 +149,7 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Param subject_id path string true "ID предмета"
 // @Param file formData file true "Карта компетенций .xlsx, до 25 МиБ"
+// @Param X-Expected-Learning-Revision header int64 false "Активная версия учебной карты из GET /learn/subjects/{subject_id}/competency-map; обязательна для двухлистовой книги"
 // @Success 202 {object} coursegraph.Snapshot
 // @Failure 400 {object} fault.Error
 // @Failure 401 {object} fault.Error
@@ -199,7 +201,15 @@ func (h *Handler) ImportMap(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(r.Context(), w, fault.New(fault.TooLarge, "PAYLOAD_TOO_LARGE", "Файл карты больше 25 МиБ."))
 		return
 	}
-	result, err := h.service.ImportMap(r.Context(), actor, r.PathValue("subject_id"), files[0].Filename, data)
+	expectedRevision := int64(-1)
+	if raw := r.Header.Get("X-Expected-Learning-Revision"); raw != "" {
+		expectedRevision, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || expectedRevision < 0 {
+			httpx.Error(r.Context(), w, fault.Validation("X-Expected-Learning-Revision", "Укажите номер активной версии учебной карты."))
+			return
+		}
+	}
+	result, err := h.service.ImportMap(r.Context(), actor, r.PathValue("subject_id"), files[0].Filename, data, expectedRevision)
 	if err != nil {
 		httpx.Error(r.Context(), w, err)
 		return

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -168,11 +169,29 @@ func TestImportMapStartsForSharedCourseWithoutMaterials(t *testing.T) {
 	}
 }
 
+func TestCourseGraphSnapshotReturnsEmptyLearningWarningsArray(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	response := f.request(http.MethodGet, "/admin/subjects/subject:test/graph", "", admin)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read graph snapshot: %d %s", response.Code, response.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := body["learning_warnings"]
+	if !ok || string(raw) != "[]" {
+		t.Fatalf("empty learning_warnings = %s, want []", raw)
+	}
+}
+
 func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	admin := f.admin(t)
-	response := upload(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin)
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin, "X-Expected-Learning-Revision", "0")
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
 	}
@@ -236,13 +255,107 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	}
 }
 
+func TestPairedMapImportUsesSingleConnectionAndRollsBackAtomically(t *testing.T) {
+	t.Parallel()
+	f := newFixtureWithMaxConns(t, 1)
+	admin := f.admin(t)
+	endpoint := "/admin/subjects/subject:test/graph/competency-map"
+	importBook := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return uploadWithHeader(f, endpoint, "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin, "X-Expected-Learning-Revision", "0")
+	}
+
+	if _, err := f.pool.Exec(context.Background(), `
+CREATE FUNCTION fail_course_graph_job() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'forced build queue failure'; END $$;
+CREATE TRIGGER fail_course_graph_job BEFORE INSERT ON course_graph_jobs FOR EACH ROW EXECUTE FUNCTION fail_course_graph_job();`); err != nil {
+		t.Fatal(err)
+	}
+	response := importBook()
+	if response.Code == http.StatusAccepted {
+		t.Fatal("forced Geek queue failure was reported as a successful paired import")
+	}
+	var stateRows, imports, maps, jobs int
+	if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM learning_subject_state WHERE subject_id='subject:test'), (SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_maps WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_jobs WHERE subject_id='subject:test')`).Scan(&stateRows, &imports, &maps, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if stateRows != 0 || imports != 0 || maps != 0 || jobs != 0 {
+		t.Fatalf("failed paired import left partial state: states=%d imports=%d maps=%d jobs=%d", stateRows, imports, maps, jobs)
+	}
+	if _, err := f.pool.Exec(context.Background(), `DROP TRIGGER fail_course_graph_job ON course_graph_jobs; DROP FUNCTION fail_course_graph_job()`); err != nil {
+		t.Fatal(err)
+	}
+	response = importBook()
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("paired map import with MaxConns=1: %d %s", response.Code, response.Body.String())
+	}
+	var active *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active); err != nil || active == nil {
+		t.Fatalf("learning projection was not committed: revision=%v err=%v", active, err)
+	}
+	stale := importBook()
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale expected learning revision: %d %s", stale.Code, stale.Body.String())
+	}
+	var afterStale *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&afterStale); err != nil || afterStale == nil || *afterStale != *active {
+		t.Fatalf("stale CAS changed active learning revision: before=%v after=%v err=%v", *active, afterStale, err)
+	}
+}
+
+func TestGeekBuildFinishesAfterIndependentLearningMapImport(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin, "X-Expected-Learning-Revision", "0")
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
+	}
+	var revision int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	var actorID string
+	if err := f.pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email='admin@example.edu'`).Scan(&actorID); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := csvparser.ParseXLSXSheet(pairedMapBook(t, false), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := competencypg.New(f.pool).Replace(context.Background(), "subject:test", actorID, parsed, time.Now().Unix(), &revision); err != nil {
+		t.Fatalf("independent learning import: %v", err)
+	}
+	graphRepo := postgres.New(f.pool)
+	job, err := graphRepo.Claim(context.Background(), "paired-after-learning-import", time.Now())
+	if err != nil || job.SubjectID != "subject:test" {
+		t.Fatalf("claim paired Geek build: %+v %v", job, err)
+	}
+	graph, err := json.Marshal(map[string]any{
+		"learning_revision": revision,
+		"topics":            []map[string]string{{"id": "paired", "title": "Парная версия"}},
+		"prerequisites":     []any{},
+		"hierarchy":         []any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := graphRepo.Finish(context.Background(), job, graph, time.Now()); err != nil || !ok {
+		t.Fatalf("Geek build after separate learning import was rejected: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestPairedMapReplacementActivatesLearningButKeepsOldGeekOnFailure(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	admin := f.admin(t)
 	importMap := func() *int64 {
 		t.Helper()
-		response := upload(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin)
+		var expectedRevision int64
+		if err := f.pool.QueryRow(context.Background(), `SELECT COALESCE((SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'), 0)`).Scan(&expectedRevision); err != nil {
+			t.Fatal(err)
+		}
+		response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin, "X-Expected-Learning-Revision", fmt.Sprint(expectedRevision))
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
 		}
@@ -275,6 +388,10 @@ func TestPairedMapReplacementActivatesLearningButKeepsOldGeekOnFailure(t *testin
 	}
 	claimAndPublish("old-version", *firstRevision)
 	secondRevision := importMap()
+	var preservedOldImport int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE revision=$1 AND subject_id='subject:test'`, *firstRevision).Scan(&preservedOldImport); err != nil || preservedOldImport != 1 {
+		t.Fatalf("paired replacement deleted old learning revision %d: count=%d err=%v", *firstRevision, preservedOldImport, err)
+	}
 	if *secondRevision == *firstRevision {
 		t.Fatalf("replacement reused learning version %d", *firstRevision)
 	}
@@ -312,7 +429,7 @@ func TestPairedMapStructureMismatchStoresNeitherSide(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	admin := f.admin(t)
-	response := upload(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, true), admin)
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, true), admin, "X-Expected-Learning-Revision", "0")
 	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "COMPETENCY_MAP_STRUCTURE_MISMATCH") {
 		t.Fatalf("mismatched pair: %d %s", response.Code, response.Body.String())
 	}

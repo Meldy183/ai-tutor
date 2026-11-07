@@ -29,6 +29,16 @@ const snapshotSchema = z.object({
     })
     .nullable()
     .optional(),
+  learning_warnings: z
+    .array(
+      z.object({
+        row: z.number().int().positive(),
+        column_index: z.number().int().positive(),
+        column: z.string(),
+        code: z.string(),
+      }),
+    )
+    .optional(),
   progress: z
     .object({
       stage: z.enum([
@@ -239,6 +249,7 @@ function toBuild(
           learningRevision: snapshot.map.learning_revision,
         }
       : null,
+    learningWarnings: snapshot.learning_warnings ?? [],
   }
 }
 
@@ -325,6 +336,7 @@ export async function importCompetencyMap(
   subjectId: string,
   file: File,
   signal: AbortSignal,
+  expectedLearningRevision?: number,
 ): Promise<CourseGraphBuild> {
   const body = new FormData()
   body.append('file', file)
@@ -334,7 +346,18 @@ export async function importCompetencyMap(
       await fetchJSON(
         `/admin/subjects/${encodeURIComponent(subjectId)}/graph/competency-map`,
         signal,
-        { method: 'POST', body },
+        {
+          method: 'POST',
+          body,
+          headers:
+            expectedLearningRevision === undefined
+              ? undefined
+              : {
+                  'X-Expected-Learning-Revision': String(
+                    expectedLearningRevision,
+                  ),
+                },
+        },
       ),
     ),
   )

@@ -241,6 +241,7 @@ export function useStartCourseGraphBuildMutation(
 
 export type ImportCompetencyMapInput = {
   file: File
+  expectedLearningRevision?: number
 }
 
 // Builds the course graph from a competency map instead of the materials.
@@ -257,7 +258,10 @@ export function useImportCompetencyMapMutation(
     onMutate: () => {
       tokenRef.current = captureSession(cache)
     },
-    mutationFn: async ({ file }: ImportCompetencyMapInput) => {
+    mutationFn: async ({
+      file,
+      expectedLearningRevision,
+    }: ImportCompetencyMapInput) => {
       const controller = new AbortController()
       const unregister = registerSessionRequest(
         cache,
@@ -269,6 +273,7 @@ export function useImportCompetencyMapMutation(
           subjectId,
           file,
           controller.signal,
+          expectedLearningRevision,
         )
       } finally {
         unregister()

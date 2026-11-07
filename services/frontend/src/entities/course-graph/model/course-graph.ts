@@ -50,6 +50,12 @@ export type CourseGraphBuild = {
   map?: CourseGraphMapFile | null
   graphFingerprint?: string
   graphMapRevision?: number | null
+  learningWarnings?: {
+    row: number
+    column_index: number
+    column: string
+    code: string
+  }[]
 }
 
 export type CourseGraphSource = 'materials' | 'competency_map'

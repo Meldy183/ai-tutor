@@ -504,6 +504,23 @@ components:
         - stage_index
         - total
       type: object
+    coursegraph.ImportWarning:
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+        column:
+          type: string
+        column_index:
+          type: integer
+        row:
+          type: integer
+      required:
+        - code
+        - column
+        - column_index
+        - row
+      type: object
     coursegraph.MapFile:
       additionalProperties: false
       properties:
@@ -561,6 +578,14 @@ components:
           type: string
         inputs_ready:
           type: boolean
+        learning_warnings:
+          description: |-
+            LearningWarnings are parser warnings from the second sheet of the
+            just-imported paired workbook; they are not persisted in the map snapshot.
+          items:
+            $ref: '#/components/schemas/coursegraph.ImportWarning'
+          type: array
+          uniqueItems: false
         map:
           anyOf:
             - $ref: '#/components/schemas/coursegraph.MapFile'
@@ -594,6 +619,7 @@ components:
         - graph_map_revision
         - graph_source
         - inputs_ready
+        - learning_warnings
         - map
         - progress
         - stale
@@ -4200,6 +4226,11 @@ paths:
           required: true
           schema:
             type: string
+        - description: Активная версия учебной карты из GET /learn/subjects/{subject_id}/competency-map; обязательна для двухлистовой книги
+          in: header
+          name: X-Expected-Learning-Revision
+          schema:
+            type: integer
       requestBody:
         content:
           multipart/form-data:

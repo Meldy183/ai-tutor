@@ -5,14 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
-	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
 	sharedpostgres "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -279,43 +277,6 @@ func TestConcurrentSubjectImportsAllocateUniqueGlobalRevisions(t *testing.T) {
 	}
 	if activeA != first.Revision || activeB != second.Revision {
 		t.Fatalf("subject active revisions ML=%d/%d B=%d/%d", activeA, first.Revision, activeB, second.Revision)
-	}
-}
-
-func TestStagedPairedImportKeepsActiveHistoryAndRejectsConcurrentReplacement(t *testing.T) {
-	repository, ctx, userID := setupImportRepository(t)
-	active, err := repository.Replace(ctx, "subject:test", userID, importMap("active"), 10, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	staged, err := repository.Stage(ctx, "subject:test", userID, importMap("staged"), 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var activeRevision, pendingRevision int64
-	if err = repository.pool.QueryRow(ctx, `SELECT active_revision,pending_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&activeRevision, &pendingRevision); err != nil {
-		t.Fatal(err)
-	}
-	if activeRevision != active.Revision || pendingRevision != staged.Revision {
-		t.Fatalf("staging replaced active version: active=%d pending=%d, want %d and %d", activeRevision, pendingRevision, active.Revision, staged.Revision)
-	}
-	if _, err = repository.Stage(ctx, "subject:test", userID, importMap("concurrent"), 30); err == nil {
-		t.Fatal("second staged import unexpectedly succeeded")
-	} else {
-		var failure *fault.Error
-		if !errors.As(err, &failure) || failure.Code != "COMPETENCY_MAP_IMPORT_IN_PROGRESS" {
-			t.Fatalf("second staged import error = %v, want COMPETENCY_MAP_IMPORT_IN_PROGRESS", err)
-		}
-	}
-	var preserved int
-	if err = repository.pool.QueryRow(ctx, `SELECT count(*) FROM learning_outcomes WHERE name='ОР active'`).Scan(&preserved); err != nil || preserved != 1 {
-		t.Fatalf("active learning history was not preserved while replacement is staged: count=%d err=%v", preserved, err)
-	}
-	if err = repository.DiscardStaged(ctx, "subject:test", staged.Revision); err != nil {
-		t.Fatal(err)
-	}
-	if err = repository.pool.QueryRow(ctx, `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&activeRevision); err != nil || activeRevision != active.Revision {
-		t.Fatalf("discarding staged replacement changed active revision: active=%d err=%v", activeRevision, err)
 	}
 }
 

@@ -16,36 +16,6 @@ type Repository interface {
 	Read(ctx context.Context, subjectID string) (competencymap.Snapshot, error)
 }
 
-// StageForSubject stores a validated learning projection under a temporary
-// import lock. The course graph repository activates it with the paired map
-// and build job in one transaction.
-func (s *Service) StageForSubject(ctx context.Context, actor user.User, subjectID string, data []byte) (competencymap.ImportResult, error) {
-	if err := s.Authorize(actor); err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	parsed, err := s.parser.Parse(data)
-	if err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	stager, ok := s.repo.(interface {
-		Stage(context.Context, string, string, competencymap.Map, int64) (competencymap.ImportResult, error)
-	})
-	if !ok {
-		return competencymap.ImportResult{}, fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Подготовка единой карты компетенций не настроена.")
-	}
-	return stager.Stage(ctx, subjectID, actor.ID, parsed, s.now().Unix())
-}
-
-func (s *Service) DiscardStaged(ctx context.Context, subjectID string, revision int64) error {
-	stager, ok := s.repo.(interface {
-		DiscardStaged(context.Context, string, int64) error
-	})
-	if !ok {
-		return fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Очистка неподтверждённой карты не настроена.")
-	}
-	return stager.DiscardStaged(ctx, subjectID, revision)
-}
-
 type Parser interface {
 	Parse(data []byte) (competencymap.Map, error)
 }

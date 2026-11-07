@@ -30,6 +30,7 @@ export type CourseGraphBuildDependencies = {
       subjectId: string,
       file: File,
       signal: AbortSignal,
+      expectedLearningRevision?: number,
     ): Promise<CourseGraphBuild>
   }
 }

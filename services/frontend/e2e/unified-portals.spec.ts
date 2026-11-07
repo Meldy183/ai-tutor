@@ -197,13 +197,13 @@ test('one browser context switches modes while student and admin sessions stay s
             inputs_ready: true,
             updated_at: 1791158400,
             graph_source: 'competency_map',
-            graph_fingerprint: 'map-v1',
+            graph_fingerprint: 'geek-map-fingerprint',
             graph_map_revision: 1,
             build_source: 'competency_map',
             map: {
               filename: 'ai-map.xlsx',
               sheet: 'Карта',
-              fingerprint: 'map-v1',
+              fingerprint: 'map-fingerprint',
               learning_revision: 1,
             },
             progress: null,
@@ -430,7 +430,9 @@ test('one browser context switches modes while student and admin sessions stay s
   await expect(
     page.getByRole('heading', { name: 'Выберите режим' }),
   ).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toHaveCount(0)
+  await expect(
+    page.getByRole('button', { name: 'Импортировать карту компетенций' }),
+  ).toHaveCount(0)
   await page.goBack()
   await expect(page).toHaveURL(/\/admin\/courses$/)
   await page.goto('/admin/courses/missing-course?direction=exam')
@@ -445,8 +447,6 @@ test('one browser context switches modes while student and admin sessions stay s
   await expect(
     page.getByRole('heading', { name: otherSubject.name, level: 1 }),
   ).toBeVisible()
-  // Both directions share one preparation screen. Exercise the visible
-  // import button rather than expecting its hidden native input to be visible.
   const importButton = page.getByRole('button', {
     name: 'Импортировать карту компетенций',
     exact: true,
@@ -473,9 +473,10 @@ test('one browser context switches modes while student and admin sessions stay s
   }
   await page.goto(`/admin/courses/${subject.id}`)
   await expectCoursePreparation()
+  await expect(page.getByText('Курс готов для студентов').last()).toBeVisible()
   await page.reload()
   await expectCoursePreparation()
-  await page.screenshot({ path: testInfo.outputPath('course-admin.png') })
+  await page.screenshot({ path: testInfo.outputPath('learn-admin.png') })
   await expect
     .poll(() =>
       calls.some(
@@ -492,25 +493,28 @@ test('one browser context switches modes while student and admin sessions stay s
       ),
     )
     .toBe(true)
+
   await page.getByRole('button', { name: /Меню профиля/ }).click()
   await page.getByRole('menuitem', { name: 'Выйти' }).click()
   await expect(page.getByLabel('Пароль')).toBeVisible()
 
-  // Student logout leaves the independent admin session usable.
   await page.goto('/admin/courses')
   await expect(
     page.getByRole('heading', { name: 'Курсы', level: 1 }),
   ).toBeVisible()
+  await expect(page.getByRole('link', { name: subject.name })).toBeVisible()
   await expect(page.getByText('Экзамен: готов')).toBeVisible()
   await expect(page.getByText('Обучение: готово')).toBeVisible()
   await page.getByRole('link', { name: subject.name }).click()
   await expect(page).toHaveURL(new RegExp(`/admin/courses/${subject.id}$`))
   await expectCoursePreparation()
+  await expect(
+    page.getByText('Загруженные лекции и лабораторные'),
+  ).toBeVisible()
+  await expect(page.getByText('Курс готов для студентов').last()).toBeVisible()
   const courseHeader = page.locator('section[aria-labelledby="course-name"]')
   const desktopHeader = await courseHeader.boundingBox()
   expect(desktopHeader).not.toBeNull()
-
-  // Bookmarked direction URLs still open the unified preparation UI.
   await page.goto(`/admin/courses/${subject.id}?direction=exam`)
   await expectCoursePreparation()
   const graphCard = page.locator('section[aria-labelledby="graph-title"]')
@@ -527,23 +531,38 @@ test('one browser context switches modes while student and admin sessions stay s
     new RegExp(`/admin/courses/${subject.id}\\?direction=exam$`),
   )
   await expectCoursePreparation()
-
   await page.setViewportSize({ width: 390, height: 844 })
   const narrowHeader = await courseHeader.boundingBox()
-  await page.screenshot({ path: testInfo.outputPath('exam-admin-narrow.png') })
+  await page.screenshot({ path: testInfo.outputPath('learn-admin-narrow.png') })
   await page.goto(`/admin/courses/${subject.id}?direction=learn`)
   await expectCoursePreparation()
   expect(await courseHeader.boundingBox()).toEqual(narrowHeader)
-  await page.screenshot({ path: testInfo.outputPath('learn-admin-narrow.png') })
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth,
     ),
   ).toBe(false)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.screenshot({ path: testInfo.outputPath('admin-course.png') })
+  await page.reload()
+  await expect(
+    page.getByRole('heading', { name: subject.name, level: 1 }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Импортировать карту компетенций' }),
+  ).toBeVisible()
+  await expect(
+    page.getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  const horizontalOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > window.innerWidth,
+  )
+  expect(horizontalOverflow).toBe(false)
   await page.getByRole('link', { name: 'Ко всем курсам' }).click()
   await expect(page).toHaveURL(/\/admin\/courses$/)
-  await page.getByRole('link', { name: subject.name }).click()
-  await expectCoursePreparation()
+  await expect(
+    page.getByRole('heading', { name: 'Курсы', level: 1 }),
+  ).toBeVisible()
   await expect
     .poll(() =>
       calls.some((call) => call.path === '/auth/me' && call.portal === 'admin'),

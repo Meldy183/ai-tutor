@@ -147,6 +147,8 @@ export function CompetencyMapImport({
 
   useEffect(() => {
     if (
+      !importCourseMap.isSuccess &&
+      !importLearningMap.isSuccess &&
       confirmedRevision !== null &&
       learningMap.isSuccess &&
       learningMap.data.revision !== confirmedRevision
@@ -155,7 +157,13 @@ export function CompetencyMapImport({
       setConfirming(false)
       setRevisionChanged(true)
     }
-  }, [confirmedRevision, learningMap.isSuccess, learningMap.data])
+  }, [
+    confirmedRevision,
+    importCourseMap.isSuccess,
+    importLearningMap.isSuccess,
+    learningMap.isSuccess,
+    learningMap.data,
+  ])
 
   function selectFile(selected?: File) {
     importLearningMap.reset()
@@ -203,11 +211,11 @@ export function CompetencyMapImport({
     )
   }
 
-  function sendCourseMap() {
+  function sendCourseMap(expectedLearningRevision: number) {
     if (!file) return
     previousBuildId.current = graphBuild.data?.id ?? null
     importCourseMap.mutate(
-      { file },
+      { file, expectedLearningRevision },
       {
         onSuccess: (build) => {
           setPairedFingerprint(build.map?.fingerprint ?? null)
@@ -247,14 +255,17 @@ export function CompetencyMapImport({
     if (!file || busy || !learningMap.data) return
     setRevisionChanged(false)
     if (mode === 'both') {
+      const expectedRevision = learningMap.data.revision
+      setConfirmedRevision(expectedRevision)
       if (learningMap.data.importedAt !== null || hasGraph) {
         setConfirming(true)
         return
       }
-      sendCourseMap()
+      sendCourseMap(expectedRevision)
       return
     }
     if (mode === 'exam') {
+      setConfirmedRevision(learningMap.data.revision)
       setConfirming(true)
       return
     }
@@ -277,8 +288,14 @@ export function CompetencyMapImport({
         sendLearningMap(confirmedRevision)
       return
     }
-    if (mode === 'both') sendCourseMap()
-    else sendCourseMap()
+    if (
+      confirmedRevision !== null &&
+      learningMap.data?.revision === confirmedRevision
+    ) {
+      sendCourseMap(confirmedRevision)
+      return
+    }
+    setRevisionChanged(true)
   }
 
   const error = importLearningMap.error ?? importCourseMap.error
@@ -287,7 +304,15 @@ export function CompetencyMapImport({
     error instanceof CourseGraphApiError
       ? error.details
       : []
-  const warnings = groupWarnings(importLearningMap.data?.warnings ?? [])
+  const warnings = groupWarnings([
+    ...(importLearningMap.data?.warnings ?? []),
+    ...(importCourseMap.data?.learningWarnings ?? []).map((warning) => ({
+      row: warning.row,
+      columnIndex: warning.column_index,
+      column: warning.column,
+      code: warning.code,
+    })),
+  ])
   const buildError =
     pairedFingerprint &&
     graphBuild.data?.map?.fingerprint === pairedFingerprint &&
@@ -326,7 +351,8 @@ export function CompetencyMapImport({
     null
   const activeLearningVersionMatches =
     pairedLearningRevision !== null &&
-    learningMap.data?.revision === pairedLearningRevision
+    learningMap.data?.revision !== undefined &&
+    learningMap.data.revision >= pairedLearningRevision
   const publishedGeekRevision =
     visibleMapBuild !== null
       ? (visibleMapBuild.graphMapRevision ?? null)
@@ -419,7 +445,8 @@ export function CompetencyMapImport({
             {activeLearningVersionMatches ? (
               <Text as="p" role="status" size="2">
                 {t('learningCompetencyMap.learningVersionReady', {
-                  revision: pairedLearningRevision,
+                  revision:
+                    learningMap.data?.revision ?? pairedLearningRevision,
                 })}
               </Text>
             ) : null}
@@ -625,9 +652,8 @@ export function CompetencyMapImport({
                   color="red"
                   disabled={
                     busy ||
-                    (mode === 'learn' &&
-                      (confirmedRevision === null ||
-                        learningMap.data?.revision !== confirmedRevision))
+                    confirmedRevision === null ||
+                    learningMap.data?.revision !== confirmedRevision
                   }
                   onClick={confirmImport}
                 >
@@ -640,8 +666,8 @@ export function CompetencyMapImport({
           </AlertDialog.Content>
         </AlertDialog.Root>
       </section>
-      {importLearningMap.data &&
-        (importLearningMap.data.unparsedTaskCellCount > 0 ||
+      {(importLearningMap.data || warnings.length > 0) &&
+        ((importLearningMap.data?.unparsedTaskCellCount ?? 0) > 0 ||
           warnings.length > 0) && (
           <section
             className={styles.card}
@@ -653,10 +679,10 @@ export function CompetencyMapImport({
                 {t('learningCompetencyMap.warnings')}
               </Heading>
             </div>
-            {importLearningMap.data.unparsedTaskCellCount > 0 && (
+            {(importLearningMap.data?.unparsedTaskCellCount ?? 0) > 0 && (
               <Text as="p" color="gray" size="2">
                 {t('learningCompetencyMap.unparsed', {
-                  count: importLearningMap.data.unparsedTaskCellCount,
+                  count: importLearningMap.data?.unparsedTaskCellCount ?? 0,
                   rows: warnings.length,
                 })}
               </Text>
