@@ -32,7 +32,9 @@ type Node struct {
 	// the first variant.
 	Variants []Variant `json:"variants,omitempty"`
 	// Competency groups the topics of a competency map; other graphs have none.
-	Competency string `json:"competency,omitempty"`
+	Competency    string `json:"competency,omitempty"`
+	CompetencyID  string `json:"competency_id,omitempty"`
+	ConstituentID string `json:"constituent_id,omitempty"`
 }
 
 // Variant is one task of a topic with what grading it needs.

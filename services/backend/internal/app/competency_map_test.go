@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,9 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/csvparser"
 	competencypg "github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/postgres"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/infrastructure/postgres"
+	geekgraph "github.com/AskarKasimov/ai-tutor/services/backend/internal/features/geek/infrastructure/graph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // mapBook is a competency map book of one sheet in the course template:
@@ -72,6 +75,177 @@ func mapBook(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func newPairedGraphRepository(pool *pgxpool.Pool) *pairedCourseGraphRepository {
+	return &pairedCourseGraphRepository{Repository: postgres.New(pool), pool: pool, learning: competencypg.New(pool)}
+}
+
+// Set REAL_COMPETENCY_MAP_PATH to run the supplied workbook through the real
+// PostgreSQL import and both mode readers. The fixture is isolated per test and
+// the workbook itself stays outside the repository.
+func TestRealPairedWorkbookUsesCanonicalGraphInBothModes(t *testing.T) {
+	path := os.Getenv("REAL_COMPETENCY_MAP_PATH")
+	if path == "" {
+		t.Skip("REAL_COMPETENCY_MAP_PATH is not set")
+	}
+	book, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	admin := f.admin(t)
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", book, admin, "X-Expected-Learning-Revision", "0")
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("import real workbook: %d %s", response.Code, response.Body.String())
+	}
+	graphRepo := newPairedGraphRepository(f.pool)
+	mapData, err := graphRepo.MapGraph(context.Background(), "subject:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mapProjection struct {
+		Topics []struct {
+			ID            string   `json:"id"`
+			Requires      []string `json:"requires"`
+			CompetencyID  string   `json:"competency_id"`
+			ConstituentID string   `json:"constituent_id"`
+		} `json:"topics"`
+		Prerequisites []struct {
+			Source string `json:"source"`
+			Target string `json:"target"`
+		} `json:"prerequisites"`
+	}
+	if err := json.Unmarshal(mapData, &mapProjection); err != nil {
+		t.Fatal(err)
+	}
+	if len(mapProjection.Topics) != 15 {
+		t.Fatalf("real Geek projection topics=%d, want 15", len(mapProjection.Topics))
+	}
+	var storedMetadata json.RawMessage
+	var canonicalTopicCount, edgeCount, examTaskCount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&storedMetadata); err != nil {
+		t.Fatal(err)
+	}
+	var storedMap map[string]json.RawMessage
+	if err := json.Unmarshal(storedMetadata, &storedMap); err != nil {
+		t.Fatal(err)
+	}
+	if _, hasTopics := storedMap["topics"]; hasTopics {
+		t.Fatal("course_graph_maps must store metadata only; canonical vertices are read from learning_*")
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT
+		(SELECT count(*) FROM course_graph_exam_topics WHERE map_revision=(SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test')),
+		(SELECT count(*) FROM learning_graph_prerequisites WHERE map_revision=(SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test')),
+		(SELECT count(*) FROM course_graph_exam_tasks WHERE map_revision=(SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test'))`).Scan(&canonicalTopicCount, &edgeCount, &examTaskCount); err != nil {
+		t.Fatal(err)
+	}
+	if canonicalTopicCount != 15 || edgeCount != len(mapProjection.Prerequisites) || examTaskCount < canonicalTopicCount {
+		t.Fatalf("versioned canonical relations and mode tasks: Geek topics=%d edges=%d tasks=%d", canonicalTopicCount, edgeCount, examTaskCount)
+	}
+	learningSnapshot, err := competencypg.New(f.pool).Read(context.Background(), "subject:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalIDs := map[string]bool{}
+	canonicalParents := map[string][2]string{}
+	var outcomeCount, taskCount int
+	for _, competency := range learningSnapshot.Competencies {
+		for _, constituent := range competency.Constituents {
+			for _, outcome := range constituent.Outcomes {
+				outcomeCount++
+				canonicalIDs[outcome.ID] = true
+				canonicalParents[outcome.ID] = [2]string{competency.ID, constituent.ID}
+				taskCount += len(outcome.Tasks)
+			}
+		}
+	}
+	if outcomeCount != 24 || taskCount != 72 {
+		t.Fatalf("learning sheet import counts: outcomes=%d tasks=%d, want 24/72", outcomeCount, taskCount)
+	}
+	for _, topic := range mapProjection.Topics {
+		if !canonicalIDs[topic.ID] {
+			t.Fatalf("Geek map projection vertex %q is not a learning graph vertex", topic.ID)
+		}
+		if canonicalParents[topic.ID] != [2]string{topic.CompetencyID, topic.ConstituentID} {
+			t.Fatalf("Geek and learning readers use different grouping relations for %q: Geek=%q/%q learning=%v", topic.ID, topic.CompetencyID, topic.ConstituentID, canonicalParents[topic.ID])
+		}
+		for _, required := range topic.Requires {
+			if !canonicalIDs[required] {
+				t.Fatalf("Geek map projection prerequisite %q is not a learning graph vertex", required)
+			}
+		}
+	}
+	for _, edge := range mapProjection.Prerequisites {
+		if !canonicalIDs[edge.Source] || !canonicalIDs[edge.Target] {
+			t.Fatalf("Geek map projection edge does not use canonical vertices: %+v", edge)
+		}
+	}
+	selectedIDs := make(map[string]bool, len(mapProjection.Topics))
+	for _, topic := range mapProjection.Topics {
+		selectedIDs[topic.ID] = true
+	}
+	unselectedCanonicalOutcomes := 0
+	for id := range canonicalIDs {
+		if !selectedIDs[id] {
+			unselectedCanonicalOutcomes++
+		}
+	}
+	if unselectedCanonicalOutcomes != 9 {
+		t.Fatalf("all 24 learning outcomes must remain in the common canonical graph; %d were outside the Geek consumer projection, want 9", unselectedCanonicalOutcomes)
+	}
+	job, err := graphRepo.Claim(context.Background(), "real-map-worker", time.Now())
+	if err != nil || job.SubjectID != "subject:test" {
+		t.Fatalf("claim Geek build from real map: %+v %v", job, err)
+	}
+	var versioned map[string]json.RawMessage
+	if err := json.Unmarshal(mapData, &versioned); err != nil {
+		t.Fatal(err)
+	}
+	var mapRevision int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&mapRevision); err != nil {
+		t.Fatal(err)
+	}
+	versioned["learning_revision"], _ = json.Marshal(mapRevision)
+	mapData, err = json.Marshal(versioned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := graphRepo.Finish(context.Background(), job, mapData, time.Now()); err != nil || !ok {
+		t.Fatalf("publish Geek projection from real map: ok=%v err=%v", ok, err)
+	}
+	var publishedMetadata json.RawMessage
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph FROM course_graphs WHERE subject_id='subject:test'`).Scan(&publishedMetadata); err != nil {
+		t.Fatal(err)
+	}
+	var publishedShape map[string]json.RawMessage
+	if err := json.Unmarshal(publishedMetadata, &publishedShape); err != nil {
+		t.Fatal(err)
+	}
+	if _, hasTopics := publishedShape["topics"]; hasTopics {
+		t.Fatal("course_graphs must store only the published canonical revision pointer, not a second vertex graph")
+	}
+	examGraph, ok, err := geekgraph.NewStored(f.pool).Current(context.Background(), "subject:test")
+	if err != nil || !ok {
+		t.Fatalf("Geek reader did not read real map: ok=%v err=%v", ok, err)
+	}
+	if len(examGraph.Nodes) != len(mapProjection.Topics) {
+		t.Fatalf("Geek nodes=%d, map projection topics=%d", len(examGraph.Nodes), len(mapProjection.Topics))
+	}
+	for _, node := range examGraph.Nodes {
+		if !canonicalIDs[node.ID] {
+			t.Fatalf("Geek runtime vertex %q is not a learning graph vertex", node.ID)
+		}
+		if canonicalParents[node.ID] != [2]string{node.CompetencyID, node.ConstituentID} {
+			t.Fatalf("Geek runtime grouping relations differ for %q: Geek=%q/%q learning=%v", node.ID, node.CompetencyID, node.ConstituentID, canonicalParents[node.ID])
+		}
+		for _, required := range node.Prerequisites {
+			if !canonicalIDs[required] {
+				t.Fatalf("Geek runtime prerequisite %q is not a learning graph vertex", required)
+			}
+		}
+	}
 }
 
 func pairedMapBook(t *testing.T, mismatch bool) []byte {
@@ -127,6 +301,115 @@ func pairedMapBook(t *testing.T, mismatch bool) []byte {
 		}
 	}
 	return buffer.Bytes()
+}
+
+func pairedMapBookWithMissingGeekCriteria(t *testing.T) []byte {
+	t.Helper()
+	book, err := excelize.OpenReader(bytes.NewReader(pairedMapBook(t, false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer book.Close()
+	if err := book.SetCellValue("Карта компетенций", "I2", ""); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := book.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func TestSkippingGeekTaskCreatesNewProjectionWithoutChangingPublishedVersionOrCanonicalGraph(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBookWithMissingGeekCriteria(t), admin,
+		"X-Expected-Learning-Revision", "0")
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("import paired map with one fallback rubric: %d %s", response.Code, response.Body.String())
+	}
+	repo := newPairedGraphRepository(f.pool)
+	projection, err := repo.MapGraph(context.Background(), "subject:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.Claim(context.Background(), "skip-map-worker", time.Now())
+	if err != nil || job.SubjectID != "subject:test" {
+		t.Fatalf("claim Geek map build: %+v %v", job, err)
+	}
+	if ok, err := repo.Finish(context.Background(), job, projection, time.Now()); err != nil || !ok {
+		t.Fatalf("publish initial Geek map: ok=%v err=%v", ok, err)
+	}
+	var before struct {
+		Map struct {
+			Fingerprint string `json:"fingerprint"`
+		} `json:"map"`
+		Graph json.RawMessage `json:"graph"`
+	}
+	adminSnapshot := f.request(http.MethodGet, "/admin/subjects/subject:test/graph", "", admin)
+	if adminSnapshot.Code != http.StatusOK || json.Unmarshal(adminSnapshot.Body.Bytes(), &before) != nil || before.Map.Fingerprint == "" {
+		t.Fatalf("read published graph and fingerprint: %d %s", adminSnapshot.Code, adminSnapshot.Body.String())
+	}
+	var oldPointer struct {
+		ExamRevision int64 `json:"exam_revision"`
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph FROM course_graphs WHERE subject_id='subject:test'`).Scan(&before.Graph); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(before.Graph, &oldPointer); err != nil || oldPointer.ExamRevision <= 0 {
+		t.Fatalf("published Geek pointer has no version: %+v err=%v", oldPointer, err)
+	}
+	var originalOutcomes int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&originalOutcomes); err != nil || originalOutcomes != 3 {
+		t.Fatalf("canonical learning outcomes before filtering: %d err=%v", originalOutcomes, err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://api.example"+examTestPath("/admin/subjects/subject:test/graph/competency-map/skip-missing-criteria"), nil)
+	request.AddCookie(admin)
+	request.Header.Set("X-Expected-Map-Fingerprint", before.Map.Fingerprint)
+	filtered := httptest.NewRecorder()
+	f.app.Handler().ServeHTTP(filtered, request)
+	if filtered.Code != http.StatusAccepted {
+		t.Fatalf("queue Geek task exclusion: %d %s", filtered.Code, filtered.Body.String())
+	}
+	var current struct {
+		Status string `json:"status"`
+		Map    struct {
+			LearningRevision *int64 `json:"learning_revision"`
+		} `json:"map"`
+	}
+	if err := json.Unmarshal(filtered.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "pending" || current.Map.LearningRevision == nil {
+		t.Fatalf("filtered map should be preparing as a new Geek projection while learning stays active: %+v", current)
+	}
+	var currentExamRevision int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT (graph->>'exam_revision')::bigint FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&currentExamRevision); err != nil {
+		t.Fatal(err)
+	}
+	if currentExamRevision == oldPointer.ExamRevision {
+		t.Fatalf("filtering mutated published Geek version %d", oldPointer.ExamRevision)
+	}
+	oldGeek, ok, err := geekgraph.NewStored(f.pool).Current(context.Background(), "subject:test")
+	if err != nil || !ok || len(oldGeek.Nodes) != 3 {
+		t.Fatalf("published Geek must stay on its old three-topic version while preparing: nodes=%d ok=%v err=%v", len(oldGeek.Nodes), ok, err)
+	}
+	newProjection, err := repo.MapGraph(context.Background(), "subject:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape struct {
+		Topics []json.RawMessage `json:"topics"`
+	}
+	if err := json.Unmarshal(newProjection, &shape); err != nil || len(shape.Topics) != 2 {
+		t.Fatalf("new Geek projection should omit one fallback-only topic: topics=%d err=%v", len(shape.Topics), err)
+	}
+	var afterOutcomes int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&afterOutcomes); err != nil || afterOutcomes != originalOutcomes {
+		t.Fatalf("Geek filtering changed the canonical full structure: before=%d after=%d err=%v", originalOutcomes, afterOutcomes, err)
+	}
 }
 
 func TestImportMapAnswersTooLargeForAnOversizedBody(t *testing.T) {
@@ -220,7 +503,7 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if len(subjects) != 1 || subjects[0].ID != "subject:test" || !subjects[0].LearningReady || subjects[0].ExamReady {
 		t.Fatalf("first paired map should make only learning ready before Geek preparation: %+v", subjects)
 	}
-	graphRepo := postgres.New(f.pool)
+	graphRepo := newPairedGraphRepository(f.pool)
 	beforeGeek, err := graphRepo.Read(context.Background(), "subject:test")
 	if err != nil || (beforeGeek.GraphSource != "" && beforeGeek.GraphSource != "none") || beforeGeek.Map == nil || beforeGeek.Map.LearningRevision == nil || *beforeGeek.Map.LearningRevision != *active || beforeGeek.GraphMapRevision != nil {
 		t.Fatalf("versions/readiness before Geek preparation: %+v err=%v", beforeGeek, err)
@@ -229,14 +512,58 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if err != nil || job.SubjectID != "subject:test" {
 		t.Fatalf("claim paired map: %+v %v", job, err)
 	}
-	graphWithRevision, err := json.Marshal(map[string]interface{}{
-		"learning_revision": *mapRevision,
-		"topics":            []interface{}{},
-		"prerequisites":     []interface{}{},
-		"hierarchy":         []interface{}{},
-	})
+	graphWithRevision, err := graphRepo.MapGraph(context.Background(), "subject:test")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var projection map[string]json.RawMessage
+	if err := json.Unmarshal(graphWithRevision, &projection); err != nil {
+		t.Fatal(err)
+	}
+	projection["learning_revision"], _ = json.Marshal(*mapRevision)
+	graphWithRevision, err = json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var graphShape struct {
+		Topics []struct {
+			ID            string   `json:"id"`
+			Requires      []string `json:"requires"`
+			CompetencyID  string   `json:"competency_id"`
+			ConstituentID string   `json:"constituent_id"`
+		} `json:"topics"`
+		Prerequisites []struct {
+			Source string `json:"source"`
+			Target string `json:"target"`
+		} `json:"prerequisites"`
+	}
+	if err := json.Unmarshal(graphWithRevision, &graphShape); err != nil {
+		t.Fatal(err)
+	}
+	canonicalIDs := map[string]bool{}
+	canonicalParents := map[string][2]string{}
+	for _, topic := range graphShape.Topics {
+		var competencyID, constituentID string
+		if err := f.pool.QueryRow(context.Background(), `SELECT c.id, s.id FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE o.id=$1 AND c.revision=$2`, topic.ID, *mapRevision).Scan(&competencyID, &constituentID); err != nil {
+			t.Fatalf("Geek projection vertex %q must be a canonical learning outcome: %v", topic.ID, err)
+		}
+		if topic.CompetencyID != competencyID || topic.ConstituentID != constituentID {
+			t.Fatalf("Geek grouping IDs do not point to canonical rows for %q: Geek=%q/%q canonical=%q/%q", topic.ID, topic.CompetencyID, topic.ConstituentID, competencyID, constituentID)
+		}
+		canonicalIDs[topic.ID] = true
+		canonicalParents[topic.ID] = [2]string{competencyID, constituentID}
+	}
+	for _, topic := range graphShape.Topics {
+		for _, required := range topic.Requires {
+			if !canonicalIDs[required] {
+				t.Fatalf("Geek projection prerequisite %q is not a canonical vertex", required)
+			}
+		}
+	}
+	for _, relation := range graphShape.Prerequisites {
+		if !canonicalIDs[relation.Source] || !canonicalIDs[relation.Target] {
+			t.Fatalf("Geek projection relation must use canonical outcome IDs: %+v", relation)
+		}
 	}
 	if ok, err := graphRepo.Finish(context.Background(), job, graphWithRevision, time.Now()); err != nil || !ok {
 		t.Fatalf("publish paired map: ok=%v err=%v", ok, err)
@@ -251,9 +578,26 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if err != nil || len(learningSnapshot.Competencies) != 1 || len(learningSnapshot.Competencies[0].Constituents) != 1 || len(learningSnapshot.Competencies[0].Constituents[0].Outcomes) != 3 {
 		t.Fatalf("learning consumer did not read the paired map: %#v err=%v", learningSnapshot, err)
 	}
+	learningIDs := map[string]bool{}
+	learningParents := map[string][2]string{}
+	for _, outcome := range learningSnapshot.Competencies[0].Constituents[0].Outcomes {
+		learningIDs[outcome.ID] = true
+		learningParents[outcome.ID] = [2]string{learningSnapshot.Competencies[0].ID, learningSnapshot.Competencies[0].Constituents[0].ID}
+	}
 	geekSnapshot, err := graphRepo.Read(context.Background(), "subject:test")
 	if err != nil || geekSnapshot.GraphSource != "competency_map" || len(geekSnapshot.Graph) == 0 || geekSnapshot.GraphMapRevision == nil || *geekSnapshot.GraphMapRevision != *mapRevision {
 		t.Fatalf("Geek consumer did not read the paired graph: %+v err=%v", geekSnapshot, err)
+	}
+	if len(graphShape.Topics) != len(learningIDs) {
+		t.Fatalf("Geek projection topics=%d, learning canonical vertices=%d", len(graphShape.Topics), len(learningIDs))
+	}
+	for id := range canonicalIDs {
+		if !learningIDs[id] {
+			t.Fatalf("Geek and learning consumers read different canonical vertex IDs: %q", id)
+		}
+		if canonicalParents[id] != learningParents[id] {
+			t.Fatalf("Geek and learning consumers read different canonical grouping relations for %q: Geek=%v learning=%v", id, canonicalParents[id], learningParents[id])
+		}
 	}
 }
 
@@ -328,22 +672,21 @@ func TestGeekBuildFinishesAfterIndependentLearningMapImport(t *testing.T) {
 	if _, err := competencypg.New(f.pool).Replace(context.Background(), "subject:test", actorID, parsed, time.Now().Unix(), &revision); err != nil {
 		t.Fatalf("independent learning import: %v", err)
 	}
-	graphRepo := postgres.New(f.pool)
+	graphRepo := newPairedGraphRepository(f.pool)
 	job, err := graphRepo.Claim(context.Background(), "paired-after-learning-import", time.Now())
 	if err != nil || job.SubjectID != "subject:test" {
 		t.Fatalf("claim paired Geek build: %+v %v", job, err)
 	}
-	graph, err := json.Marshal(map[string]any{
-		"learning_revision": revision,
-		"topics":            []map[string]string{{"id": "paired", "title": "Парная версия"}},
-		"prerequisites":     []any{},
-		"hierarchy":         []any{},
-	})
+	graph, err := graphRepo.MapGraph(context.Background(), "subject:test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := graphRepo.Finish(context.Background(), job, graph, time.Now()); err != nil || !ok {
 		t.Fatalf("Geek build after separate learning import was rejected: ok=%v err=%v", ok, err)
+	}
+	var mapRevision *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph_map_revision FROM (SELECT map_revision AS graph_map_revision FROM course_graphs WHERE subject_id='subject:test') published`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != revision {
+		t.Fatalf("Geek must retain its source canonical revision after an independent learning import: map_revision=%v expected=%d err=%v", mapRevision, revision, err)
 	}
 }
 

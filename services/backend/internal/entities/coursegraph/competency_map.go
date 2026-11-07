@@ -28,6 +28,10 @@ import (
 // MapVersion is the version of a graph built from a competency map.
 const MapVersion = "competency-map-v1"
 
+// CanonicalMapVersion is the runtime projection built from canonical course
+// vertices/edges and the Geek-specific tasks for that version.
+const CanonicalMapVersion = "competency-map-canonical-v1"
+
 // SourceMap marks a graph built from a competency map.
 const SourceMap = "competency_map"
 
@@ -441,12 +445,15 @@ type mapTopic struct {
 	AssessmentGuidance string `json:"assessment_guidance,omitempty"`
 	// Variants are all the tasks of the outcome; the topic's own question,
 	// text and guidance are those of the first one.
-	Variants    []mapVariant `json:"variants"`
-	Provides    []string     `json:"provides"`
-	Requires    []string     `json:"requires"`
-	ParentTitle string       `json:"parent_title"`
-	Role        string       `json:"role"`
-	Row         int          `json:"row"`
+	Variants         []mapVariant `json:"variants"`
+	Provides         []string     `json:"provides"`
+	Requires         []string     `json:"requires"`
+	ParentTitle      string       `json:"parent_title"`
+	ConstituentTitle string       `json:"constituent_title"`
+	CompetencyID     string       `json:"competency_id,omitempty"`
+	ConstituentID    string       `json:"constituent_id,omitempty"`
+	Role             string       `json:"role"`
+	Row              int          `json:"row"`
 }
 
 // mapVariant has the shape of exam.Variant.
@@ -545,7 +552,7 @@ func newMapTopic(o mapOutcome, role string, requires []string) mapTopic {
 	}
 	first := variants[0]
 	return mapTopic{ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
-		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, Role: role, Row: o.row}
+		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, ConstituentTitle: o.constituent, Role: role, Row: o.row}
 }
 
 // scoringLine starts the scoring part of the criteria: «Балл (макс. 1)» or an

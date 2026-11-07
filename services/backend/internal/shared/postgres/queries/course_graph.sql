@@ -34,6 +34,37 @@ ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded
 -- name: ReadCourseGraphMap :one
 SELECT graph FROM course_graph_maps WHERE subject_id = $1;
 
+-- name: ReadCourseGraphMapProjection :one
+SELECT CASE WHEN m.graph->>'canonical'='true'
+            THEN course_graph_map_projection(m.subject_id,COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint),m.graph,false)
+            ELSE m.graph END::jsonb AS graph
+FROM course_graph_maps m WHERE m.subject_id=$1;
+
+-- name: CourseGraphInsertExamTopic :exec
+INSERT INTO course_graph_exam_topics(map_revision,exam_revision,outcome_id,topic_order,role)
+VALUES($1,$2,$3,$4,$5);
+
+-- name: CourseGraphCreateExamVersion :one
+INSERT INTO course_graph_exam_versions(map_revision,created_at) VALUES($1,$2) RETURNING id;
+
+-- name: CourseGraphInsertExamTask :exec
+INSERT INTO course_graph_exam_tasks(map_revision,exam_revision,outcome_id,position,question,content,assessment_guidance)
+VALUES($1,$2,$3,$4,$5,$6,$7);
+
+-- name: CourseGraphInsertPrerequisite :exec
+INSERT INTO learning_graph_prerequisites(map_revision,source_outcome_id,target_outcome_id,reason)
+VALUES($1,$2,$3,$4);
+
+-- name: CourseGraphDeleteExamTopics :exec
+DELETE FROM course_graph_exam_topics WHERE exam_revision=$1;
+
+-- name: CourseGraphDeletePrerequisites :exec
+DELETE FROM learning_graph_prerequisites WHERE map_revision=$1;
+
+-- name: CourseGraphUpdateExamTaskRephrase :execrows
+UPDATE course_graph_exam_tasks SET rephrase=$4
+WHERE exam_revision=$1 AND outcome_id=$2 AND position=$3;
+
 -- name: ClaimCourseGraph :one
 -- A requested build takes its source as it is when it starts: the materials
 -- (it waits while any of them is still being processed) or the imported map.
@@ -96,7 +127,7 @@ SELECT s.id, coalesce(j.status,'not_requested')::text AS status,
        coalesce(j.source,'')::text AS job_source,
        coalesce(m.fingerprint,'')::text AS map_fingerprint,
        coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet,
-       m.learning_revision AS map_learning_revision
+       COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint) AS map_learning_revision
 FROM subjects s LEFT JOIN course_graph_jobs j ON j.subject_id=s.id
 LEFT JOIN course_graphs g ON g.subject_id=s.id
 LEFT JOIN course_graph_inputs i ON i.subject_id=s.id
@@ -106,18 +137,28 @@ LEFT JOIN course_graph_maps m ON m.subject_id=s.id WHERE s.id=$1;
 -- The graph Geek examines by. It stays published while its source changes
 -- until the next build; a graph of materials goes with the last of them, a
 -- graph of a competency map needs none.
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.subject_id=$1 AND (g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id));
 
 -- name: ListPublishedCourseGraphs :many
 -- Every graph Geek examines by, under the condition of ReadPublishedCourseGraph;
 -- the newest first, so their questions are voiced first.
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id;
 
 -- name: ListPublishedCourseGraphsForAudio :many
-SELECT g.subject_id, g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT g.subject_id,
+       CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id;
 

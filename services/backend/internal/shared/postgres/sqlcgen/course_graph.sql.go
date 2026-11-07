@@ -48,6 +48,139 @@ func (q *Queries) ClaimCourseGraph(ctx context.Context, arg ClaimCourseGraphPara
 	return i, err
 }
 
+const courseGraphCreateExamVersion = `-- name: CourseGraphCreateExamVersion :one
+INSERT INTO course_graph_exam_versions(map_revision,created_at) VALUES($1,$2) RETURNING id
+`
+
+type CourseGraphCreateExamVersionParams struct {
+	MapRevision int64
+	CreatedAt   int64
+}
+
+func (q *Queries) CourseGraphCreateExamVersion(ctx context.Context, arg CourseGraphCreateExamVersionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, courseGraphCreateExamVersion, arg.MapRevision, arg.CreatedAt)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const courseGraphDeleteExamTopics = `-- name: CourseGraphDeleteExamTopics :exec
+DELETE FROM course_graph_exam_topics WHERE exam_revision=$1
+`
+
+func (q *Queries) CourseGraphDeleteExamTopics(ctx context.Context, examRevision int64) error {
+	_, err := q.db.Exec(ctx, courseGraphDeleteExamTopics, examRevision)
+	return err
+}
+
+const courseGraphDeletePrerequisites = `-- name: CourseGraphDeletePrerequisites :exec
+DELETE FROM learning_graph_prerequisites WHERE map_revision=$1
+`
+
+func (q *Queries) CourseGraphDeletePrerequisites(ctx context.Context, mapRevision int64) error {
+	_, err := q.db.Exec(ctx, courseGraphDeletePrerequisites, mapRevision)
+	return err
+}
+
+const courseGraphInsertExamTask = `-- name: CourseGraphInsertExamTask :exec
+INSERT INTO course_graph_exam_tasks(map_revision,exam_revision,outcome_id,position,question,content,assessment_guidance)
+VALUES($1,$2,$3,$4,$5,$6,$7)
+`
+
+type CourseGraphInsertExamTaskParams struct {
+	MapRevision        int64
+	ExamRevision       int64
+	OutcomeID          string
+	Position           int32
+	Question           string
+	Content            string
+	AssessmentGuidance string
+}
+
+func (q *Queries) CourseGraphInsertExamTask(ctx context.Context, arg CourseGraphInsertExamTaskParams) error {
+	_, err := q.db.Exec(ctx, courseGraphInsertExamTask,
+		arg.MapRevision,
+		arg.ExamRevision,
+		arg.OutcomeID,
+		arg.Position,
+		arg.Question,
+		arg.Content,
+		arg.AssessmentGuidance,
+	)
+	return err
+}
+
+const courseGraphInsertExamTopic = `-- name: CourseGraphInsertExamTopic :exec
+INSERT INTO course_graph_exam_topics(map_revision,exam_revision,outcome_id,topic_order,role)
+VALUES($1,$2,$3,$4,$5)
+`
+
+type CourseGraphInsertExamTopicParams struct {
+	MapRevision  int64
+	ExamRevision int64
+	OutcomeID    string
+	TopicOrder   int32
+	Role         string
+}
+
+func (q *Queries) CourseGraphInsertExamTopic(ctx context.Context, arg CourseGraphInsertExamTopicParams) error {
+	_, err := q.db.Exec(ctx, courseGraphInsertExamTopic,
+		arg.MapRevision,
+		arg.ExamRevision,
+		arg.OutcomeID,
+		arg.TopicOrder,
+		arg.Role,
+	)
+	return err
+}
+
+const courseGraphInsertPrerequisite = `-- name: CourseGraphInsertPrerequisite :exec
+INSERT INTO learning_graph_prerequisites(map_revision,source_outcome_id,target_outcome_id,reason)
+VALUES($1,$2,$3,$4)
+`
+
+type CourseGraphInsertPrerequisiteParams struct {
+	MapRevision     int64
+	SourceOutcomeID string
+	TargetOutcomeID string
+	Reason          string
+}
+
+func (q *Queries) CourseGraphInsertPrerequisite(ctx context.Context, arg CourseGraphInsertPrerequisiteParams) error {
+	_, err := q.db.Exec(ctx, courseGraphInsertPrerequisite,
+		arg.MapRevision,
+		arg.SourceOutcomeID,
+		arg.TargetOutcomeID,
+		arg.Reason,
+	)
+	return err
+}
+
+const courseGraphUpdateExamTaskRephrase = `-- name: CourseGraphUpdateExamTaskRephrase :execrows
+UPDATE course_graph_exam_tasks SET rephrase=$4
+WHERE exam_revision=$1 AND outcome_id=$2 AND position=$3
+`
+
+type CourseGraphUpdateExamTaskRephraseParams struct {
+	ExamRevision int64
+	OutcomeID    string
+	Position     int32
+	Rephrase     string
+}
+
+func (q *Queries) CourseGraphUpdateExamTaskRephrase(ctx context.Context, arg CourseGraphUpdateExamTaskRephraseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, courseGraphUpdateExamTaskRephrase,
+		arg.ExamRevision,
+		arg.OutcomeID,
+		arg.Position,
+		arg.Rephrase,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failCourseGraph = `-- name: FailCourseGraph :exec
 UPDATE course_graph_jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,
     available_at=$1::bigint+30*attempts, lease_until=0, error_message=$2,updated_at=$1
@@ -112,7 +245,10 @@ func (q *Queries) FinishCourseGraph(ctx context.Context, arg FinishCourseGraphPa
 }
 
 const listPublishedCourseGraphs = `-- name: ListPublishedCourseGraphs :many
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id
 `
@@ -140,7 +276,11 @@ func (q *Queries) ListPublishedCourseGraphs(ctx context.Context) ([][]byte, erro
 }
 
 const listPublishedCourseGraphsForAudio = `-- name: ListPublishedCourseGraphsForAudio :many
-SELECT g.subject_id, g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT g.subject_id,
+       CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id
 `
@@ -197,7 +337,7 @@ SELECT s.id, coalesce(j.status,'not_requested')::text AS status,
        coalesce(j.source,'')::text AS job_source,
        coalesce(m.fingerprint,'')::text AS map_fingerprint,
        coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet,
-       m.learning_revision AS map_learning_revision
+       COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint) AS map_learning_revision
 FROM subjects s LEFT JOIN course_graph_jobs j ON j.subject_id=s.id
 LEFT JOIN course_graphs g ON g.subject_id=s.id
 LEFT JOIN course_graph_inputs i ON i.subject_id=s.id
@@ -258,8 +398,25 @@ func (q *Queries) ReadCourseGraphMap(ctx context.Context, subjectID string) ([]b
 	return graph, err
 }
 
+const readCourseGraphMapProjection = `-- name: ReadCourseGraphMapProjection :one
+SELECT CASE WHEN m.graph->>'canonical'='true'
+            THEN course_graph_map_projection(m.subject_id,COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint),m.graph,false)
+            ELSE m.graph END::jsonb AS graph
+FROM course_graph_maps m WHERE m.subject_id=$1
+`
+
+func (q *Queries) ReadCourseGraphMapProjection(ctx context.Context, subjectID string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, readCourseGraphMapProjection, subjectID)
+	var graph []byte
+	err := row.Scan(&graph)
+	return graph, err
+}
+
 const readPublishedCourseGraph = `-- name: ReadPublishedCourseGraph :one
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
+            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
+            ELSE g.graph END::jsonb AS graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.subject_id=$1 AND (g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id))
 `
 
