@@ -88,7 +88,13 @@ type MaterialListRow =
   | { id: string; week: string; queued: MaterialQueueItem }
   | { id: string; week: string; saved: CourseMaterial }
 
-export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
+export function CompetencyMapAdminScreen({
+  subjectId,
+  direction,
+}: {
+  subjectId: string
+  direction?: 'learn' | 'exam'
+}) {
   const { t } = useTranslation()
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -109,6 +115,7 @@ export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
       key={subjectId}
       userId={user.id}
       subjectId={subjectId}
+      legacyDirection={direction}
     />
   )
 }
@@ -116,9 +123,11 @@ export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
 function CompetencyMapAdmin({
   userId,
   subjectId,
+  legacyDirection,
 }: {
   userId: string
   subjectId: string
+  legacyDirection?: 'learn' | 'exam'
 }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -211,6 +220,7 @@ function CompetencyMapAdmin({
     startBuild.isPending ||
     latestBuild.data?.status === 'queued' ||
     latestBuild.data?.status === 'running'
+  const uploadsBlocked = busy || graphBuilding || !latestBuild.isSuccess
   const canSkipCriteria =
     !graphBuilding &&
     !courseGraph.data?.stale &&
@@ -340,10 +350,11 @@ function CompetencyMapAdmin({
       subjectName={subject?.name}
       courseMissing={subjects.isSuccess && !subjects.isError && !subject}
       course={subject}
+      showBothStatuses
       statusRefreshError={subjects.isRefetchError}
       onRetryStatus={() => void subjects.refetch()}
-      title={t('courseGraph.title')}
-      description={t('courseGraph.subtitle')}
+      title={t('adminCourses.preparationTitle')}
+      description={t('adminCourses.preparationSubtitle')}
     >
       {subjects.isPending ? (
         <Text as="p" role="status">
@@ -386,6 +397,15 @@ function CompetencyMapAdmin({
             </div>
           </nav>
 
+          <CompetencyMapImport
+            userId={userId}
+            subjectId={subjectId}
+            hasGraph={hasGraph}
+            disabled={uploadsBlocked}
+            map={courseGraph.data?.map}
+            legacyDirection={legacyDirection ?? 'learn'}
+          />
+
           <section
             className={styles.card}
             aria-labelledby="materials-list-title"
@@ -418,7 +438,15 @@ function CompetencyMapAdmin({
                 </Text>
               )}
 
-            <MaterialUploadQueueToolbar queue={queue} disabled={busy} />
+            <MaterialUploadQueueToolbar
+              queue={queue}
+              disabled={uploadsBlocked}
+            />
+            {graphBuilding && (
+              <Text as="p" role="status" color="gray" size="2">
+                {t('competencyMap.materialUploadBlockedByGraph')}
+              </Text>
+            )}
 
             {replaceMaterial.isError && (
               <Text as="p" role="alert" color="red">
@@ -563,7 +591,7 @@ function CompetencyMapAdmin({
                               file,
                             })
                           }
-                          busy={busy}
+                          busy={busy || !latestBuild.isSuccess}
                         />
                       )}
                     </div>
@@ -571,7 +599,7 @@ function CompetencyMapAdmin({
                 })}
               </div>
             )}
-            <MaterialUploadSubmit queue={queue} disabled={busy} />
+            <MaterialUploadSubmit queue={queue} disabled={uploadsBlocked} />
           </section>
 
           <section className={styles.card} aria-labelledby="graph-title">
@@ -762,13 +790,6 @@ function CompetencyMapAdmin({
                 </Flex>
               </AlertDialog.Content>
             </AlertDialog.Root>
-            <CompetencyMapImport
-              userId={userId}
-              subjectId={subjectId}
-              hasGraph={hasGraph}
-              disabled={!graphStateResolved || graphBuilding}
-              map={courseGraph.data?.map}
-            />
             <CourseGraphViewer
               graph={courseGraph.data?.view}
               fromMap={courseGraph.data?.source === 'competency_map'}

@@ -19,6 +19,7 @@ import (
 type Parser struct{}
 
 func (*Parser) Parse(data []byte) (competencymap.Map, error) { return Parse(data) }
+func (*Parser) XLSXSheetCount(data []byte) (int, error)      { return XLSXSheetCount(data) }
 
 var taskColumn = regexp.MustCompile(`^(Задание|Критерии) ?([1-9][0-9]*)$`)
 var topicColumn = regexp.MustCompile(`^Тем [1-9][0-9]*$`)

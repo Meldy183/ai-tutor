@@ -154,10 +154,19 @@
   margin: 0;
 }
 
-.directionHeader > span {
+.statuses {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.statuses > span {
   flex: 0 1 auto;
   max-width: 100%;
-  margin-top: var(--space-1);
   white-space: normal;
   overflow-wrap: anywhere;
 }

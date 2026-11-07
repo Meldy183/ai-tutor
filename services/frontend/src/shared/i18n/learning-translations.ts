@@ -62,8 +62,38 @@ export const learningTranslations = {
     fileSize: '{{size}} МиБ',
     submit: 'Подтвердить',
     submitEdit: 'Подтвердить изменения',
+    submitUnified: 'Подготовить для обучения и Geek',
+    singleSheetMode: 'Куда загрузить однолистовую карту?',
+    modeLearning: 'Карта обучения',
+    modeGeek: 'Граф Geek',
     cancelEdit: 'Отменить',
     uploading: 'Загружаем и проверяем карту…',
+    checkingWorkbook: 'Проверяем число листов…',
+    preparingUnified:
+      'Карта проверена. Подготавливаем единый граф для обучения и Geek…',
+    pendingMap:
+      'Карта «{{filename}}» сохранена. Подготавливаем отдельную версию Geek.',
+    pendingMapHelp:
+      'Учебная часть уже активна. Geek станет доступен после подготовки графа.',
+    pendingMapPreviousActive:
+      'В Geek продолжает работать опубликованная версия до успешной подготовки новой.',
+    failedMap:
+      'Не удалось подготовить граф по карте «{{filename}}». {{message}}',
+    failedMapPreviousActive:
+      'Новая версия карты уже активна в обучении; опубликованный граф Geek не изменился.',
+    publishingMap: 'Обновляем данные обучения для версии {{revision}}…',
+    learningVersionReady: 'Обучение: версия {{revision}} доступна',
+    learningVersionUpdating: 'Обучение: загружаем версию {{revision}}…',
+    geekVersionReady: 'Geek: версия {{revision}} опубликована',
+    geekVersionPreparing: 'Geek: готовится версия {{revision}}',
+    geekVersionPreparingWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; готовится версия {{revision}}',
+    geekVersionFailed: 'Geek: версия {{revision}} не опубликована',
+    geekVersionFailedWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; версия {{revision}} не опубликована',
+    unifiedBuildFailed:
+      'Не удалось подготовить граф. Откройте карту курса в разделе Geek, чтобы повторить подготовку.',
+    openGeekMap: 'Открыть подготовку в Geek',
     invalidType: 'Выберите файл CSV или XLSX.',
     tooLarge: 'Размер файла не должен превышать 25 МиБ.',
     emptyFile: 'Выбранный файл пуст.',
@@ -71,6 +101,8 @@ export const learningTranslations = {
     confirmTitle: 'Перезаписать карту?',
     confirmHelp:
       'Текущая карта и задания предмета будут заменены. Это действие нельзя отменить.',
+    confirmHelpUnified:
+      'После проверки и подготовки новая карта станет общей для обучения и Geek. До успешной подготовки текущая версия продолжит работать.',
     cancel: 'Отмена',
     confirm: 'Перезаписать',
     stats: {

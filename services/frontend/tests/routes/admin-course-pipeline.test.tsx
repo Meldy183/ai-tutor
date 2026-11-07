@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
+import { zipSync } from 'fflate'
 import {
   createMemoryHistory,
   createRouter,
@@ -47,17 +48,39 @@ function setup({
   competencyMap,
   materials,
   uploadGate,
+  buildGate,
+  learningMapImported: initiallyLearningMapImported = false,
+  learningWarnings = [],
   assessmentWarnings = [],
   buildProgress,
+  buildSource,
+  buildStatus,
   mapState = { fingerprint: 'map-a', stale: false, failed: false },
+  learningMapRevision,
 }: {
-  mapState?: { fingerprint: string; stale: boolean; failed: boolean }
+  mapState?: {
+    fingerprint: string
+    stale: boolean
+    failed: boolean
+    pending?: boolean
+    learningRevision?: number
+    publishedRevision?: number | null
+  }
   processing?: boolean
   pending?: boolean
   cleaning?: boolean
   cleaningFailed?: boolean
   graphReady?: boolean
   materials?: (typeof material)[]
+  buildGate?: Promise<void>
+  learningMapImported?: boolean
+  learningMapRevision?: number
+  learningWarnings?: {
+    row: number
+    column_index: number
+    column: string
+    code: string
+  }[]
   // The import of a competency map: a bad map names its cells; a good one is
   // built from its first sheet and the build publishes the graph of the map.
   competencyMap?: 'valid' | 'invalid'
@@ -71,10 +94,18 @@ function setup({
     total: number
     remaining_seconds?: number
   }
+  buildSource?: 'materials' | 'competency_map'
+  buildStatus?: 'pending' | 'processing' | 'ready' | 'failed'
 } = {}) {
   let graphRequested = false
   let mapImported = false
-  const hasSavedMap = assessmentWarnings.length > 0 || mapState.failed
+  let pairedMapImported = false
+  let activeLearningRevision =
+    learningMapRevision ?? (initiallyLearningMapImported ? 1 : 0)
+  const hasSavedMap =
+    assessmentWarnings.length > 0 ||
+    mapState.failed ||
+    mapState.publishedRevision !== undefined
   const courseMaterials = materials ?? [material]
   const calls = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/auth/me')) return Response.json(admin)
@@ -89,32 +120,84 @@ function setup({
           id: 'subject-a',
           name: 'Первый курс',
           ready: false,
-          learning_ready: false,
+          learning_ready: activeLearningRevision > 0,
           exam_ready: false,
           preparation: {
             exam: { state: 'empty', source: null, stale: false },
-            learn: { state: 'empty' },
+            learn: { state: activeLearningRevision > 0 ? 'ready' : 'empty' },
           },
         },
         {
           id: 'subject-b',
           name: 'Второй курс',
-          ready: graphReady || mapImported,
-          learning_ready: false,
-          exam_ready: graphReady || mapImported,
+          ready:
+            graphReady || hasSavedMap || (mapImported && !pairedMapImported),
+          learning_ready: activeLearningRevision > 0,
+          exam_ready:
+            graphReady || hasSavedMap || (mapImported && !pairedMapImported),
           preparation: {
             exam:
-              graphReady || mapImported
+              graphReady ||
+              (mapImported && !pairedMapImported) ||
+              (hasSavedMap && !mapImported)
                 ? {
                     state: 'ready',
                     source: mapImported ? 'competency_map' : 'materials',
                     stale: false,
                   }
-                : { state: 'empty', source: null, stale: false },
-            learn: { state: 'empty' },
+                : mapState.failed
+                  ? {
+                      state: 'failed',
+                      source: 'competency_map',
+                      stale: mapState.stale,
+                    }
+                  : mapImported || mapState.pending
+                    ? {
+                        state: 'queued',
+                        source: 'competency_map',
+                        stale: false,
+                      }
+                    : { state: 'empty', source: null, stale: false },
+            learn: {
+              state: activeLearningRevision > 0 ? 'ready' : 'empty',
+            },
           },
         },
       ])
+    if (url.includes('/learn/subjects/') && url.endsWith('/competency-map'))
+      return Response.json({
+        revision: activeLearningRevision,
+        imported_at: activeLearningRevision > 0 ? 2 : null,
+        competencies:
+          activeLearningRevision > 0
+            ? [
+                {
+                  constituents: [
+                    {
+                      outcomes: [{ tasks: [{}] }, { tasks: [{}, {}] }],
+                    },
+                    { outcomes: [{ tasks: [{}] }] },
+                  ],
+                },
+              ]
+            : [],
+      })
+    if (
+      url.includes('/learn/admin/subjects/') &&
+      url.endsWith('/competency-map/import')
+    ) {
+      activeLearningRevision += 1
+      return Response.json({
+        revision: activeLearningRevision,
+        imported_at: 2,
+        competency_count: 1,
+        constituent_count: 1,
+        outcome_count: 3,
+        task_count: 3,
+        unparsed_task_cell_count: learningWarnings.length,
+        warnings: learningWarnings,
+      })
+    }
     if (url.endsWith('/materials') && init?.method === 'POST') {
       await uploadGate
       const files = (init.body as FormData).getAll('file') as File[]
@@ -191,10 +274,21 @@ function setup({
           attempts: 0,
           error_message: '',
           graph: null,
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: false,
           updated_at: 1,
           build_source: 'competency_map',
+          map: mapState.learningRevision
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision,
+              }
+            : null,
         },
         { status: 202 },
       )
@@ -219,10 +313,21 @@ function setup({
           attempts: 1,
           error_message: '',
           graph: null,
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: true,
           updated_at: 3,
           build_source: 'competency_map',
+          map: mapState.learningRevision
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision,
+              }
+            : null,
         },
         { status: 202 },
       )
@@ -245,27 +350,69 @@ function setup({
           { status: 422 },
         )
       mapImported = true
+      const uploadedFile = (init?.body as FormData).get('file') as File
+      pairedMapImported = uploadedFile.name === 'paired-map.xlsx'
+      if (pairedMapImported) {
+        activeLearningRevision =
+          mapState.learningRevision ?? activeLearningRevision + 1
+      }
       return Response.json(
         {
           status: 'pending',
           attempts: 0,
           error_message: '',
           graph: null,
-          graph_source: 'none',
+          graph_source: hasSavedMap ? 'competency_map' : 'none',
           build_source: 'competency_map',
           map: {
             filename: 'map.xlsx',
             sheet: 'Карта компетенций v2',
             fingerprint: mapState.fingerprint,
+            learning_revision: pairedMapImported
+              ? activeLearningRevision
+              : null,
           },
+          graph_map_revision: mapState.publishedRevision ?? null,
           stale: mapState.stale,
           inputs_ready: true,
           updated_at: 0,
+          graph_fingerprint: hasSavedMap ? 'published-map' : '',
         },
         { status: 202 },
       )
     }
-    if (mapImported && url.endsWith('/graph'))
+    if (mapImported && url.endsWith('/graph') && pairedMapImported) {
+      await buildGate
+      return Response.json({
+        status: 'ready',
+        attempts: 1,
+        error_message: '',
+        graph: {
+          assessment_warnings: assessmentWarnings,
+          topics: [
+            { id: 'basic', title: 'Называет части агента' },
+            { id: 'main', title: 'Выбирает тип агента' },
+          ],
+          prerequisites: [{ source: 'basic', target: 'main' }],
+          hierarchy: [{ source: 'main', target: 'basic' }],
+        },
+        graph_source: 'competency_map',
+        graph_fingerprint: mapState.fingerprint,
+        graph_map_revision: activeLearningRevision,
+        build_source: 'competency_map',
+        map: {
+          filename: 'paired-map.xlsx',
+          sheet: 'Карта компетенций v2',
+          fingerprint: mapState.fingerprint,
+          learning_revision: activeLearningRevision,
+        },
+        stale: mapState.stale,
+        inputs_ready: true,
+        updated_at: 2,
+      })
+    }
+    if (mapImported && url.endsWith('/graph')) {
+      await buildGate
       return Response.json({
         status: 'ready',
         attempts: 0,
@@ -280,41 +427,53 @@ function setup({
           hierarchy: [{ source: 'main', target: 'basic' }],
         },
         graph_source: 'competency_map',
+        graph_fingerprint: mapState.fingerprint,
+        graph_map_revision:
+          mapState.publishedRevision ??
+          (activeLearningRevision > 0 ? activeLearningRevision : null),
         build_source: 'competency_map',
         map: {
           filename: 'map.xlsx',
           sheet: 'Карта компетенций v2',
           fingerprint: mapState.fingerprint,
+          learning_revision:
+            mapState.learningRevision ??
+            (activeLearningRevision > 0 ? activeLearningRevision : null),
         },
         stale: mapState.stale,
         inputs_ready: true,
         updated_at: 2,
       })
+    }
     if (url.endsWith('/graph') || url.endsWith('/graph/build')) {
       if (init?.method === 'POST') graphRequested = true
       return Response.json({
-        graph_source: hasSavedMap ? 'competency_map' : 'built',
-        map: hasSavedMap
-          ? {
-              filename: 'map.xlsx',
-              sheet: 'Карта',
-              fingerprint: mapState.fingerprint,
-            }
-          : null,
+        graph_source: hasSavedMap
+          ? 'competency_map'
+          : mapState.pending
+            ? 'none'
+            : 'built',
         progress: buildProgress,
         build_source:
-          buildProgress || hasSavedMap ? 'competency_map' : 'materials',
-        status: mapState.failed
-          ? 'failed'
-          : buildProgress
-            ? 'processing'
-            : graphRequested
+          buildSource ??
+          (buildProgress || hasSavedMap || mapState.pending
+            ? 'competency_map'
+            : 'materials'),
+        status:
+          buildStatus ??
+          (mapState.failed
+            ? 'failed'
+            : mapState.pending
               ? 'pending'
-              : graphReady
-                ? 'ready'
-                : 'not_requested',
+              : buildProgress
+                ? 'processing'
+                : graphRequested
+                  ? 'pending'
+                  : graphReady
+                    ? 'ready'
+                    : 'not_requested'),
         attempts: 0,
-        error_message: '',
+        error_message: mapState.failed ? 'Не удалось подготовить граф.' : '',
         graph: graphReady
           ? {
               assessment_warnings: assessmentWarnings,
@@ -333,6 +492,17 @@ function setup({
         stale: mapState.stale,
         inputs_ready: !processing && !cleaningFailed,
         updated_at: 1,
+        map:
+          hasSavedMap || mapState.pending
+            ? {
+                filename: 'map.xlsx',
+                sheet: 'Карта компетенций v2',
+                fingerprint: mapState.fingerprint,
+                learning_revision: mapState.learningRevision ?? null,
+              }
+            : null,
+        graph_fingerprint: hasSavedMap ? 'published-map' : '',
+        graph_map_revision: mapState.publishedRevision ?? null,
       })
     }
     throw new Error(`Unexpected API call: ${url}`)
@@ -448,6 +618,135 @@ it('shows actual question preparation and estimate without PDF blockers for a ma
   ).not.toBeInTheDocument()
 })
 
+it.each([
+  ['queued build from materials', 'pending', 'materials'],
+  ['processing build from competency map', 'processing', 'competency_map'],
+] as const)(
+  'disables material uploads during a reloaded %s',
+  async (_name, status, source) => {
+    setup({
+      materials: [],
+      buildStatus: status,
+      buildSource: source,
+      mapState: {
+        fingerprint: 'building-map',
+        stale: false,
+        failed: false,
+        pending: status === 'pending',
+      },
+      buildProgress:
+        status === 'processing'
+          ? {
+              stage: 'topics',
+              stage_index: 1,
+              stage_count: 2,
+              done: 1,
+              total: 2,
+            }
+          : undefined,
+    })
+    open()
+
+    const input = await screen.findByLabelText('Добавить PDF или ZIP')
+    expect(input).toBeDisabled()
+    expect(
+      screen.getByText(
+        'Загрузка материалов недоступна, пока собирается граф курса.',
+      ),
+    ).toBeVisible()
+  },
+)
+
+it('ignores dropped files on the disabled upload area during graph preparation', async () => {
+  const calls = setup({
+    materials: [],
+    buildStatus: 'processing',
+    buildSource: 'materials',
+    buildProgress: {
+      stage: 'topics',
+      stage_index: 1,
+      stage_count: 2,
+      done: 1,
+      total: 2,
+    },
+  })
+  open()
+
+  const upload = await screen.findByLabelText('Добавить PDF или ZIP')
+  const dropArea = upload.closest('label')
+  expect(dropArea).not.toBeNull()
+  const over = fireEvent.dragOver(dropArea!, {
+    dataTransfer: { files: [new File(['pdf'], 'drop.pdf')] },
+  })
+  fireEvent.drop(dropArea!, {
+    dataTransfer: { files: [new File(['pdf'], 'drop.pdf')] },
+  })
+
+  expect(over).toBe(false)
+  expect(screen.queryByText('drop.pdf')).not.toBeInTheDocument()
+  expect(
+    calls.mock.calls.some(
+      ([url, init]) =>
+        String(url).endsWith('/materials') && init?.method === 'POST',
+    ),
+  ).toBe(false)
+})
+
+it('keeps actions on already uploaded materials available during graph preparation', async () => {
+  setup({
+    materials: [material],
+    graphReady: true,
+    buildStatus: 'processing',
+    buildSource: 'materials',
+    buildProgress: {
+      stage: 'topics',
+      stage_index: 1,
+      stage_count: 2,
+      done: 1,
+      total: 2,
+    },
+  })
+  open()
+
+  expect(await screen.findByLabelText('Добавить PDF или ZIP')).toBeDisabled()
+  const materials = await screen.findByRole('region', {
+    name: 'Загруженные лекции и лабораторные',
+  })
+  expect(
+    within(materials).getByRole('button', { name: 'Заменить PDF' }),
+  ).toBeEnabled()
+  expect(
+    within(materials).getByRole('button', { name: 'Удалить' }),
+  ).toBeEnabled()
+})
+
+it.each([
+  ['ready', true],
+  ['failed', false],
+] as const)(
+  'enables material uploads again after graph build is %s',
+  async (status, ready) => {
+    setup({
+      materials: [],
+      graphReady: ready,
+      buildStatus: status,
+      mapState: {
+        fingerprint: 'finished-map',
+        stale: false,
+        failed: status === 'failed',
+      },
+    })
+    open()
+
+    expect(await screen.findByLabelText('Добавить PDF или ZIP')).toBeEnabled()
+    expect(
+      screen.queryByText(
+        'Загрузка материалов недоступна, пока собирается граф курса.',
+      ),
+    ).not.toBeInTheDocument()
+  },
+)
+
 it('shows the master pipeline stage while translation is running and blocks graph builds', async () => {
   setup({ processing: true })
   open()
@@ -476,22 +775,18 @@ it('keeps the master graph viewer for a published graph', async () => {
   ).not.toBeInTheDocument()
 })
 
-it('keeps the competency map import inside the selected course graph card', async () => {
+it('keeps the legacy exam route on the unified course preparation screen', async () => {
   setup()
-  open('/admin/courses/subject-b?direction=exam')
-  const graphSection = await screen.findByRole('region', {
-    name: 'Граф тем курса',
-  })
+  const router = open('/admin/courses/subject-b?direction=exam')
   expect(
-    within(graphSection).getByText(
-      /Вместо материалов загрузите карту компетенций/,
-    ),
+    await screen.findByRole('heading', { name: 'Подготовка курса' }),
   ).toBeVisible()
   expect(
-    within(graphSection).getByRole('button', {
+    await screen.findByRole('button', {
       name: 'Импортировать карту компетенций',
     }),
   ).toBeVisible()
+  expect(router.state.location.search).toEqual({ direction: 'exam' })
   expect(
     screen.queryByRole('heading', {
       name: 'Карта для экзаменационного графа',
@@ -499,25 +794,298 @@ it('keeps the competency map import inside the selected course graph card', asyn
   ).not.toBeInTheDocument()
 })
 
+it('lets admins choose the destination of a one-sheet workbook on the legacy exam URL', async () => {
+  const calls = setup({ materials: [] })
+  open('/admin/courses/subject-b?direction=exam')
+  await chooseMap()
+
+  const modePicker = await screen.findByRole('radiogroup', {
+    name: 'Куда загрузить однолистовую карту?',
+  })
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  fireEvent.click(
+    within(modePicker).getByRole('radio', { name: 'Карта обучения' }),
+  )
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
+  )
+
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith(
+          '/learn/admin/subjects/subject-b/competency-map/import',
+        ),
+      ),
+    ).toBe(true),
+  )
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+})
+
 function chooseMap() {
-  return screen
-    .findByLabelText('Импортировать карту компетенций', { selector: 'input' })
-    .then((input) =>
-      fireEvent.change(input, {
-        target: {
-          files: [new File(['PK'], 'map.xlsx', { type: 'application/zip' })],
-        },
-      }),
-    )
+  return screen.findByLabelText('Файл карты компетенций').then((input) =>
+    fireEvent.change(input, {
+      target: {
+        files: [new File(['PK'], 'map.xlsx', { type: 'application/zip' })],
+      },
+    }),
+  )
 }
+
+function pairedWorkbook() {
+  const sheets = ['Geek', 'Обучение']
+    .map(
+      (name, index) =>
+        `<sheet name="${name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+    )
+    .join('')
+  return new File(
+    [
+      zipSync({
+        'xl/workbook.xml': new TextEncoder().encode(
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>${sheets}</sheets></workbook>`,
+        ),
+      }),
+    ],
+    'paired-map.xlsx',
+  )
+}
+
+function singleWorkbook() {
+  return new File(
+    [
+      zipSync({
+        'xl/workbook.xml': new TextEncoder().encode(
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Карта" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        ),
+      }),
+    ],
+    'map.xlsx',
+  )
+}
+
+it('shows immediate learning readiness and a pending Geek build after page reload', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    learningMapRevision: 4,
+    mapState: {
+      fingerprint: 'pending-map',
+      stale: false,
+      failed: false,
+      pending: true,
+      learningRevision: 4,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByText('Обучение: версия 4 доступна')).toBeVisible()
+  expect(within(state).getByText('Geek: готовится версия 4')).toBeVisible()
+  expect(
+    within(state).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+})
+
+it('shows active learning and published Geek versions separately during replacement', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    learningMapRevision: 2,
+    mapState: {
+      fingerprint: 'replacement-map',
+      stale: false,
+      failed: false,
+      pending: true,
+      learningRevision: 2,
+      publishedRevision: 1,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByText('Обучение: версия 2 доступна')).toBeVisible()
+  expect(
+    within(state).getByText('Geek: версия 1 работает; готовится версия 2'),
+  ).toBeVisible()
+  expect(
+    within(state).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+})
+
+it('keeps the previous active map visible and reports a failed pending replacement after reload', async () => {
+  setup({
+    materials: [],
+    learningMapImported: true,
+    learningMapRevision: 2,
+    mapState: {
+      fingerprint: 'failed-replacement',
+      stale: true,
+      failed: true,
+      learningRevision: 2,
+      publishedRevision: 1,
+    },
+  })
+  open('/admin/courses/subject-b')
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByRole('alert')).toHaveTextContent(
+    'Не удалось подготовить граф.',
+  )
+  expect(within(state).getByText('Обучение: версия 2 доступна')).toBeVisible()
+  expect(
+    within(state).getByText(
+      'Geek: версия 1 работает; версия 2 не опубликована',
+    ),
+  ).toBeVisible()
+})
+
+it('shows the learning map statistics separately from the one shared upload', async () => {
+  setup({ learningMapImported: true })
+  open()
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+  expect(within(state).getByText('Компетенции')).toBeVisible()
+  expect(within(state).getByText('Составляющие')).toBeVisible()
+  expect(within(state).getByText('Образовательные результаты')).toBeVisible()
+  expect(within(state).getByText('Готовые задания')).toBeVisible()
+  expect(within(state).getByText('Загружена')).toBeVisible()
+  expect(within(state).getByText('Версия карты')).toBeVisible()
+  expect(within(state).getAllByText('1')).toHaveLength(2)
+  expect(within(state).getByText('2')).toBeVisible()
+  expect(within(state).getByText('3')).toBeVisible()
+  expect(
+    await screen.findByRole('region', { name: 'Обновить карту компетенций' }),
+  ).toBeVisible()
+})
+
+it('refreshes learning map statistics after the shared background build completes', async () => {
+  let finishBuild!: () => void
+  const buildGate = new Promise<void>((resolve) => {
+    finishBuild = resolve
+  })
+  const calls = setup({ materials: [], buildGate })
+  open()
+  await screen.findByText('Карта ещё не загружена.')
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [pairedWorkbook()] },
+  })
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: 'Подготовить для обучения и Geek',
+    }),
+  )
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith('/graph/competency-map'),
+      ),
+    ).toBe(true),
+  )
+  expect(await screen.findByText(/Подготавливаем единый граф/)).toBeVisible()
+  const stateWhileBuilding = screen.getByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+  expect(
+    await within(stateWhileBuilding).findByText('Обучение: версия 1 доступна'),
+  ).toBeVisible()
+  expect(
+    within(stateWhileBuilding).getByText('Geek: готовится версия 1'),
+  ).toBeVisible()
+  expect(within(stateWhileBuilding).getByText('Готовые задания')).toBeVisible()
+  expect(
+    within(stateWhileBuilding).queryByText('Карта ещё не загружена.'),
+  ).not.toBeInTheDocument()
+
+  finishBuild()
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+  await waitFor(() => expect(within(state).getByText('4')).toBeVisible())
+  expect(
+    within(state).getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
+  expect(within(state).getByText('Geek: версия 1 опубликована')).toBeVisible()
+})
+
+it('keeps imported learning warnings in a readable row and reason table', async () => {
+  setup({
+    materials: [],
+    learningWarnings: [
+      {
+        row: 4,
+        column_index: 2,
+        column: 'Задание 1',
+        code: 'TASK_MISSING_SCREEN',
+      },
+    ],
+  })
+  open('/admin/courses/subject-b?direction=learn')
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+  })
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
+  )
+
+  const warnings = await screen.findByRole('region', {
+    name: 'Предупреждения импорта',
+  })
+  expect(
+    within(warnings).getByRole('columnheader', { name: 'Строка' }),
+  ).toBeVisible()
+  expect(
+    within(warnings).getByRole('columnheader', { name: 'Что не так' }),
+  ).toBeVisible()
+  expect(within(warnings).getByText('4')).toBeVisible()
+  expect(within(warnings).getByText('Задание 1:')).toBeVisible()
+  expect(within(warnings).getByText(/обрывок без «Экран:»/)).toBeVisible()
+})
 
 it('builds the graph from the first sheet of a competency map', async () => {
   const calls = setup({ competencyMap: 'valid' })
   open()
-  await chooseMap()
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [singleWorkbook()] },
+  })
+  const modePicker = await screen.findByRole('radiogroup', {
+    name: 'Куда загрузить однолистовую карту?',
+  })
+  fireEvent.click(within(modePicker).getByRole('radio', { name: 'Граф Geek' }))
+  const submit = screen.getByRole('button', { name: 'Импортировать' })
+  await waitFor(() => expect(submit).toBeEnabled())
+  fireEvent.click(submit)
   const dialog = await screen.findByRole('alertdialog')
   expect(within(dialog).getByText(/по карте «map\.xlsx»/)).toBeVisible()
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
+  const confirm = within(dialog).getByRole('button', { name: 'Импортировать' })
+  await waitFor(() => expect(confirm).toBeEnabled())
+  fireEvent.click(confirm)
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith('/graph/competency-map'),
+      ),
+    ).toBe(true),
+  )
   expect(
     await screen.findByText('По карте компетенций', undefined, {
       timeout: 8000,
@@ -538,18 +1106,44 @@ it('builds the graph from the first sheet of a competency map', async () => {
   expect(screen.queryByLabelText('Лист карты')).not.toBeInTheDocument()
 }, 15000)
 
-it('imports a map through the shared course ID and makes a map-only course ready', async () => {
-  const calls = setup({ competencyMap: 'valid', materials: [] })
+it('imports a map through the shared course ID and activates learning while Geek prepares', async () => {
+  let finishBuild!: () => void
+  const buildGate = new Promise<void>((resolve) => {
+    finishBuild = resolve
+  })
+  const calls = setup({ competencyMap: 'valid', materials: [], buildGate })
   const router = open('/admin/courses/subject-b?direction=exam')
   expect(
     await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
   ).toBeVisible()
   expect(await screen.findByText(/Материалов: 0/)).toBeVisible()
-  await chooseMap()
-  const dialog = await screen.findByRole('alertdialog')
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
-  await screen.findByText('По карте компетенций', undefined, { timeout: 8000 })
-  expect(await screen.findByText('Экзамен: готов')).toBeVisible()
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [pairedWorkbook()] },
+  })
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: 'Подготовить для обучения и Geek',
+    }),
+  )
+  await waitFor(() =>
+    expect(
+      calls.mock.calls.some(([url]) =>
+        String(url).endsWith('/graph/competency-map'),
+      ),
+    ).toBe(true),
+  )
+  expect(await screen.findByText('Обучение: готово')).toBeVisible()
+  expect(await screen.findByText('Экзамен: подготовка в очереди')).toBeVisible()
+  expect(await screen.findByText(/Обучение: версия 1 доступна/)).toBeVisible()
+  expect(await screen.findByText(/Geek: готовится версия 1/)).toBeVisible()
+  finishBuild()
+  expect(
+    await screen.findByText(
+      'Курс готов для студентов. В графе тем: 2.',
+      undefined,
+      { timeout: 8000 },
+    ),
+  ).toBeVisible()
   expect(router.state.location.pathname).toBe('/admin/courses/subject-b')
   expect(router.state.location.search).toEqual({ direction: 'exam' })
   expect(
@@ -564,45 +1158,46 @@ it('imports a map through the shared course ID and makes a map-only course ready
   ).toBe(true)
 }, 15000)
 
-it('keeps the common course heading and exactly one selected direction tab', async () => {
+it('opens the same course preparation flow from both legacy directions', async () => {
   setup()
   const router = open('/admin/courses/subject-b?direction=exam')
   expect(
     await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
   ).toBeVisible()
-  const navigation = screen.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  const selected = () =>
-    within(navigation)
-      .getAllByRole('link')
-      .filter((tab) => tab.getAttribute('aria-current') === 'page')
-  expect(selected()).toHaveLength(1)
-  expect(selected()[0]).toHaveAccessibleName('Материалы для экзамена')
-  fireEvent.click(
-    within(navigation).getByRole('link', { name: 'Материалы для обучения' }),
-  )
   expect(
-    await screen.findByRole('heading', { name: 'Материалы для обучения' }),
+    screen.getByRole('region', { name: 'Загруженные лекции и лабораторные' }),
   ).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Граф тем курса' })).toBeVisible()
+  expect(
+    screen.queryByRole('navigation', { name: 'Разделы администрирования' }),
+  ).not.toBeInTheDocument()
+
+  await router.navigate({
+    to: '/admin/courses/$subjectId',
+    params: { subjectId: 'subject-b' },
+    search: { direction: 'learn' },
+  })
+  expect(
+    await screen.findByRole('region', {
+      name: 'Загруженные лекции и лабораторные',
+    }),
+  ).toBeVisible()
+  expect(screen.getByRole('region', { name: 'Граф тем курса' })).toBeVisible()
+  expect(
+    screen.queryByRole('navigation', { name: 'Разделы администрирования' }),
+  ).not.toBeInTheDocument()
   expect(router.state.location.search).toEqual({ direction: 'learn' })
-  const navigationAfterSwitch = screen.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  const selectedAfterSwitch = within(navigationAfterSwitch)
-    .getAllByRole('link')
-    .filter((tab) => tab.getAttribute('aria-current') === 'page')
-  expect(selectedAfterSwitch).toHaveLength(1)
-  expect(selectedAfterSwitch[0]).toHaveAccessibleName('Материалы для обучения')
-  expect(
-    await screen.findByRole('heading', { name: 'Второй курс', level: 1 }),
-  ).toBeVisible()
 })
 
 it('names the bad cells of a rejected competency map', async () => {
   setup({ competencyMap: 'invalid' })
   open()
   await chooseMap()
+  fireEvent.click(
+    await screen.findByRole('button', {
+      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
+    }),
+  )
   const dialog = await screen.findByRole('alertdialog')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
   const alert = await screen.findByText(

@@ -28,6 +28,10 @@ import (
 // MapVersion is the version of a graph built from a competency map.
 const MapVersion = "competency-map-v1"
 
+// CanonicalMapVersion is the runtime projection built from canonical course
+// vertices/edges and the Geek-specific tasks for that version.
+const CanonicalMapVersion = "competency-map-canonical-v1"
+
 // SourceMap marks a graph built from a competency map.
 const SourceMap = "competency_map"
 
@@ -179,8 +183,8 @@ type mapOutcome struct {
 	requires              []string
 }
 
-// BuildMapGraph builds the course graph from the first sheet of the book, the
-// simulation's; the other sheets are not read.
+// BuildMapGraph builds the Geek course graph from the first sheet. Paired-map
+// structure is validated by the importer before it stages the learning sheet.
 func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 	if len(sheets) == 0 {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "В книге нет листов."}
@@ -225,6 +229,68 @@ func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 		return MapGraph{}, err
 	}
 	return MapGraph{Graph: graph, Sheet: sheet, Topics: topics, Skipped: skipped}, nil
+}
+
+// CompetencyMapStructure extracts the authored structure of Geek's map sheet
+// in the shared comparison shape used to pair it with the learning sheet.
+func CompetencyMapStructureKeys(sheet MapSheet) ([]string, error) {
+	_, valid := mapHeader(sheet.Rows)
+	if !valid {
+		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("На листе «%s» нет обязательных колонок карты.", sheet.Name)}
+	}
+	_, groups, issues := readMapOutcomes(sheet.Rows)
+	if len(issues) > 0 {
+		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet.Name), Issues: issues}
+	}
+	keys := []string{}
+	competencyNames := map[string]struct{}{}
+	constituentNames := map[string]struct{}{}
+	for _, group := range groups {
+		competency := normalizeMapKey(group.competency)
+		constituent := normalizeMapKey(group.constituent)
+		if _, ok := competencyNames[competency]; !ok {
+			competencyNames[competency] = struct{}{}
+			keys = append(keys, "компетенция/"+competency)
+		}
+		constituentKey := "составляющая/" + competency + "/" + constituent
+		if _, ok := constituentNames[constituentKey]; !ok {
+			constituentNames[constituentKey] = struct{}{}
+			keys = append(keys, constituentKey)
+		}
+	}
+	layout, _ := mapHeader(sheet.Rows)
+	competency, constituent := "", ""
+	for i := layout.header + 1; i < len(sheet.Rows); i++ {
+		row := sheet.Rows[i]
+		if blank(row) {
+			continue
+		}
+		cell := func(key string) string {
+			index, ok := layout.columns[key]
+			if !ok || index >= len(row) {
+				return ""
+			}
+			return strings.TrimSpace(row[index])
+		}
+		if value := cell("competency"); value != "" {
+			if value != competency {
+				constituent = ""
+			}
+			competency = value
+		}
+		if value := cell("constituent"); value != "" {
+			constituent = value
+		}
+		if outcome := cell("outcome"); outcome != "" {
+			keys = append(keys, "ор/"+normalizeMapKey(competency)+"/"+normalizeMapKey(constituent)+"/"+normalizeMapKey(outcome))
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
+}
+
+func normalizeMapKey(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
 func skippedIssues(skipped []SkippedCompetency) []MapIssue {
@@ -379,12 +445,15 @@ type mapTopic struct {
 	AssessmentGuidance string `json:"assessment_guidance,omitempty"`
 	// Variants are all the tasks of the outcome; the topic's own question,
 	// text and guidance are those of the first one.
-	Variants    []mapVariant `json:"variants"`
-	Provides    []string     `json:"provides"`
-	Requires    []string     `json:"requires"`
-	ParentTitle string       `json:"parent_title"`
-	Role        string       `json:"role"`
-	Row         int          `json:"row"`
+	Variants         []mapVariant `json:"variants"`
+	Provides         []string     `json:"provides"`
+	Requires         []string     `json:"requires"`
+	ParentTitle      string       `json:"parent_title"`
+	ConstituentTitle string       `json:"constituent_title"`
+	CompetencyID     string       `json:"competency_id,omitempty"`
+	ConstituentID    string       `json:"constituent_id,omitempty"`
+	Role             string       `json:"role"`
+	Row              int          `json:"row"`
 }
 
 // mapVariant has the shape of exam.Variant.
@@ -483,7 +552,7 @@ func newMapTopic(o mapOutcome, role string, requires []string) mapTopic {
 	}
 	first := variants[0]
 	return mapTopic{ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
-		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, Role: role, Row: o.row}
+		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, ConstituentTitle: o.constituent, Role: role, Row: o.row}
 }
 
 // scoringLine starts the scoring part of the criteria: «Балл (макс. 1)» or an

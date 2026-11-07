@@ -104,7 +104,6 @@ function CompetencyMapAdmin({
   const submitRef = useRef<HTMLButtonElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
-
   // A file the server rejected (format or size) is dropped, so there is
   // nothing left to confirm; technical failures keep it for a retry.
   const settleFile = {

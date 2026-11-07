@@ -504,6 +504,23 @@ components:
         - stage_index
         - total
       type: object
+    coursegraph.ImportWarning:
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+        column:
+          type: string
+        column_index:
+          type: integer
+        row:
+          type: integer
+      required:
+        - code
+        - column
+        - column_index
+        - row
+      type: object
     coursegraph.MapFile:
       additionalProperties: false
       properties:
@@ -511,11 +528,16 @@ components:
           type: string
         fingerprint:
           type: string
+        learning_revision:
+          type:
+            - integer
+            - "null"
         sheet:
           type: string
       required:
         - filename
         - fingerprint
+        - learning_revision
         - sheet
       type: object
     coursegraph.Snapshot:
@@ -540,6 +562,14 @@ components:
           type:
             - object
             - "null"
+        graph_fingerprint:
+          description: GraphFingerprint identifies the currently published Geek graph.
+          type: string
+        graph_map_revision:
+          description: GraphMapRevision is the learning-map revision used to build the published Geek graph.
+          type:
+            - integer
+            - "null"
         graph_source:
           enum:
             - built
@@ -548,6 +578,14 @@ components:
           type: string
         inputs_ready:
           type: boolean
+        learning_warnings:
+          description: |-
+            LearningWarnings are parser warnings from the second sheet of the
+            just-imported paired workbook; they are not persisted in the map snapshot.
+          items:
+            $ref: '#/components/schemas/coursegraph.ImportWarning'
+          type: array
+          uniqueItems: false
         map:
           anyOf:
             - $ref: '#/components/schemas/coursegraph.MapFile'
@@ -577,8 +615,11 @@ components:
         - build_source
         - error_message
         - graph
+        - graph_fingerprint
+        - graph_map_revision
         - graph_source
         - inputs_ready
+        - learning_warnings
         - map
         - progress
         - stale
@@ -4026,7 +4067,7 @@ paths:
       x-implementation: planned
   /exam/admin/subjects/{subject_id}/graph:
     get:
-      description: 'Доступно только admin. Сборку запускает POST .../graph/build. stale — источник графа (материалы или карта) изменился после публикации; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source — откуда граф: built (собран из материалов), competency_map (собран по карте компетенций) или none — графа нет, курс студентам не виден. build_source — что читает последняя запрошенная сборка; map — последняя импортированная карта.'
+      description: Доступно только admin. Сборку запускает POST .../graph/build. stale — источник опубликованного Geek-графа изменился; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source, graph_fingerprint и graph_map_revision описывают опубликованную версию Geek; status, build_source и error_message — последнюю подготовку. map и map.learning_revision описывают последнюю сохранённую карту. Для двухлистовой карты учебная версия активируется при сохранении карты; опубликованный Geek-граф остаётся доступен до успешной подготовки новой версии.
       operationId: getCourseGraph
       parameters:
         - description: ID предмета
@@ -4155,7 +4196,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
         "422":
           content:
             application/json:
@@ -4176,7 +4217,7 @@ paths:
       x-implementation: implemented
   /exam/admin/subjects/{subject_id}/graph/competency-map:
     post:
-      description: 'Доступно только admin. Кнопка «Импортировать карту компетенций»: граф курса собирается по карте вместо материалов — на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; вопрос — задание карты без изменений. Карта проверяется сразу, затем вопросы готовятся и граф публикуется так же, как сборка из материалов, и заменяет прежний граф курса. Граф строится по первому листу книги (второй — для диагностики режима «Обучение»); колонки «Компетенция» и «Таксономия» принимаются вместо «Субкомпетенция» и «Уровень по Блуму». Все колонки «Задание N» ОР становятся вариантами темы с критериями из колонки «Критерии оценивания…» того же номера по порядку; экзамен при старте выбирает один вариант случайно.'
+      description: Доступно только admin. Одна загрузка двухлистовой карты проверяет структуру обоих листов по компетенции, составляющей и ОР. Первый лист ставит сборку графа Geek в очередь, второй сохраняется как активная учебная карта; задания и критерии остаются при своих ОР и не подменяют друг друга. Учебная карта активируется при успешном сохранении импорта, до фоновой сборки Geek. Если сборка завершается ошибкой, учебная карта остаётся активной, а последняя опубликованная версия графа сохраняется. Для графа Geek на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; все колонки «Задание N» становятся вариантами темы с критериями из колонки того же номера по порядку. CSV и однолистовые импорты обучения сохраняют прежний маршрут.
       operationId: importCourseGraphCompetencyMap
       parameters:
         - description: ID предмета
@@ -4185,6 +4226,11 @@ paths:
           required: true
           schema:
             type: string
+        - description: Активная версия учебной карты из GET /learn/subjects/{subject_id}/competency-map; обязательна для двухлистовой книги
+          in: header
+          name: X-Expected-Learning-Revision
+          schema:
+            type: integer
       requestBody:
         content:
           multipart/form-data:
@@ -4236,7 +4282,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
         "413":
           content:
             application/json:
@@ -4248,7 +4294,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY
+          description: COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH
         "503":
           content:
             application/json:
@@ -5378,7 +5424,7 @@ paths:
       x-implementation: implemented
   /learn/admin/subjects/{subject_id}/competency-map/import:
     post:
-      description: Доступно только admin. Импорт атомарно заменяет карту указанного предмета.
+      description: Доступно только admin. Совместимый импорт CSV и однолистовой XLSX атомарно заменяет учебную карту. Двухлистовую XLSX-карту нужно загрузить через единый импорт графа курса; независимая публикация её учебного листа отклоняется.
       operationId: importSubjectCompetencyMap
       parameters:
         - description: ID предмета
@@ -5437,7 +5483,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: Conflict
+          description: COMPETENCY_MAP_CHANGED или UNIFIED_COMPETENCY_MAP_REQUIRED
         "413":
           content:
             application/json:

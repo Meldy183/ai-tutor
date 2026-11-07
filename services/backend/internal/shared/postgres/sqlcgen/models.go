@@ -27,6 +27,32 @@ type CourseGraph struct {
 	Graph       []byte
 	UpdatedAt   int64
 	Source      string
+	MapRevision *int64
+}
+
+type CourseGraphExamTask struct {
+	MapRevision        int64
+	OutcomeID          string
+	Position           int32
+	Question           string
+	Content            string
+	AssessmentGuidance string
+	Rephrase           string
+	ExamRevision       int64
+}
+
+type CourseGraphExamTopic struct {
+	MapRevision  int64
+	OutcomeID    string
+	TopicOrder   int32
+	Role         string
+	ExamRevision int64
+}
+
+type CourseGraphExamVersion struct {
+	ID          int64
+	MapRevision int64
+	CreatedAt   int64
 }
 
 type CourseGraphInput struct {
@@ -54,12 +80,18 @@ type CourseGraphJobInput struct {
 }
 
 type CourseGraphMap struct {
-	SubjectID   string
-	Filename    string
-	Sheet       string
-	Fingerprint string
-	Graph       []byte
-	UploadedAt  int64
+	SubjectID        string
+	Filename         string
+	Sheet            string
+	Fingerprint      string
+	Graph            []byte
+	UploadedAt       int64
+	LearningRevision *int64
+}
+
+type CourseGraphMapLegacyBackup struct {
+	SubjectID string
+	Graph     []byte
 }
 
 type GeekRequest struct {
@@ -238,6 +270,13 @@ type LearningGraphLabel struct {
 	DisplayName string
 }
 
+type LearningGraphPrerequisite struct {
+	MapRevision     int64
+	SourceOutcomeID string
+	TargetOutcomeID string
+	Reason          string
+}
+
 type LearningMapImport struct {
 	Revision              int64
 	Singleton             bool
@@ -336,8 +375,9 @@ type LearningSession struct {
 }
 
 type LearningSubjectState struct {
-	SubjectID      string
-	ActiveRevision *int64
+	SubjectID       string
+	ActiveRevision  *int64
+	PendingRevision *int64
 }
 
 type LearningTask struct {
