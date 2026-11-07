@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"github.com/AskarKasimov/ai-tutor/services/voice-gateway/internal/diagnostic"
 	"google.golang.org/grpc/codes"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -69,14 +73,64 @@ func TestExistingModelProtocols(t *testing.T) {
 	}
 }
 
-func TestProxyTimeoutDoesNotProveExecutionStopped(t *testing.T) {
-	failure := responseFailure(&http.Response{StatusCode: http.StatusGatewayTimeout}, false).(*diagnostic.Error)
-	if !failure.Uncertain {
-		t.Fatal("proxy timeout incorrectly released model slot")
+func TestErrorWithoutExecutionConfirmationKeepsSlot(t *testing.T) {
+	for _, status := range []int{401, 403, 408, 422, 429, 500, 502, 503, 504} {
+		for _, state := range []string{"", "unknown", "uncertain", "not-started", "finished"} {
+			for _, stt := range []bool{true, false} {
+				response := &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}"))}
+				if state != "" {
+					response.Header.Set("X-Voice-Execution-State", state)
+				}
+				want := state != "not-started" && state != "finished"
+				if info := diagnostic.Info(responseFailure(response, stt)); info.Uncertain != want {
+					t.Fatalf("status=%d state=%q stt=%v: %+v", status, state, stt, info)
+				}
+			}
+		}
 	}
-	unavailable := responseFailure(&http.Response{StatusCode: http.StatusServiceUnavailable}, false).(*diagnostic.Error)
-	if unavailable.Uncertain {
-		t.Fatal("explicit unavailable response held slot")
+	response := &http.Response{StatusCode: 503, Header: http.Header{"X-Voice-Execution-State": {"finished", "uncertain"}}}
+	if !diagnostic.Info(responseFailure(response, false)).Uncertain {
+		t.Fatal("conflicting execution headers released slot")
+	}
+}
+
+func TestRedirectsNeverForwardReceiverCredentialsOrPayload(t *testing.T) {
+	for _, status := range []int{307, 308} {
+		for _, op := range []string{"stt", "tts"} {
+			t.Run(fmt.Sprintf("%s/%d", op, status), func(t *testing.T) {
+				var forwarded atomic.Int32
+				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1) }))
+				defer target.Close()
+				source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("Authorization") != "Bearer private-test-token" {
+						t.Error("source did not receive token")
+					}
+					w.Header().Set("Location", target.URL)
+					w.WriteHeader(status)
+				}))
+				defer source.Close()
+				client := source.Client()
+				var policyCalls atomic.Int32
+				client.CheckRedirect = func(*http.Request, []*http.Request) error { policyCalls.Add(1); return nil }
+				p := testProvider(client, source.URL)
+				stt, tts := p.STT["stt"], p.TTS["tts"]
+				stt.Token, tts.Token = "private-test-token", "private-test-token"
+				p.STT["stt"], p.TTS["tts"] = stt, tts
+				err := invokeProvider(p, op, context.Background())
+				if info := diagnostic.Info(err); err == nil || !info.Uncertain || info.HTTPStatus != status {
+					t.Fatalf("redirect: %+v", info)
+				}
+				if forwarded.Load() != 0 || policyCalls.Load() != 0 {
+					t.Fatal("provider followed redirect")
+				}
+				if client.CheckRedirect == nil {
+					t.Fatal("shared client policy was mutated")
+				}
+				if err := client.CheckRedirect(nil, nil); err != nil || policyCalls.Load() != 1 {
+					t.Fatal("shared policy changed")
+				}
+			})
+		}
 	}
 }
 

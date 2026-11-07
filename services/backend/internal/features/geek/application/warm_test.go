@@ -59,7 +59,7 @@ func (a *syncAudio) Put(_ context.Context, key string, data []byte) error {
 func TestWarmerVoicesPreparedQuestionsOnceBeforeStudentsAsk(t *testing.T) {
 	voice := &countingVoice{called: make(chan struct{}, 8)}
 	store := &syncAudio{data: map[string][]byte{}}
-	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20")), nil)
+	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20"), time.Minute), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { _ = warmer.Run(ctx); close(done) }()
@@ -77,7 +77,7 @@ func TestWarmerVoicesPreparedQuestionsOnceBeforeStudentsAsk(t *testing.T) {
 	}
 	// A question already in the cache is not synthesized again.
 	warmer.Prepare([]string{"Почему A* оптимален?"})
-	speech := NewSpeechCache(voice, store, staticVoiceName("steps=20"))
+	speech := NewSpeechCache(voice, store, staticVoiceName("steps=20"), time.Minute)
 	if _, err := speech.Part(context.Background(), "Зачем эвристика?"); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestWarmerVoicesPreparedQuestionsOnceBeforeStudentsAsk(t *testing.T) {
 }
 
 func TestRepeatedTrackRestoredPreservesProgressForTheSameGraph(t *testing.T) {
-	warmer := NewWarmer(NewSpeechCache(nil, nil, staticVoiceName("voice-v1")), nil)
+	warmer := NewWarmer(NewSpeechCache(nil, nil, staticVoiceName("voice-v1"), time.Minute), nil)
 	warmer.TrackRestored("course", "graph-v1", []string{"Вопрос?"})
 	key := progressKey("Вопрос?")
 	warmer.progress.TransitionSubject("course", key, audiopreparation.StatusReady)
@@ -142,7 +142,7 @@ func TestWarmerRetriesStoreFailuresUntilVoiced(t *testing.T) {
 	// The bucket is not created yet when the warmer starts.
 	store := &flakyAudio{syncAudio: syncAudio{data: map[string][]byte{}}}
 	core, logs := observer.New(zap.WarnLevel)
-	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20")), zap.New(core))
+	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20"), time.Minute), zap.New(core))
 	warmer.retryMin, warmer.retryMax = time.Millisecond, 2*time.Millisecond
 	runWarmer(t, warmer)
 
@@ -177,7 +177,7 @@ func TestWarmerRetriesAFailedSynthesisBehindTheOtherTexts(t *testing.T) {
 	voice := &failingVoice{countingVoice: countingVoice{called: make(chan struct{}, 8)}}
 	voice.fail.Store(1)
 	store := &syncAudio{data: map[string][]byte{}}
-	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20")), nil)
+	warmer := NewWarmer(NewSpeechCache(voice, store, staticVoiceName("steps=20"), time.Minute), nil)
 	warmer.retryMin, warmer.retryMax = time.Millisecond, time.Millisecond
 	runWarmer(t, warmer)
 
@@ -194,7 +194,7 @@ func TestWarmerRetriesAFailedSynthesisBehindTheOtherTexts(t *testing.T) {
 func TestWarmerQueuesAWaitingTextOnceAndHasNoQueueLimit(t *testing.T) {
 	store := &syncAudio{data: map[string][]byte{}}
 	// Not running: everything stays queued.
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, store, staticVoiceName("steps=20")), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, store, staticVoiceName("steps=20"), time.Minute), nil)
 	texts := make([]string, 5000)
 	for i := range texts {
 		texts[i] = fmt.Sprintf("Вопрос %d?", i)
@@ -221,7 +221,7 @@ func (v *gatedVoice) Synthesize(ctx context.Context, text string) ([]byte, error
 
 func TestConcurrentMissesOfOneQuestionSynthesizeOnce(t *testing.T) {
 	voice := &gatedVoice{countingVoice: countingVoice{called: make(chan struct{}, 8)}, release: make(chan struct{})}
-	speech := NewSpeechCache(voice, &syncAudio{data: map[string][]byte{}}, staticVoiceName("steps=20"))
+	speech := NewSpeechCache(voice, &syncAudio{data: map[string][]byte{}}, staticVoiceName("steps=20"), time.Minute)
 	// The warmer starts the synthesis, then a student leaves while waiting
 	// and another one asks for the same question.
 	warmer := make(chan error, 1)
@@ -251,7 +251,7 @@ func TestConcurrentMissesOfOneQuestionSynthesizeOnce(t *testing.T) {
 }
 
 func TestWarmerCompletionUpdatesNewlyPublishedGraphWhileTextPending(t *testing.T) {
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice")), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice"), time.Minute), nil)
 	text := "Общий вопрос?"
 	warmer.TrackPublished("course", "old", []string{text})
 	warmer.Prepare([]string{text})
@@ -267,7 +267,7 @@ func TestWarmerCompletionUpdatesNewlyPublishedGraphWhileTextPending(t *testing.T
 }
 
 func TestWarmerCountsNewlyPublishedWaitingTextsAsQueued(t *testing.T) {
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice")), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice"), time.Minute), nil)
 	warmer.TrackPublished("course", "graph", []string{"Первый?", "Второй?"})
 	warmer.Prepare([]string{"Первый?", "Второй?"})
 	snapshot, _ := warmer.Snapshot("course")
@@ -277,7 +277,7 @@ func TestWarmerCountsNewlyPublishedWaitingTextsAsQueued(t *testing.T) {
 }
 
 func TestWarmerRecoveryCompletionAndRestoredKeys(t *testing.T) {
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice")), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice"), time.Minute), nil)
 	if warmer.RecoveryComplete() {
 		t.Fatal("recovery must start incomplete")
 	}
@@ -294,7 +294,7 @@ func TestWarmerRecoveryCompletionAndRestoredKeys(t *testing.T) {
 }
 
 func TestPublishedGraphInheritsPendingTextState(t *testing.T) {
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice")), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, staticVoiceName("voice"), time.Minute), nil)
 	warmer.Prepare([]string{"Вопрос?"})
 	warmer.transition("Вопрос?", audiopreparation.StatusProcessing)
 	warmer.TrackPublished("course", "graph", []string{"Вопрос?"})
@@ -319,7 +319,7 @@ func TestWarmerVoiceIdentityRetriesLookup(t *testing.T) {
 		}
 		return "profile:revision", nil
 	}
-	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, name), nil)
+	warmer := NewWarmer(NewSpeechCache(&countingVoice{called: make(chan struct{}, 1)}, &syncAudio{data: map[string][]byte{}}, name, time.Minute), nil)
 	if _, err := warmer.VoiceName(context.Background()); err == nil {
 		t.Fatal("expected voice lookup error")
 	}

@@ -87,7 +87,9 @@ func responseFailure(resp *http.Response, stt bool) error {
 			}
 		}
 	}
-	return &diagnostic.Error{Code: code, Uncertain: resp.Header.Get("X-Voice-Execution-State") == "uncertain" || ((resp.StatusCode == http.StatusGatewayTimeout || resp.StatusCode == http.StatusRequestTimeout) && resp.Header.Get("X-Voice-Execution-State") != "not-started" && resp.Header.Get("X-Voice-Execution-State") != "finished"), Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
+	states := resp.Header.Values("X-Voice-Execution-State")
+	confirmed := len(states) == 1 && (states[0] == "not-started" || states[0] == "finished")
+	return &diagnostic.Error{Code: code, Uncertain: !confirmed, Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
 }
 
 type STT struct {
@@ -127,7 +129,10 @@ func (p *HTTP) client() *http.Client {
 // request when cancellation arrives. Before GotConn, no HTTP bytes can reach
 // the model. Custom transports without this trace contract stay conservative.
 func (p *HTTP) do(req *http.Request) (*http.Response, error) {
-	client := p.client()
+	// Never forward credentials or payloads to a redirect target. Copy the
+	// client so injected/shared clients keep their own redirect policy.
+	client := *p.client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	transport := client.Transport
 	if transport == nil {
 		transport = http.DefaultTransport
