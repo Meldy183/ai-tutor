@@ -66,7 +66,7 @@ export const learningTranslations = {
     uploading: 'Загружаем и проверяем карту…',
     checkingWorkbook: 'Проверяем число листов…',
     preparingUnified:
-      'Карта проверена. Подготавливаем единый граф для обучения и Geek…',
+      'Карта загружена. Подготавливаем граф Geek…',
     pendingMap:
       'Карта «{{filename}}» сохранена. Подготавливаем отдельную версию Geek.',
     pendingMapHelp:

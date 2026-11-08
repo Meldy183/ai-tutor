@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -189,17 +190,19 @@ func TopicQuestions(graph json.RawMessage) []string {
 		Question string `json:"question"`
 		Rephrase string `json:"rephrase"`
 	}
+	type topic struct {
+		asked
+		Variants []asked `json:"variants"`
+	}
 	var shape struct {
-		Topics []struct {
-			asked
-			Variants []asked `json:"variants"`
-		} `json:"topics"`
+		Topics []topic `json:"topics"`
+		Bank   []topic `json:"bank"`
 	}
 	out := []string{}
 	if json.Unmarshal(graph, &shape) != nil {
 		return out
 	}
-	for _, t := range shape.Topics {
+	for _, t := range append(shape.Topics, shape.Bank...) {
 		texts := t.Variants
 		if len(texts) == 0 {
 			texts = []asked{t.asked}
@@ -209,9 +212,13 @@ func TopicQuestions(graph json.RawMessage) []string {
 			if q == "" {
 				continue
 			}
-			out = append(out, q)
+			if !slices.Contains(out, q) {
+				out = append(out, q)
+			}
 			if r := strings.TrimSpace(a.Rephrase); r != "" {
-				out = append(out, r)
+				if !slices.Contains(out, r) {
+					out = append(out, r)
+				}
 			}
 		}
 	}
@@ -590,7 +597,7 @@ func (w *Worker) process(ctx context.Context, job coursegraph.Job) error {
 		var shape struct {
 			Version string `json:"version"`
 		}
-		if json.Unmarshal(graph, &shape) != nil || (shape.Version != coursegraph.MapVersion && shape.Version != coursegraph.ExplicitMapVersion) {
+		if json.Unmarshal(graph, &shape) != nil || shape.Version != coursegraph.MapVersion {
 			return fmt.Errorf("invalid competency map graph")
 		}
 	} else if graph, err = w.buildMaterials(ctx, job); err != nil {

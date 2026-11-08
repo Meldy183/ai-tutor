@@ -141,7 +141,7 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 
 // ImportMap builds the course graph from a competency map.
 // @Summary Импортировать карту компетенций
-// @Description Доступно только admin. Карта компетенций загружается одной двухлистовой книгой: первый лист — экзамена Geek, второй — учебной диагностики; другой формат отклоняется (UNIFIED_COMPETENCY_MAP_REQUIRED). Листы сопоставляются по компетенции, составляющей и ОР; структура курса сохраняется один раз в новой ревизии карты, а задания каждого листа — как задания своего режима при тех же ОР. Учебная ревизия становится активной в той же транзакции, сборка графа Geek ставится в очередь; до её успешного завершения Geek работает по прежнему опубликованному графу, ошибка сборки не отключает обучение. Граф обоих режимов строится одним правилом: на каждую составляющую с тремя и более ОР с TRUE и заданием основное ОР (наивысший Блум, затем важность) — тема верхнего уровня, два самых простых — её пререквизиты; все колонки «Задание N» листа Geek — варианты темы с критериями той же колонки.
+// @Description Доступно только admin. Одна XLSX-книга: первый лист — Geek, второй — учебная диагностика; дополнительные листы не читаются. Содержание листов может различаться. Полные ОР и задания обоих источников сохраняются в общей схеме и одной ревизии. Обучение активируется в транзакции импорта, Geek остаётся на предыдущем графе до успешной подготовки нового. Оба режима выбирают основное и два базовых ОР на составляющую с минимум тремя подходящими ОР; невыбранные ОР остаются для обучения. Авторские ID и пререквизиты не меняют отбор. Все варианты задания сохраняют свой эталон и критерии.
 // @ID importCourseGraphCompetencyMap
 // @Tags Материалы
 // @Security accessCookie
@@ -157,7 +157,7 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} fault.Error
 // @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED"
 // @Failure 413 {object} fault.Error
-// @Failure 422 {object} fault.Error "UNIFIED_COMPETENCY_MAP_REQUIRED, COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH"
+// @Failure 422 {object} fault.Error "UNIFIED_COMPETENCY_MAP_REQUIRED, COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY"
 // @Failure 503 {object} fault.Error
 // @Router /exam/admin/subjects/{subject_id}/graph/competency-map [post]
 func (h *Handler) ImportMap(w http.ResponseWriter, r *http.Request) {

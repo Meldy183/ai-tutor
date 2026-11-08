@@ -139,7 +139,7 @@ func newService(t *testing.T, main int) (*Service, *memoryRepo, *voice, *teacher
 	session := diagnostic.Session{ID: "d", Status: diagnostic.StatusCompleted,
 		Variant: diagnostic.VariantSnapshot{SubjectID: "s", SubjectNameSnapshot: "ML", Competencies: []diagnostic.Competency{{ID: "c1", Name: "К1"}, {ID: "c2", Name: "К2"}}},
 		Answers: []diagnostic.Answer{
-			{CompetencyID: "c1", Role: "main", Score: main, GraderMaxScore: 3, Task: diagnostic.TaskSnapshot{OutcomeID: "o1"}},
+			{CompetencyID: "c1", Role: "main", Score: main, GraderMaxScore: 2, Task: diagnostic.TaskSnapshot{OutcomeID: "o1"}},
 			{CompetencyID: "c2", Role: "main", Score: 2, GraderMaxScore: 2},
 		},
 	}

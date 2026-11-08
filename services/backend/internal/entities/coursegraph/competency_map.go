@@ -27,10 +27,6 @@ import (
 // MapVersion is the version of a graph built from a competency map.
 const MapVersion = "competency-map-v1"
 
-// CanonicalMapVersion is the runtime projection built from canonical course
-// vertices/edges and the Geek-specific tasks for that version.
-const CanonicalMapVersion = "competency-map-canonical-v1"
-
 // SourceMap marks a graph built from a competency map.
 const SourceMap = "competency_map"
 
@@ -45,11 +41,7 @@ var mapColumns = map[string][]string{
 	"importance":  {"Важность"},
 	"include":     {"Что должно войти в тест"},
 	"evidence":    {"Свидетельство"},
-	// Both graph columns opt in to an explicit graph, without the legacy
-	// selection of three outcomes per constituent. Other books are unchanged.
-	"topic_id":      {"ID темы"},
-	"prerequisites": {"Пререквизиты"},
-	"content":       {"Текст темы"},
+	"content":     {"Текст темы"},
 }
 
 // The tasks and their criteria are every column with these prefixes, paired
@@ -177,9 +169,9 @@ type mapOutcome struct {
 	constituent, evidence string
 	tasks                 []mapTask
 	bloom, importance     int
+	included              bool
 	order                 int
-	id, content           string
-	requires              []string
+	content               string
 }
 
 // BuildMapGraph builds the Geek course graph from the first sheet. Paired-map
@@ -189,103 +181,46 @@ func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "В книге нет листов."}
 	}
 	sheet, rows := sheets[0].Name, sheets[0].Rows
-	layout, valid := mapHeader(rows)
+	_, valid := mapHeader(rows)
 	if !valid {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID",
 			Message: fmt.Sprintf("На первом листе «%s» нет обязательных колонок карты: Субкомпетенция (или Компетенция), Составляющая, Образовательный результат, Уровень по Блуму (или Таксономия), Важность, Что должно войти в тест, Задание.", sheet)}
 	}
-	_, explicit := layout.columns["topic_id"]
-	_, dependencies := layout.columns["prerequisites"]
-	if explicit != dependencies {
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "Для явного графа нужны обе колонки: «ID темы» и «Пререквизиты»."}
-	}
-	outcomes, constituents, issues := readMapOutcomes(rows)
+	all, constituents, issues := readMapOutcomes(rows)
 	if len(issues) > 0 {
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID",
-			Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet), Issues: issues}
+		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet), Issues: issues}
 	}
-	var graph json.RawMessage
-	var topics int
-	var skipped []SkippedCompetency
-	var err error
-	if explicit {
-		graph, topics, err = explicitMapGraph(outcomes)
-	} else {
-		graph, topics, skipped, err = mapGraph(constituents, outcomes)
+	outcomes := []mapOutcome{}
+	for _, o := range all {
+		if o.included && len(o.tasks) > 0 {
+			outcomes = append(outcomes, o)
+		}
 	}
+	graph, topics, skipped, err := mapGraph(constituents, outcomes)
 	if err != nil {
 		return MapGraph{}, err
 	}
 	if topics == 0 {
-		if explicit {
-			return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY", Message: "В явной карте нет включённых тем с заданием."}
-		}
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY",
-			Message: "Ни одна составляющая не набрала трёх ОР с TRUE и заданием; граф не из чего собрать.", Issues: skippedIssues(skipped)}
+		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY", Message: "Ни одна составляющая не набрала трёх ОР с TRUE и заданием; граф не из чего собрать.", Issues: skippedIssues(skipped)}
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(graph, &shape); err != nil {
+		return MapGraph{}, err
+	}
+	bank := make([]mapTopic, 0, len(all))
+	for _, o := range all {
+		bank = append(bank, newMapTopic(o, "", nil))
+	}
+	shape["bank"], _ = json.Marshal(bank)
+	graph, err = json.Marshal(shape)
+	if err != nil {
+		return MapGraph{}, err
 	}
 	graph, err = withAssessmentWarnings(graph, outcomes)
 	if err != nil {
 		return MapGraph{}, err
 	}
 	return MapGraph{Graph: graph, Sheet: sheet, Topics: topics, Skipped: skipped}, nil
-}
-
-// CompetencyMapStructure extracts the authored structure of Geek's map sheet
-// in the shared comparison shape used to pair it with the learning sheet.
-func CompetencyMapStructureKeys(sheet MapSheet) ([]string, error) {
-	_, valid := mapHeader(sheet.Rows)
-	if !valid {
-		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("На листе «%s» нет обязательных колонок карты.", sheet.Name)}
-	}
-	_, groups, issues := readMapOutcomes(sheet.Rows)
-	if len(issues) > 0 {
-		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet.Name), Issues: issues}
-	}
-	keys := []string{}
-	competencyNames := map[string]struct{}{}
-	constituentNames := map[string]struct{}{}
-	for _, group := range groups {
-		competency := normalizeMapKey(group.competency)
-		constituent := normalizeMapKey(group.constituent)
-		if _, ok := competencyNames[competency]; !ok {
-			competencyNames[competency] = struct{}{}
-			keys = append(keys, "компетенция/"+competency)
-		}
-		constituentKey := "составляющая/" + competency + "/" + constituent
-		if _, ok := constituentNames[constituentKey]; !ok {
-			constituentNames[constituentKey] = struct{}{}
-			keys = append(keys, constituentKey)
-		}
-	}
-	layout, _ := mapHeader(sheet.Rows)
-	competency, constituent := "", ""
-	for i := layout.header + 1; i < len(sheet.Rows); i++ {
-		row := sheet.Rows[i]
-		if blank(row) {
-			continue
-		}
-		cell := func(key string) string {
-			index, ok := layout.columns[key]
-			if !ok || index >= len(row) {
-				return ""
-			}
-			return strings.TrimSpace(row[index])
-		}
-		if value := cell("competency"); value != "" {
-			if value != competency {
-				constituent = ""
-			}
-			competency = value
-		}
-		if value := cell("constituent"); value != "" {
-			constituent = value
-		}
-		if outcome := cell("outcome"); outcome != "" {
-			keys = append(keys, "ор/"+normalizeMapKey(competency)+"/"+normalizeMapKey(constituent)+"/"+normalizeMapKey(outcome))
-		}
-	}
-	slices.Sort(keys)
-	return keys, nil
 }
 
 func normalizeMapKey(value string) string {
@@ -300,7 +235,7 @@ func skippedIssues(skipped []SkippedCompetency) []MapIssue {
 	return out
 }
 
-// readMapOutcomes reads the outcomes that may enter the graph and every
+// readMapOutcomes reads the full outcome bank and every
 // constituent of the map in its order; the competency and constituent are
 // filled on the first row of their group only.
 type mapGroup struct{ competency, constituent string }
@@ -327,6 +262,7 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 		issues                  []MapIssue
 		competency, constituent string
 	)
+	seenOutcomes := map[string]bool{}
 	issue := func(row int, key, message string) {
 		issues = append(issues, MapIssue{Row: row, Column: columnTitle(key), Message: message})
 	}
@@ -346,7 +282,7 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 		}
 		outcome := cell(row, "outcome")
 		if outcome == "" {
-			if _, explicit := layout.columns["topic_id"]; explicit && strings.EqualFold(cell(row, "include"), "TRUE") {
+			if strings.EqualFold(cell(row, "include"), "TRUE") {
 				issue(line, "outcome", "У включённой темы нет образовательного результата (названия темы).")
 			}
 			continue
@@ -359,6 +295,12 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 			issue(line, "constituent", "У ОР нет составляющей выше.")
 			continue
 		}
+		key := normalizeMapKey(competency) + "\x00" + normalizeMapKey(constituent) + "\x00" + normalizeMapKey(outcome)
+		if seenOutcomes[key] {
+			issue(line, "outcome", "Повтор образовательного результата внутри составляющей.")
+			continue
+		}
+		seenOutcomes[key] = true
 		group := mapGroup{competency, constituent}
 		if !slices.Contains(constituents, group) {
 			constituents = append(constituents, group)
@@ -382,38 +324,19 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 				tasks = append(tasks, mapTask{task: task, criteria: criteria, position: k + 1})
 			}
 		}
-		// Only outcomes for the test with a task can be asked.
-		if include != "TRUE" || len(tasks) == 0 {
-			if _, explicit := layout.columns["topic_id"]; explicit && include == "TRUE" && len(tasks) == 0 {
-				issue(line, "task", "У включённой темы нет задания.")
-			}
-			continue
-		}
 		bloom, ok := bloomRanks[strings.ToLower(cell(row, "bloom"))]
-		if !ok {
+		if !ok && include == "TRUE" && len(tasks) > 0 {
 			issue(line, "bloom", "Неизвестный уровень по Блуму: ожидается Помнить, Понимать, Применять, Анализировать, Оценивать или Создавать.")
 			continue
 		}
 		importance, ok := importanceValue(cell(row, "importance"))
-		if !ok {
+		if !ok && include == "TRUE" && len(tasks) > 0 {
 			issue(line, "importance", "Ожидается целое число от 1 до 5.")
 			continue
 		}
 		o := mapOutcome{row: line, competency: competency, constituent: constituent, outcome: outcome,
-			evidence: cell(row, "evidence"), tasks: tasks, bloom: bloom, importance: importance, order: len(out)}
-		if _, explicit := layout.columns["topic_id"]; explicit {
-			o.id = cell(row, "topic_id")
-			o.content = cell(row, "content")
-			if o.id == "" {
-				issue(line, "topic_id", "У включённой темы нет ID.")
-				continue
-			}
-			for _, id := range strings.FieldsFunc(cell(row, "prerequisites"), func(r rune) bool { return r == ';' || r == ',' || r == '\n' || r == '\r' }) {
-				if id = strings.TrimSpace(id); id != "" && !slices.Contains(o.requires, id) {
-					o.requires = append(o.requires, id)
-				}
-			}
-		}
+			evidence: cell(row, "evidence"), tasks: tasks, bloom: bloom, importance: importance, order: len(out), included: include == "TRUE", content: cell(row, "content")}
+
 		out = append(out, o)
 	}
 	return out, constituents, issues
@@ -437,6 +360,9 @@ func blank(row []string) bool {
 }
 
 type mapTopic struct {
+	Included           bool   `json:"include_in_test"`
+	Bloom              int    `json:"bloom"`
+	Importance         int    `json:"importance"`
 	ID                 string `json:"id"`
 	Title              string `json:"title"`
 	Text               string `json:"text"`
@@ -529,9 +455,6 @@ func mapGraph(order []mapGroup, outcomes []mapOutcome) (json.RawMessage, int, []
 }
 
 func topicID(o mapOutcome) string {
-	if o.id != "" {
-		return o.id
-	}
 	return "map-row-" + strconv.Itoa(o.row)
 }
 
@@ -557,8 +480,11 @@ func newMapTopic(o mapOutcome, role string, requires []string) mapTopic {
 	if requires == nil {
 		requires = []string{}
 	}
-	first := variants[0]
-	return mapTopic{ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
+	first := mapVariant{Content: o.content}
+	if len(variants) > 0 {
+		first = variants[0]
+	}
+	return mapTopic{Included: o.included, Bloom: o.bloom, Importance: o.importance, ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
 		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, ConstituentTitle: o.constituent, Role: role, Row: o.row}
 }
 

@@ -7,20 +7,20 @@ import (
 	"testing"
 )
 
-func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
+func TestPlanIncludesEveryUnmasteredOutcomeOfOpenConstituents(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
 		scores                   []int
 		mixed, skipped, reimport bool
 		want                     []string
 	}{
-		{"bases mastered", []int{0, 1, 1}, false, false, false, []string{"main"}},
-		{"partial main and bases mastered", []int{1, 1, 1}, false, false, false, []string{"main"}},
-		{"one failed base", []int{1, 0, 1}, false, false, false, []string{"main", "b1"}},
+		{"bases mastered", []int{0, 1, 1}, false, false, false, []string{"main", "extra"}},
+		{"partial main and bases mastered", []int{1, 1, 1}, false, false, false, []string{"main", "extra"}},
+		{"one failed base", []int{1, 0, 1}, false, false, false, []string{"main", "b1", "extra"}},
 		{"whole constituent", []int{0, 0, 0}, false, false, false, []string{"main", "b1", "b2", "extra"}},
-		{"partial main not whole", []int{1, 0, 0}, false, false, false, []string{"main", "b1", "b2"}},
-		{"mixed constituents", []int{0, 0, 0}, true, false, false, []string{"main", "b1", "b2"}},
-		{"skipped not proven whole", []int{0, 0, 0}, false, true, false, []string{"main", "b1", "b2"}},
+		{"partial main not whole", []int{1, 0, 0}, false, false, false, []string{"main", "b1", "b2", "extra"}},
+		{"mixed constituents", []int{0, 0, 0}, true, false, false, []string{"main", "b1", "b2", "extra", "unrelated"}},
+		{"skipped not proven whole", []int{0, 0, 0}, false, true, false, []string{"main", "b1", "b2", "extra"}},
 		{"reimport uses snapshot", []int{0, 0, 0}, false, false, true, []string{"main", "b1", "b2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,7 +35,7 @@ func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
 				if tc.mixed && i == 2 {
 					part = "other"
 				}
-				session.Answers = append(session.Answers, diagnostic.Answer{CompetencyID: "c1", Role: role, Score: tc.scores[i], GraderMaxScore: map[string]int{"main": 3, "basic": 1}[role], Skipped: tc.skipped && i == 2,
+				session.Answers = append(session.Answers, diagnostic.Answer{CompetencyID: "c1", Role: role, Score: tc.scores[i], GraderMaxScore: map[string]int{"main": 2, "basic": 1}[role], Skipped: tc.skipped && i == 2,
 					Task: diagnostic.TaskSnapshot{OutcomeID: id, OutcomeName: "snapshot " + id, ConstituentID: part, ConstituentName: part}})
 			}
 			repo.course_map_outcomes = nil
@@ -68,7 +68,7 @@ func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
 	}
 }
 
-func TestPlanLeavesOutACompetencyClosedAtNinetyPercent(t *testing.T) {
+func TestPlanKeepsAnOpenConstituentInAStrongCompetency(t *testing.T) {
 	s, repo, _, _ := newService(t, 1)
 	repo.course_map_outcomes = nil
 	answer := func(competency, constituent, role string, score, maximum int) diagnostic.Answer {
@@ -76,9 +76,9 @@ func TestPlanLeavesOutACompetencyClosedAtNinetyPercent(t *testing.T) {
 			Task: diagnostic.TaskSnapshot{OutcomeID: competency + constituent + role, ConstituentID: constituent}}
 	}
 	session := diagnostic.Session{Answers: []diagnostic.Answer{
-		answer("closed", "1", "main", 3, 3), answer("closed", "2", "main", 3, 3), answer("closed", "3", "main", 3, 3), answer("closed", "4", "main", 3, 3),
-		answer("closed", "5", "main", 1, 3), answer("closed", "5", "basic", 1, 1), answer("closed", "5", "basic", 1, 1),
-		answer("open", "1", "main", 0, 3), answer("open", "1", "basic", 0, 1),
+		answer("closed", "1", "main", 2, 2), answer("closed", "2", "main", 2, 2), answer("closed", "3", "main", 2, 2), answer("closed", "4", "main", 2, 2),
+		answer("closed", "5", "main", 0, 2), answer("closed", "5", "basic", 1, 1), answer("closed", "5", "basic", 1, 1),
+		answer("open", "1", "main", 0, 2), answer("open", "1", "basic", 0, 1),
 	}}
 	got, err := s.outcomes(t.Context(), session)
 	if err != nil {
@@ -88,7 +88,34 @@ func TestPlanLeavesOutACompetencyClosedAtNinetyPercent(t *testing.T) {
 	for _, o := range got {
 		ids = append(ids, o.OutcomeID)
 	}
-	if !reflect.DeepEqual(ids, []string{"open1main", "open1basic"}) {
+	if !reflect.DeepEqual(ids, []string{"closed5main", "open1main", "open1basic"}) {
 		t.Fatalf("outcomes = %v", ids)
+	}
+}
+
+func TestPlanIncludesBothUnaskedOutcomesOfAFiveOutcomeConstituent(t *testing.T) {
+	service, repo, _, _ := newService(t, 1)
+	repo.course_map_outcomes = nil
+	for _, id := range []string{"main", "failed-basic", "full-basic", "unasked-1", "unasked-2"} {
+		repo.course_map_outcomes = append(repo.course_map_outcomes, learning.Outcome{CompetencyID: "c1", ConstituentID: "part", MapRevision: 7, OutcomeID: id})
+	}
+	session := diagnostic.Session{Variant: diagnostic.VariantSnapshot{MapRevision: 7}}
+	for i, id := range []string{"main", "failed-basic", "full-basic"} {
+		role, maximum := "basic", 1
+		if i == 0 {
+			role, maximum = "main", 2
+		}
+		session.Answers = append(session.Answers, diagnostic.Answer{CompetencyID: "c1", Role: role, Score: []int{1, 0, 1}[i], GraderMaxScore: maximum, Task: diagnostic.TaskSnapshot{OutcomeID: id, ConstituentID: "part"}})
+	}
+	outcomes, err := service.outcomes(t.Context(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, outcome := range outcomes {
+		ids = append(ids, outcome.OutcomeID)
+	}
+	if !reflect.DeepEqual(ids, []string{"main", "failed-basic", "unasked-1", "unasked-2"}) {
+		t.Fatalf("learning outcomes=%v", ids)
 	}
 }

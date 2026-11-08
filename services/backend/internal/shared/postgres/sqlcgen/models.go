@@ -65,9 +65,10 @@ type CourseGraphMap struct {
 }
 
 type CourseMapCompetency struct {
-	ID       string
-	Name     string
-	Revision int64
+	ID         string
+	Name       string
+	Revision   int64
+	SourceMode string
 }
 
 type CourseMapConstituent struct {

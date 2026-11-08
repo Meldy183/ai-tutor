@@ -14,7 +14,7 @@ func SkipMissingCriteria(data json.RawMessage) (json.RawMessage, error) {
 	}
 	var version string
 	_ = json.Unmarshal(shape["version"], &version)
-	if version != MapVersion && version != ExplicitMapVersion && version != CanonicalMapVersion {
+	if version != MapVersion {
 		return nil, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "Исключение доступно только для графа карты компетенций."}
 	}
 	var topics []mapTopic

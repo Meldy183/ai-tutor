@@ -338,6 +338,13 @@ func (e *Exam) conclude(id string) Step {
 	if state.Assisted {
 		state.Status = StatusAssisted
 	}
+	if node, ok := e.Graph.Node(id); ok && node.ConstituentID != "" && e.MasteredConstituents()[node.ConstituentID] {
+		for _, candidate := range e.Graph.Nodes {
+			if candidate.ConstituentID == node.ConstituentID && e.Nodes[candidate.ID].Status == StatusUnchecked {
+				e.Nodes[candidate.ID].Status = StatusCredited
+			}
+		}
+	}
 	if *state.Score < e.Graph.MaxScore(id) {
 		e.descend(id)
 		return e.next()

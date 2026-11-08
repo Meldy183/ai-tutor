@@ -42,11 +42,11 @@ SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent
 FROM course_map_outcomes outcome
 JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
 JOIN course_map_competencies competency ON competency.id = constituent.competency_id
-WHERE competency.revision = $1;
+WHERE competency.revision = $1 AND competency.source_mode = 'exam';
 
 -- name: InsertCourseMapExamTask :exec
-INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, reference_answer, criteria, created_at)
-VALUES (sqlc.arg(id), sqlc.arg(outcome_id), 'exam', sqlc.arg(position), sqlc.arg(question),
+INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, voice_instruction, reference_answer, criteria, created_at)
+VALUES (sqlc.arg(id), sqlc.arg(outcome_id), 'exam', sqlc.arg(position), sqlc.arg(question), sqlc.arg(question),
         sqlc.arg(reference_answer), sqlc.arg(criteria), sqlc.arg(created_at));
 
 -- name: UpdateCourseMapExamTaskRephrase :execrows
@@ -165,3 +165,7 @@ UPDATE course_graph_jobs SET status='pending', attempts=0, available_at=0,
     lease_until=0, lease_token='', error_message='', updated_at=sqlc.arg(now)::bigint
 WHERE subject_id=sqlc.arg(subject_id) AND source='competency_map' AND status='failed'
   AND fingerprint=sqlc.arg(expected_fingerprint);
+
+-- name: InsertCourseMapExamCompetency :exec
+INSERT INTO course_map_competencies(id, name, revision, source_mode)
+VALUES ($1, $2, $3, 'exam');

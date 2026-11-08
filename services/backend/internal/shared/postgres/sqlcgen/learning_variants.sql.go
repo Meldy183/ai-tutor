@@ -242,7 +242,7 @@ LEFT JOIN course_map_outcomes outcome ON outcome.constituent_id = constituent.id
 LEFT JOIN learning_taxonomies taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels ald ON ald.id = outcome.ald_level_id
 LEFT JOIN course_map_tasks task ON task.outcome_id = outcome.id AND task.mode = 'diagnostic'
-WHERE competency.revision = $1::bigint
+WHERE competency.revision = $1::bigint AND competency.source_mode = 'diagnostic'
 ORDER BY competency_source_order, competency.name, competency.id,
          outcome_source_order, outcome.name, outcome.id,
          CASE WHEN task.source_row_index IS NULL THEN 1 ELSE 0 END,

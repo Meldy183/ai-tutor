@@ -524,9 +524,13 @@ it('shows which imported tasks will use default assessment criteria', async () =
   expect(
     screen.getByText('Строка 3, Задание 2: Используются общие критерии.'),
   ).toBeVisible()
-  expect(screen.getByText('Общие критерии — максимум 4 балла:')).toBeVisible()
-  expect(screen.getByText(/Предметная корректность \(0–2\): 2 —/)).toBeVisible()
-  expect(screen.getByText(/Покрытие вопроса \(0–2\): 2 —/)).toBeVisible()
+  expect(
+    screen.getByText('Общая шкала: основное — 0/1/2, базовое — 0/1:'),
+  ).toBeVisible()
+  expect(
+    screen.getByText(/Предметная корректность: засчитывается/),
+  ).toBeVisible()
+  expect(screen.getByText(/Покрытие вопроса: максимальный балл/)).toBeVisible()
   expect(
     screen.getByText(/Объяснение, пример, расчёт или сравнение обязательны/),
   ).toBeVisible()
@@ -756,7 +760,7 @@ it('keeps the master graph viewer for a published graph', async () => {
   expect(within(canvas).getByText('Линейная регрессия')).toBeInTheDocument()
   expect(screen.queryByText('По карте компетенций')).not.toBeInTheDocument()
   expect(
-    screen.queryByText('Общие критерии — максимум 4 балла:'),
+    screen.queryByText('Общая шкала: основное — 0/1/2, базовое — 0/1:'),
   ).not.toBeInTheDocument()
 })
 
@@ -986,7 +990,7 @@ it('refreshes learning map statistics after the shared background build complete
       ),
     ).toBe(true),
   )
-  expect(await screen.findByText(/Подготавливаем единый граф/)).toBeVisible()
+  expect(await screen.findByText(/Подготавливаем граф Geek/)).toBeVisible()
   const stateWhileBuilding = screen.getByRole('region', {
     name: 'Текущее состояние карты',
   })

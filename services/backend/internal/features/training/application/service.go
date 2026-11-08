@@ -23,6 +23,10 @@ import (
 type Diagnostics interface {
 	Get(context.Context, string, string) (diagnostic.Session, error)
 }
+type TrainingBank interface {
+	Tasks(context.Context, int64) ([]training.Task, error)
+}
+
 type Voice interface {
 	Transcribe(context.Context, string, []byte, string) (transcription.Transcription, error)
 }
@@ -56,7 +60,10 @@ type Service struct {
 	audio       audioasset.MetadataReader
 	regenerator audioasset.Regenerator
 	checkedNext CheckedNextRepository
+	bank        TrainingBank
 }
+
+func (s *Service) WithBank(bank TrainingBank) *Service { s.bank = bank; return s }
 
 func (s *Service) WithCheckedNext(repository CheckedNextRepository) *Service {
 	s.checkedNext = repository
@@ -87,15 +94,7 @@ func (s *Service) plan(ctx context.Context, owner, id string) (training.Session,
 	}
 	state := training.Session{OwnerID: owner, DiagnosticID: id, SubjectID: d.Variant.SubjectID, SubjectName: d.Variant.SubjectNameSnapshot, Mode: "focused", PlanRevision: d.Variant.MapRevision, Round: 1, Targets: []training.Target{}}
 	targets := diagnostic.TrainingTargets(d.Answers)
-	if d.Variant.AlgorithmVersion == "constituent-map-v1" {
-		targets = diagnostic.TrainingTargetsByConstituent(d.Answers)
-	}
-	// A competency closed at 90% and above does not go into training.
-	open := diagnostic.OpenCompetencies(d.Answers)
 	for _, target := range targets {
-		if !open[target.Answer.CompetencyID] {
-			continue
-		}
 		raw, err := json.Marshal(target.Answer.Task)
 		if err != nil {
 			return state, err
@@ -110,6 +109,34 @@ func (s *Service) plan(ctx context.Context, owner, id string) (training.Session,
 			criteria = append(criteria, training.CriterionResult{Key: c.Key, Satisfied: c.Satisfied, Explanation: c.Explanation})
 		}
 		state.Targets = append(state.Targets, training.Target{Kind: target.Kind, Source: task, OriginalScore: target.Answer.Score, OriginalMaxScore: max, OriginalFeedback: target.Answer.Feedback, OriginalCriteria: criteria})
+	}
+	if s.bank != nil {
+		bank, err := s.bank.Tasks(ctx, d.Variant.MapRevision)
+		if err != nil {
+			return state, err
+		}
+		open := diagnostic.OpenConstituents(d.Answers)
+		seen := map[string]int{}
+		mastered := map[string]bool{}
+		for i, target := range state.Targets {
+			seen[target.Source.OutcomeID] = i
+		}
+		for _, a := range d.Answers {
+			if a.Score >= diagnostic.AnswerMaximum(a) && !a.Skipped {
+				mastered[a.Task.OutcomeID] = true
+			}
+		}
+		for _, task := range bank {
+			if !open[diagnostic.ConstituentKey(task.CompetencyID, task.ConstituentID)] || mastered[task.OutcomeID] {
+				continue
+			}
+			if index, ok := seen[task.OutcomeID]; ok {
+				state.Targets[index].Sources = append(state.Targets[index].Sources, task)
+				continue
+			}
+			seen[task.OutcomeID] = len(state.Targets)
+			state.Targets = append(state.Targets, training.Target{Kind: "partial_competency", Source: task, Sources: []training.Task{task}})
+		}
 	}
 	perfectMains := 0
 	for _, a := range d.Answers {

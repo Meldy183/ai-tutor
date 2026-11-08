@@ -12,7 +12,7 @@ import (
 const learningCountExistingOutcomesForSubject = `-- name: LearningCountExistingOutcomesForSubject :one
 SELECT count(*)::integer FROM course_map_outcomes outcome
 JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
-JOIN course_map_competencies competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE outcome.id = ANY($2::text[])
@@ -52,7 +52,7 @@ FROM learning_generation_runs AS run
 JOIN course_map_tasks AS task ON task.generation_run_id = run.id
 JOIN course_map_outcomes AS outcome ON outcome.id = run.outcome_id
 JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE run.outcome_id = $2::text AND run.request_key = $3::text
@@ -100,7 +100,7 @@ SELECT state.active_revision::bigint AS revision, outcome.id, outcome.name, outc
 FROM course_map_outcomes AS outcome
 JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
@@ -177,7 +177,7 @@ FROM course_map_tasks AS task
 JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
 JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
@@ -753,7 +753,7 @@ SELECT COALESCE(state.active_revision, 0)::bigint AS revision, import.imported_a
 FROM subjects AS subject
 LEFT JOIN learning_subject_state state ON state.subject_id = subject.id
 LEFT JOIN course_map_imports AS import ON import.revision = state.active_revision
-LEFT JOIN course_map_competencies AS competency ON competency.revision = state.active_revision
+LEFT JOIN course_map_competencies AS competency ON competency.revision = state.active_revision AND competency.source_mode = 'diagnostic'
 LEFT JOIN course_map_constituents AS constituent ON constituent.competency_id = competency.id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
 LEFT JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
@@ -896,7 +896,7 @@ SELECT task.id, task.question, task.options, task.voice_instruction,
 FROM course_map_tasks AS task
 JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
 JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id

@@ -54,7 +54,7 @@ SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent
 FROM course_map_outcomes outcome
 JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
 JOIN course_map_competencies competency ON competency.id = constituent.competency_id
-WHERE competency.revision = $1
+WHERE competency.revision = $1 AND competency.source_mode = 'exam'
 `
 
 type CourseMapOutcomesOfRevisionRow struct {
@@ -160,9 +160,25 @@ func (q *Queries) FinishCourseGraph(ctx context.Context, arg FinishCourseGraphPa
 	return subject_id, err
 }
 
+const insertCourseMapExamCompetency = `-- name: InsertCourseMapExamCompetency :exec
+INSERT INTO course_map_competencies(id, name, revision, source_mode)
+VALUES ($1, $2, $3, 'exam')
+`
+
+type InsertCourseMapExamCompetencyParams struct {
+	ID       string
+	Name     string
+	Revision int64
+}
+
+func (q *Queries) InsertCourseMapExamCompetency(ctx context.Context, arg InsertCourseMapExamCompetencyParams) error {
+	_, err := q.db.Exec(ctx, insertCourseMapExamCompetency, arg.ID, arg.Name, arg.Revision)
+	return err
+}
+
 const insertCourseMapExamTask = `-- name: InsertCourseMapExamTask :exec
-INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, reference_answer, criteria, created_at)
-VALUES ($1, $2, 'exam', $3, $4,
+INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, voice_instruction, reference_answer, criteria, created_at)
+VALUES ($1, $2, 'exam', $3, $4, $4,
         $5, $6, $7)
 `
 

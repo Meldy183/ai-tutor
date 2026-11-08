@@ -35,7 +35,7 @@ type OutlineOutcome struct {
 
 // Preview returns only the blocks and outcomes selected for diagnostics.
 // @Summary Предпросмотр блоков диагностики
-// @Description Применяет отбор constituent-map-v1 к текущей карте без сохранения варианта и запуска диагностики. Возвращает только названия и ID выбранных компетенций, составляющих и ОР с ролью main/basic. Короткие display_name компетенций и составляющих готовятся через LLM gateway и кэшируются; исходные name сохранены. Вопросы, эталоны, criteria и ОС не выдаются. Пустой отбор возвращается пустым списком.
+// @Description Применяет отбор constituent-map-v2 к текущей карте без сохранения варианта и запуска диагностики. Возвращает только названия и ID выбранных компетенций, составляющих и ОР с ролью main/basic. Короткие display_name компетенций и составляющих готовятся через LLM gateway и кэшируются; исходные name сохранены. Вопросы, эталоны, criteria и ОС не выдаются. Пустой отбор возвращается пустым списком.
 // @ID previewDiagnosticOutline
 // @Tags Варианты
 // @Security accessCookie

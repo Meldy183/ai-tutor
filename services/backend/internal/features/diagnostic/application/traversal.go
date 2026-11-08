@@ -23,10 +23,10 @@ func newTraversal(v diagnostic.VariantSnapshot, rng *rand.Rand) (diagnostic.Tran
 		main := competency.Tasks[0]
 		requires := []string{}
 		for _, basic := range competency.Tasks[1:] {
-			graph.Nodes = append(graph.Nodes, exam.Node{ID: basic.ID, Title: basic.OutcomeName, Prerequisites: []string{}})
-			requires = append(requires, basic.ID)
+			graph.Nodes = append(graph.Nodes, exam.Node{ID: basic.OutcomeID, Title: basic.OutcomeName, Prerequisites: []string{}})
+			requires = append(requires, basic.OutcomeID)
 		}
-		graph.Nodes = append(graph.Nodes, exam.Node{ID: main.ID, Title: main.OutcomeName, Prerequisites: requires})
+		graph.Nodes = append(graph.Nodes, exam.Node{ID: main.OutcomeID, Title: main.OutcomeName, Prerequisites: requires})
 	}
 	traversal, step := exam.NewExam(graph, 0, rng)
 	traversal.SingleAnswer = true
@@ -56,7 +56,7 @@ func advance(s diagnostic.Session, answer diagnostic.Answer) (diagnostic.Transit
 	}
 	for _, competency := range s.Variant.Competencies {
 		for _, task := range competency.Tasks {
-			if state := traversal.Nodes[task.ID]; state != nil && state.Status == exam.StatusCredited && before[task.ID] != exam.StatusCredited {
+			if state := traversal.Nodes[task.OutcomeID]; state != nil && state.Status == exam.StatusCredited && before[task.OutcomeID] != exam.StatusCredited {
 				transition.SkippedBasics = append(transition.SkippedBasics, task)
 			}
 		}
@@ -78,7 +78,7 @@ func transitionTo(v diagnostic.VariantSnapshot, traversal *exam.Exam, step exam.
 	}
 	for i, competency := range v.Competencies {
 		for j, task := range competency.Tasks {
-			if task.ID == step.NodeID {
+			if task.OutcomeID == step.NodeID {
 				transition.CurrentCompetency, transition.CurrentTask = i, j
 			}
 		}

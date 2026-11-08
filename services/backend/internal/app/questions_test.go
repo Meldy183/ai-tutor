@@ -63,7 +63,9 @@ const build = `{"version":"course-graph-v1","quality":{"acyclic":true},"hierarch
 
 func TestMapDefaultsAndWarningsSurviveQuestionPreparation(t *testing.T) {
 	header := []string{"Компетенция", "Составляющая", "Образовательный результат", "Таксономия", "Важность", "Что должно войти в тест", "Задание 1", "Задание 2", "Критерии оценивания 1", "ID темы", "Пререквизиты"}
-	rows := [][]string{header, {"ИИ", "Агенты", "Агент", "Понимать", "3", "TRUE", "Назови агента", "Назови агента и объясни выбор", "Балл (макс. 1): 0 — нет; 1 — верно", "agent", ""}}
+	rows := [][]string{header, {"ИИ", "Агенты", "Агент", "Понимать", "3", "TRUE", "Назови агента", "Назови агента и объясни выбор", "Балл (макс. 1): 0 — нет; 1 — верно", "agent", ""},
+		{"ИИ", "Агенты", "База 1", "Помнить", "3", "TRUE", "База 1?", "", "Эталон: база.", "b1", ""},
+		{"ИИ", "Агенты", "База 2", "Анализировать", "3", "TRUE", "База 2?", "", "Эталон: база.", "b2", ""}}
 	built, err := coursegraph.BuildMapGraph([]coursegraph.MapSheet{{Name: "Карта", Rows: rows}})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +91,7 @@ func TestMapDefaultsAndWarningsSurviveQuestionPreparation(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("decode: %v, %v", ok, err)
 	}
-	n := g.Nodes[0]
+	n := g.Nodes[1]
 	if len(n.Variants) != 2 || n.Variants[0].Question != rows[1][6] || n.Variants[1].Question != rows[1][7] || n.Variants[1].AssessmentGuidance != coursegraph.DefaultAssessmentGuidance || n.Variants[0].AssessmentGuidance == coursegraph.DefaultAssessmentGuidance || !n.Prepared() {
 		t.Fatalf("preparation changed task criteria or questions: %+v", n)
 	}

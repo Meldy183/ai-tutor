@@ -93,7 +93,7 @@ func (a *App) registerLearningRoutes(mux *http.ServeMux, auth *authapp.Service, 
 	taskGen := taskgenhttp.New(taskgenapp.New(taskGenRepository, taskGenerator, "learning-taskgen", func() int64 { return a.now().Unix() }), taskgenapp.NewMaterialService(taskGenRepository, func() int64 { return a.now().Unix() }))
 	trainingRepository := trainingpg.New(a.pool).WithLease(a.cfg.HTTPWriteTimeout())
 	trainingService := trainingapp.New(trainingRepository, a.diagnosticStore, voice, trainingAssessment{assessment}, trainingsnapshot.Provider{}, security.IDGenerator{}, a.now).
-		WithAudio(taskAudio).WithAudioRegenerator(a.audioWorker)
+		WithAudio(taskAudio).WithAudioRegenerator(a.audioWorker).WithBank(trainingRepository)
 	chatRepository := trainingpg.NewChatRepository(a.pool).WithLease(a.cfg.HTTPWriteTimeout())
 	trainingService = trainingService.WithCheckedNext(chatRepository)
 	var tutor trainingapp.Tutor

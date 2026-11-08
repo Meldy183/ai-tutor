@@ -180,16 +180,9 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	graphRepository := &pairedCourseGraphRepository{Repository: graphpg.New(pool), pool: pool, learning: learningMapRepository}
 	a.graphWorker = graphapp.New(graphRepository, materialRepository, a.materialsStorage, graphapi.New(cfg.CourseGraphURL), a.warmer, graphxlsx.Read)
 	a.graphWorker.SetLearningMapImporter(func(ctx context.Context, actor user.User, subjectID string, data []byte, sheets []coursegraphentity.MapSheet) (competencymap.Map, []coursegraphentity.ImportWarning, error) {
-		geekMapKeys, err := coursegraphentity.CompetencyMapStructureKeys(sheets[0])
-		if err != nil {
-			return competencymap.Map{}, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для Geek.")
-		}
 		learningMap, err := csvparser.ParseXLSXSheet(data, 1)
 		if err != nil {
 			return competencymap.Map{}, nil, learningSheetParseFailure(err)
-		}
-		if err := competencymap.ValidateStructureKeys(geekMapKeys, learningMap); err != nil {
-			return competencymap.Map{}, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_STRUCTURE_MISMATCH", err.Error())
 		}
 		if err := learningMapImport.Authorize(actor); err != nil {
 			return competencymap.Map{}, nil, err

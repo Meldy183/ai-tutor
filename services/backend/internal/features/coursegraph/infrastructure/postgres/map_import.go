@@ -9,17 +9,24 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audioasset"
+	pgshared "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres"
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/security"
+
 	db "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres/sqlcgen"
 	"github.com/jackc/pgx/v5"
 )
 
 // SaveImportedMapInTx stores the Geek sheet of a two-sheet map within the
-// import transaction: its topics resolve to the outcomes of the stored map
-// revision by competency, constituent and outcome, their tasks become exam
-// tasks of those outcomes, and the build of the graph is queued. The saved
+// import transaction: its complete bank owns exam outcomes in the same schema,
+// independently of the diagnostic sheet. All variants become exam tasks and
+// the graph build is queued. The saved
 // graph is the Geek view of the revision, not a second structure.
 func SaveImportedMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, revision int64, now time.Time) error {
 	q := db.New(tx)
+	if err := saveExamOutcomes(ctx, q, graph, revision); err != nil {
+		return err
+	}
 	outcomes, err := q.CourseMapOutcomesOfRevision(ctx, revision)
 	if err != nil {
 		return err
@@ -31,6 +38,12 @@ func SaveImportedMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sh
 	for _, task := range tasks {
 		if err := q.InsertCourseMapExamTask(ctx, task); err != nil {
 			return err
+		}
+		if audioasset.CanSynthesize(task.Question) {
+			assetID := audioasset.IDForTask(task.ID)
+			if _, err := pgshared.EnqueueTaskAudio(ctx, q, task.ID, assetID, audioasset.ObjectKey(assetID), task.Question); err != nil {
+				return err
+			}
 		}
 	}
 	sum := sha256.Sum256(graph)
@@ -46,7 +59,7 @@ func SaveImportedMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sh
 // outcome IDs of the revision and gives every task its exam task ID.
 func resolveMapTopics(graph json.RawMessage, outcomes []db.CourseMapOutcomesOfRevisionRow, now time.Time) (json.RawMessage, []db.InsertCourseMapExamTaskParams, error) {
 	type vertex struct{ ID, CompetencyID, ConstituentID string }
-	full, short, ambiguous := map[string]vertex{}, map[string]vertex{}, map[string]bool{}
+	full := map[string]vertex{}
 	for _, o := range outcomes {
 		v := vertex{ID: o.ID, CompetencyID: o.CompetencyID, ConstituentID: o.ConstituentID}
 		key := structureKey(o.CompetencyName, o.ConstituentName, o.OutcomeName)
@@ -54,20 +67,20 @@ func resolveMapTopics(graph json.RawMessage, outcomes []db.CourseMapOutcomesOfRe
 			return nil, nil, fmt.Errorf("duplicate course map outcome %q", o.OutcomeName)
 		}
 		full[key] = v
-		shortKey := structureKey(o.CompetencyName, "", o.OutcomeName)
-		if _, exists := short[shortKey]; exists {
-			ambiguous[shortKey] = true
-		}
-		short[shortKey] = v
+
 	}
 	var shape map[string]json.RawMessage
 	if err := json.Unmarshal(graph, &shape); err != nil {
 		return nil, nil, err
 	}
-	var topics []map[string]json.RawMessage
+	var topics, bank []map[string]json.RawMessage
 	if err := json.Unmarshal(shape["topics"], &topics); err != nil {
 		return nil, nil, err
 	}
+	if err := json.Unmarshal(shape["bank"], &bank); err != nil {
+		return nil, nil, err
+	}
+
 	text := func(topic map[string]json.RawMessage, field string) string {
 		var value string
 		_ = json.Unmarshal(topic[field], &value)
@@ -75,12 +88,10 @@ func resolveMapTopics(graph json.RawMessage, outcomes []db.CourseMapOutcomesOfRe
 	}
 	ids := make(map[string]string, len(topics))
 	tasks := []db.InsertCourseMapExamTaskParams{}
-	for _, topic := range topics {
+	for _, topic := range bank {
 		title, competency, constituent := text(topic, "title"), text(topic, "parent_title"), text(topic, "constituent_title")
 		v, ok := full[structureKey(competency, constituent, title)]
-		if !ok && constituent == "" && !ambiguous[structureKey(competency, "", title)] {
-			v, ok = short[structureKey(competency, "", title)]
-		}
+
 		if !ok {
 			return nil, nil, fmt.Errorf("Geek map outcome %q is not in the course map", title)
 		}
@@ -109,13 +120,27 @@ func resolveMapTopics(graph json.RawMessage, outcomes []db.CourseMapOutcomesOfRe
 		topic["competency_id"], _ = json.Marshal(v.CompetencyID)
 		topic["constituent_id"], _ = json.Marshal(v.ConstituentID)
 	}
+	byID := map[string]map[string]json.RawMessage{}
+	for _, topic := range bank {
+		byID[text(topic, "id")] = topic
+	}
+	for _, topic := range topics {
+		source, ok := byID[text(topic, "id")]
+		if !ok {
+			return nil, nil, fmt.Errorf("selected topic has no bank outcome")
+		}
+		for _, field := range []string{"variants", "competency_id", "constituent_id"} {
+			topic[field] = source[field]
+		}
+	}
+
 	rename := func(id string) (string, error) {
 		if renamed, ok := ids[id]; ok {
 			return renamed, nil
 		}
 		return "", fmt.Errorf("Geek map relation references unknown topic %q", id)
 	}
-	for _, topic := range topics {
+	for _, topic := range append(append([]map[string]json.RawMessage{}, topics...), bank...) {
 		renamed, err := rename(text(topic, "id"))
 		if err != nil {
 			return nil, nil, err
@@ -133,6 +158,9 @@ func resolveMapTopics(graph json.RawMessage, outcomes []db.CourseMapOutcomesOfRe
 		topic["requires"], _ = json.Marshal(requires)
 	}
 	var err error
+	if shape["bank"], err = json.Marshal(bank); err != nil {
+		return nil, nil, err
+	}
 	if shape["topics"], err = json.Marshal(topics); err != nil {
 		return nil, nil, err
 	}
@@ -192,4 +220,71 @@ func keepRephrases(ctx context.Context, q *db.Queries, graph json.RawMessage) er
 func structureKey(competency, constituent, outcome string) string {
 	normalize := func(value string) string { return strings.Join(strings.Fields(strings.ToLower(value)), " ") }
 	return normalize(competency) + "\x00" + normalize(constituent) + "\x00" + normalize(outcome)
+}
+
+// saveExamOutcomes stores the complete first sheet, independently of the
+// diagnostic sheet's names and selection, in the same neutral schema.
+func saveExamOutcomes(ctx context.Context, q *db.Queries, graph json.RawMessage, revision int64) error {
+	var shape struct {
+		Bank []struct {
+			ID          string `json:"id"`
+			Title       string `json:"title"`
+			Competency  string `json:"parent_title"`
+			Constituent string `json:"constituent_title"`
+			Content     string `json:"text"`
+			Included    bool   `json:"include_in_test"`
+			Importance  int    `json:"importance"`
+			Bloom       int    `json:"bloom"`
+		} `json:"bank"`
+	}
+	if err := json.Unmarshal(graph, &shape); err != nil {
+		return err
+	}
+	if len(shape.Bank) == 0 {
+		return fmt.Errorf("exam map has no outcome bank")
+	}
+	competencies, constituents := map[string]string{}, map[string]string{}
+	seen := map[string]bool{}
+	for _, o := range shape.Bank {
+		key := structureKey(o.Competency, o.Constituent, o.Title)
+		if seen[key] {
+			return fmt.Errorf("duplicate exam outcome %q", o.Title)
+		}
+		seen[key] = true
+		compKey := structureKey(o.Competency, "", "")
+		compID := competencies[compKey]
+		if compID == "" {
+			var err error
+			compID, err = security.ID("competency")
+			if err != nil {
+				return err
+			}
+			if err = q.InsertCourseMapExamCompetency(ctx, db.InsertCourseMapExamCompetencyParams{ID: compID, Name: o.Competency, Revision: revision}); err != nil {
+				return err
+			}
+			competencies[compKey] = compID
+		}
+		partKey := structureKey(o.Competency, o.Constituent, "")
+		partID := constituents[partKey]
+		if partID == "" {
+			var err error
+			partID, err = security.ID("constituent")
+			if err != nil {
+				return err
+			}
+			if err = q.LearningInsertConstituent(ctx, db.LearningInsertConstituentParams{ID: partID, CompetencyID: compID, Name: o.Constituent}); err != nil {
+				return err
+			}
+			constituents[partKey] = partID
+		}
+		id, err := security.ID("outcome")
+		if err != nil {
+			return err
+		}
+		taxonomy := map[int]string{1: "knowledge", 2: "understanding", 3: "application", 4: "analysis"}[o.Bloom]
+		if err = q.LearningInsertOutcome(ctx, db.LearningInsertOutcomeParams{ID: id, ConstituentID: partID, Name: o.Title, IncludeInTest: &o.Included, Importance: int16(o.Importance), TaxonomyCode: taxonomy, EducationalContent: o.Content}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

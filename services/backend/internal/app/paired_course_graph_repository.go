@@ -14,8 +14,7 @@ import (
 
 // pairedCourseGraphRepository saves both sheets of a competency map in one
 // transaction: the learning sheet as the course structure and the diagnostic
-// tasks of a new map revision, the Geek sheet as the exam tasks of the same
-// outcomes with the build of the Geek graph queued. The learning revision is
+// tasks of a new map revision, the Geek sheet as its own complete exam bank with the build of the Geek graph queued. The learning revision is
 // active at once; Geek keeps its published graph until the build finishes.
 type pairedCourseGraphRepository struct {
 	*graphpg.Repository

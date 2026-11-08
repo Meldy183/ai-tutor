@@ -354,6 +354,8 @@ func TestVariableSizeCompetenciesAdvanceAndCountActualTasks(t *testing.T) {
 			for i := range third.Tasks {
 				third.Tasks[i].ID = fmt.Sprintf("variant-task-2-%d", i)
 				third.Tasks[i].Task.Competency = third.Competency
+				third.Tasks[i].Task.Outcome.ID = fmt.Sprintf("outcome-2-%d", i)
+				third.Tasks[i].Task.Constituent.ID = "constituent-2"
 			}
 			value.Competencies[0].Tasks = value.Competencies[0].Tasks[:1]
 			value.Competencies[1].Tasks = value.Competencies[1].Tasks[:2]
