@@ -1,5 +1,5 @@
 import { DropdownMenu } from '@radix-ui/themes'
-import { ChevronDown, LayoutGrid, LogOut } from 'lucide-react'
+import { ChevronDown, LayoutGrid, LogOut, UserRound } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from '@tanstack/react-router'
 import { useAuth } from '../model/use-auth'
@@ -58,6 +58,10 @@ export function AccountMenu({ canLogout = true }: { canLogout?: boolean }) {
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="end" sideOffset={6}>
+          <DropdownMenu.Item onSelect={() => void navigate({ to: '/profile' })}>
+            <UserRound size={16} aria-hidden="true" />
+            {t('profile.title')}
+          </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={() => void navigate({ to: '/' })}>
             <LayoutGrid size={16} aria-hidden="true" />
             {t('auth.modeSelect')}
