@@ -17,7 +17,7 @@ stt:
       token: "REPLACE_WITH_SERVER_TOKEN" # Provision the server secret outside Git.
       url: "https://speech.example.invalid/transcribe"
       slots: 1
-      timeout: 40s
+      timeout: 40s # На каждый HTTP-фрагмент; весь RPC ограничен request_timeout.
       model: ""
       longform: false
       abort_on_disconnect: false

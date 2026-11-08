@@ -161,8 +161,6 @@ func (p *HTTP) Transcribe(ctx context.Context, instance string, data []byte, med
 	if !ok {
 		return "", errors.New("unknown STT instance")
 	}
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
 	parts := [][]byte{data}
 	base, _, _ := mime.ParseMediaType(media)
 	if !cfg.Longform && (base == "audio/wav" || base == "audio/x-wav" || base == "audio/wave") {
@@ -175,8 +173,11 @@ func (p *HTTP) Transcribe(ctx context.Context, instance string, data []byte, med
 	}
 	texts := make([]string, 0, len(parts))
 	for index, part := range parts {
-		partCtx := context.WithValue(ctx, partKey{}, index)
+		// Each fragment waits in the receiver queue independently. Its HTTP
+		// budget starts here; the caller's deadline still bounds all fragments.
+		partCtx, cancel := context.WithTimeout(context.WithValue(ctx, partKey{}, index), cfg.Timeout)
 		text, err := p.transcribeOnce(partCtx, cfg, part, media)
+		cancel()
 		if err != nil {
 			return "", err
 		}
