@@ -1,0 +1,145 @@
+.page {
+  min-height: 100vh;
+  background: var(--gray-2);
+  color: var(--gray-12);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 32px;
+  background: var(--color-panel-solid);
+  border-bottom: 1px solid var(--gray-5);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  font-weight: bold;
+  text-decoration: none;
+}
+.content {
+  max-width: 1140px;
+  margin: auto;
+  padding: 32px 24px;
+}
+.identity,
+.item {
+  background: var(--color-panel-solid);
+  border: 1px solid var(--gray-5);
+  border-radius: 20px;
+}
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 24px;
+}
+.identity h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-3);
+  color: var(--accent-11);
+  font-weight: bold;
+  font-size: 24px;
+}
+.email {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--gray-11);
+}
+.heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 30px 0 16px;
+  gap: 16px;
+}
+.heading h2 {
+  margin: 0;
+  font-size: 24px;
+}
+.heading select {
+  padding: 10px;
+  border: 1px solid var(--gray-6);
+  border-radius: 12px;
+  background: var(--color-panel-solid);
+  color: inherit;
+}
+.list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.item {
+  display: grid;
+  grid-template-columns: 42px 160px 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+}
+.item div {
+  display: grid;
+  gap: 8px;
+}
+.item span {
+  color: var(--gray-11);
+}
+.icon {
+  width: 32px;
+  height: 32px;
+}
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border: 1px solid var(--gray-9);
+  border-radius: 18px;
+  color: var(--gray-12);
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s;
+  &:hover {
+    background: var(--gray-3);
+  }
+  &:focus-visible {
+    outline: 3px solid var(--app-accent);
+    outline-offset: 3px;
+  }
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (max-width: 650px) {
+  .header {
+    padding: 16px;
+  }
+  .content {
+    padding: 24px 16px;
+  }
+  .item {
+    grid-template-columns: 32px 1fr;
+  }
+  .item > div:nth-of-type(2),
+  .action {
+    grid-column: 2;
+  }
+}

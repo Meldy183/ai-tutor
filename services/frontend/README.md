@@ -13,7 +13,7 @@ npm ci
 npm run dev
 ```
 
-Откройте http://localhost:5173. На `/` находится общий вход и выбор направления; `/learn` открывает обучение, `/exam` — Geek с запуском экзамена и историей.
+Откройте http://localhost:5173. На `/` находится общий вход и выбор направления; `/learn` открывает обучение, `/exam` — Geek с запуском экзамена; история доступна в профиле.
 Для микрофона нужен HTTPS или localhost. Фронтенд всегда использует HTTP API backend.
 
 ## Настройки и API
@@ -46,12 +46,13 @@ Frontend использует один API base (`VITE_API_BASE_URL`, по ум�
 `/admin/courses` и вложенный `/admin/courses/{subject_id}`; отдельного host bridge нет.
 HTTP-контракт и сценарии проверяются тестами. Backend вызывает voice gateway по gRPC; адрес и профиль задаются в `services/backend/config/dev.yaml`, а STT/TTS-модели — в `services/voice-gateway/config/dev.yaml`.
 
+В меню аккаунта доступен профиль (`/profile`): он показывает имя, email, проверки Geek, текущую и последнюю завершённую учебные диагностики по выбранному курсу. Из карточек можно продолжить активную попытку или тренировку и открыть итог экзамена. Полную историю учебных диагностик API пока не предоставляет.
+
 ## Geek: устный экзамен
 
 На `/exam` студент видит курс, кнопку «Начать проверку знаний» (или «Продолжить
-проверку знаний», если есть незавершённая) и список своих проверок — диагностик курса
-(`GET /api/v1/exam/diagnostic-sessions?subject_id=…`): у завершённых — оценка и
-кнопка «Открыть итог». Открытый экран (диалог или итог) переживает перезагрузку
+проверку знаний», если есть незавершённая). История проверок и итоги доступны в профиле;
+для определения активной попытки используется `GET /api/v1/exam/diagnostic-sessions?subject_id=…`. Открытый экран (диалог или итог) переживает перезагрузку
 вкладки через `sessionStorage`. Правила экзамена — в [корневом README](../../README.md).
 
 Диалог — экран-чат по референсу `documents/photo_2026-10-16_13-59-35.jpg`:
@@ -136,7 +137,7 @@ The profile menu links back to mode selection. The selected course is user-scope
 and shared across both modes; an explicit `subject_id` URL takes precedence.
 Ready task audio uses `/learn/task-audio/{id}/file` through the
 shared authenticated audio adapter. The student screens have no direction tabs.
-Mode-specific title, intro, history and session content remain on each page. Returning to mode selection leaves active Geek and learning intents in
+Mode-specific title, intro and session content remain on each page. Returning to mode selection leaves active Geek and learning intents in
 `sessionStorage`, so reopening a mode resumes its session.
 A saved course selection or `subject_id` URL takes precedence over
 an older resumable session view; the session intent remains available when the
@@ -248,7 +249,7 @@ OCR, перевод и очистку; после завершения или о
 
 - `src/bootstrap/` — app-layer alias и composition root: entrypoint, providers, HTTP DI и router shell. Имя `bootstrap` выбрано вместо стандартного `app`; `src/app/` и `src/application/` не создаются.
 - `src/routes/` — тонкий технический реестр TanStack Router с неизменными URL; `src/routeTree.gen.ts` генерируется автоматически.
-- `src/pages/trainer/`, `src/pages/learning-trainer/`, `src/pages/mode-selection/`, `src/pages/admin-courses/`, `src/pages/competency-map/`, `src/pages/learning-competency-map/` — уникальные экраны и их композиция. Trainer page содержит главную с историей, диалог Geek и итог без импорта другого page slice.
+- `src/pages/trainer/`, `src/pages/learning-trainer/`, `src/pages/mode-selection/`, `src/pages/admin-courses/`, `src/pages/competency-map/`, `src/pages/learning-competency-map/` — уникальные экраны и их композиция. Trainer page содержит главную, диалог Geek и итог без импорта другого page slice.
 - `src/widgets/` — переиспользуемые блоки экранов: `admin-course-detail-shell`, `course-graph` и `result-report`.
 - `src/features/` — сценарии `auth`, `diagnostic-session` (данные диагностики, ответ голосом, озвучка реплик), `subject-selection`, `import-competency-map` (сейчас — только материалы курса), `course-graph-build` (граф курса и его сборка), а также учебные `import-learning-competency-map`, `learning-diagnostic-session`, `learning-plan` и `learning-subject-selection`, включая локальные hooks, порты и UI действий.
 - `src/entities/` — общие `user` и раздельные Geek/learning subjects, assessment, competency map, diagnostic session, plan and training models; exam и learning query keys namespaced.

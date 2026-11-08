@@ -1,4 +1,4 @@
-import { Badge, Button, Card, Heading, Text } from '@radix-ui/themes'
+import { Button, Card, Heading, Text } from '@radix-ui/themes'
 import { GraduationCap, Mic, Play, Sparkles, Target, Zap } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -9,10 +9,7 @@ import {
   useDiagnosticHistoryQuery,
   useStartDiagnosticMutation,
 } from '@/features/diagnostic-session'
-import {
-  DiagnosticApiError,
-  type DiagnosticSummary,
-} from '@/entities/diagnostic-session'
+import { DiagnosticApiError } from '@/entities/diagnostic-session'
 import { GeekDialog } from './geek-dialog'
 import { GeekResult } from './geek-result'
 import styles from './learning-home.module.scss'
@@ -42,8 +39,10 @@ function saveSelectedSubject(userId: string, subjectId: string) {
 
 export function LearningHome({
   requestedSubjectId,
+  requestedSessionId,
 }: {
   requestedSubjectId?: string
+  requestedSessionId?: string
 }) {
   const { t } = useTranslation()
   const { user } = useAuth()
@@ -62,6 +61,35 @@ export function LearningHome({
       subjects[0])
   const history = useDiagnosticHistoryQuery(userId, selected?.id ?? '')
   const start = useStartDiagnosticMutation(userId, selected?.id ?? '')
+  const [openedRequest, setOpenedRequest] = useState(false)
+
+  useEffect(() => {
+    if (
+      openedRequest ||
+      !requestedSessionId ||
+      !requestedSubjectId ||
+      selected?.id !== requestedSubjectId ||
+      !history.data
+    )
+      return
+    const item = history.data.find(
+      (entry) =>
+        entry.id === requestedSessionId && entry.status !== 'cancelled',
+    )
+    if (item)
+      setView({
+        subjectId: selected.id,
+        sessionId: item.id,
+        screen: item.status === 'completed' ? 'result' : 'dialog',
+      })
+    setOpenedRequest(true)
+  }, [
+    openedRequest,
+    requestedSessionId,
+    requestedSubjectId,
+    selected,
+    history.data,
+  ])
 
   useEffect(() => {
     if (
@@ -219,88 +247,18 @@ export function LearningHome({
                 )}
               </div>
             </article>
-            <History
-              query={history}
-              onOpen={(item) =>
-                open(item.id, item.status === 'completed' ? 'result' : 'dialog')
-              }
-            />
+            {history.isError && (
+              <Card className={styles.notice}>
+                <Text role="alert">{t('home.historyError')}</Text>
+                <Button onClick={() => void history.refetch()}>
+                  {t('trainer.retry')}
+                </Button>
+              </Card>
+            )}
           </section>
         )}
       </main>
     </div>
-  )
-}
-
-function History({
-  query,
-  onOpen,
-}: {
-  query: ReturnType<typeof useDiagnosticHistoryQuery>
-  onOpen: (item: DiagnosticSummary) => void
-}) {
-  const { t, i18n } = useTranslation()
-  return (
-    <section className={styles.history} aria-labelledby="history-title">
-      <Heading as="h2" size="5" id="history-title">
-        {t('home.historyTitle')}
-      </Heading>
-      {query.isPending ? (
-        <Text role="status">{t('home.historyLoading')}</Text>
-      ) : query.isError ? (
-        <Card className={styles.notice}>
-          <Text role="alert">{t('home.historyError')}</Text>
-          <Button onClick={() => void query.refetch()}>
-            {t('trainer.retry')}
-          </Button>
-        </Card>
-      ) : query.data.length === 0 ? (
-        <Text as="p" color="gray">
-          {t('home.historyEmpty')}
-        </Text>
-      ) : (
-        <ul className={styles.historyList}>
-          {query.data.map((item) => (
-            <li key={item.id} className={styles.historyItem}>
-              <span className={styles.historyText}>
-                <Text weight="bold">
-                  {t('home.historyItem', {
-                    date: new Date(item.startedAt * 1000).toLocaleString(
-                      i18n.language,
-                      { dateStyle: 'medium', timeStyle: 'short' },
-                    ),
-                  })}
-                </Text>
-                <Text size="2" color="gray">
-                  {t(`home.historyStatus.${item.status}`, {
-                    progress: item.progressPercent,
-                  })}
-                </Text>
-              </span>
-              {item.status === 'completed' && (
-                <Badge size="2" color={item.grade ? 'blue' : 'gray'}>
-                  {item.grade && item.scorePercent !== null
-                    ? t('home.historyGrade', {
-                        grade: item.grade,
-                        percent: item.scorePercent,
-                      })
-                    : t('home.historyNoGrade')}
-                </Badge>
-              )}
-              {item.status !== 'cancelled' && (
-                <Button variant="soft" onClick={() => onOpen(item)}>
-                  {t(
-                    item.status === 'completed'
-                      ? 'home.openResult'
-                      : 'home.continue',
-                  )}
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   )
 }
 

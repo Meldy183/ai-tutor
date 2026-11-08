@@ -450,11 +450,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderApp() {
+function renderApp(path = '/exam') {
   const queryClient = createQueryClient()
   const router = createRouter({
     context: { queryClient },
-    history: createMemoryHistory({ initialEntries: ['/exam'] }),
+    history: createMemoryHistory({ initialEntries: [path] }),
     routeTree,
   })
   render(<RouterProvider router={router} />)
@@ -499,14 +499,15 @@ async function finishDiagnostic(text: string) {
   act(() => FakeAudio.last?.onended?.())
 }
 
-it('runs a diagnostic from the home page to the result and back to the history', async () => {
+it('runs a diagnostic from the home page to the result and back', async () => {
   const { answers, fetch } = geekBackend()
   renderApp()
   expect(
-    await screen.findByText(
-      'Вы ещё не проходили проверку знаний по этому курсу.',
-    ),
+    await screen.findByRole('heading', { name: 'Симуляция экзамена' }),
   ).toBeVisible()
+  expect(
+    screen.queryByRole('heading', { name: 'Мои проверки знаний' }),
+  ).not.toBeInTheDocument()
   await start()
 
   expect(
@@ -626,9 +627,15 @@ it('runs a diagnostic from the home page to the result and back to the history',
   ).toBeInTheDocument()
 
   fireEvent.click(screen.getAllByRole('button', { name: 'На главную' })[0])
-  expect(await screen.findByText('Оценка B · 81%')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: 'Открыть итог' }))
-  expect(await screen.findByText('4,1 из 5 баллов')).toBeVisible()
+  expect(
+    await screen.findByRole('heading', { name: 'Симуляция экзамена' }),
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('heading', { name: 'Мои проверки знаний' }),
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Открыть итог' }),
+  ).not.toBeInTheDocument()
 })
 
 it('does not show the course selection panel on the exam home', async () => {
@@ -663,7 +670,7 @@ it('keeps the active exam open and offers mode selection in the account menu', a
   expect(sessionStorage.getItem('ai-tutor:geek-view')).toBeNull()
 })
 
-it('resumes the active diagnostic from the history', async () => {
+it('resumes the active diagnostic from the course action', async () => {
   geekBackend({ active: true })
   renderApp()
   fireEvent.click(
@@ -1593,4 +1600,15 @@ it('shows an accepted answer once while its submission is still pending', async 
   }
   await waitFor(() => expect(queryClient.isMutating()).toBe(0))
   expect(within(screen.getByRole('list')).getAllByText(text)).toHaveLength(1)
+})
+
+it('opens the selected exam directly from the profile', async () => {
+  geekBackend({ active: true })
+  renderApp('/exam?subject_id=subject-1&session_id=d1')
+  expect(
+    await screen.findByText(
+      'Что изменится в A*, если эвристика переоценивает путь?',
+    ),
+  ).toBeVisible()
+  expect(await answerField()).toBeEnabled()
 })

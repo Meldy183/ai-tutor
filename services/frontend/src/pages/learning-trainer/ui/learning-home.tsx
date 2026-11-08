@@ -70,8 +70,10 @@ function clearIntent() {
 
 export function LearningHome({
   requestedSubjectId,
+  requestedResume,
 }: {
   requestedSubjectId?: string
+  requestedResume?: 'diagnostic' | 'training'
 }) {
   const { t } = useTranslation()
   const { user } = useAuth()
@@ -132,6 +134,44 @@ export function LearningHome({
   const selected = catalogSelection ?? historicalSubject
 
   const data = learning.data
+  const [openedRequest, setOpenedRequest] = useState(false)
+  useEffect(() => {
+    if (
+      openedRequest ||
+      !requestedResume ||
+      !requestedSubjectId ||
+      selected?.id !== requestedSubjectId ||
+      !data
+    )
+      return
+    const sessionId =
+      requestedResume === 'diagnostic'
+        ? data.active_session_id
+        : data.diagnostic_session_id
+    if (
+      sessionId &&
+      (requestedResume === 'diagnostic' || data.training_available)
+    ) {
+      const next: Intent = {
+        apiBase,
+        userId,
+        subjectId: selected.id,
+        sessionId: requestedResume === 'diagnostic' ? sessionId : '',
+        mode: requestedResume,
+        ...(requestedResume === 'training' ? { diagnosticId: sessionId } : {}),
+      }
+      saveIntent(next)
+      setIntent(next)
+    }
+    setOpenedRequest(true)
+  }, [
+    openedRequest,
+    requestedResume,
+    requestedSubjectId,
+    selected,
+    data,
+    userId,
+  ])
   // Diagnostic and training are one process for the student: the course
   // offers a single action that resumes where they stopped.
   const stage = !data

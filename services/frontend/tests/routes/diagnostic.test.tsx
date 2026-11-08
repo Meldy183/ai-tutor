@@ -1384,3 +1384,23 @@ it('shows preparing audio and permits retry in the completed review', async () =
   fireEvent.click(screen.getByRole('button', { name: 'Прослушать инструкцию' }))
   await waitFor(() => expect(play).toHaveBeenCalledOnce())
 })
+
+it('opens the active learning diagnostic from the profile', async () => {
+  const requests = server()
+  reportActiveLearningSession(requests)
+  const router = createRouter({
+    context: { queryClient: createQueryClient() },
+    history: createMemoryHistory({
+      initialEntries: ['/learn?subject_id=subject%3Atest&resume=diagnostic'],
+    }),
+    routeTree,
+  })
+  render(<RouterProvider router={router} />)
+  expect(
+    await screen.findByText('Настоящий вопрос из банка', {}, { timeout: 5000 }),
+  ).toBeVisible()
+  expect(
+    JSON.parse(sessionStorage.getItem('ai-tutor:learning-home') ?? 'null')
+      ?.sessionId,
+  ).toBe('session-real')
+})
