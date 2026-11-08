@@ -37,7 +37,7 @@ func TestInvalidConfiguration(t *testing.T) {
 		"string number": strings.Replace(string(body), "slots: 1", "slots: '1'", 1),
 		"float slots":   strings.Replace(string(body), "slots: 1", "slots: 1.5", 1),
 		"empty pool":    strings.Replace(string(body), "max_waiting: 32", "max_waiting: 0", 1),
-		"bad time":      strings.Replace(string(body), "request_timeout: 300s", "request_timeout: 300", 1),
+		"bad time":      strings.Replace(string(body), "request_timeout: 370s", "request_timeout: 370", 1),
 		"same topics":   strings.Replace(string(body), "voice.tts.v1", "voice.stt.v1", 1),
 		"bad profile":   strings.Replace(string(body), "profiles: [geek-default]", "profiles: [absent]", 1),
 	} {

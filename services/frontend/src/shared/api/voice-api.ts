@@ -57,8 +57,8 @@ export async function transcribeRecording(
     method: 'POST',
     credentials: 'include',
     body: form,
-    // Backend allows 330 s, including the gateway queue and recognition.
-    signal: requestSignal(signal, 360_000),
+    // Backend allows 400 s, including the gateway queue and recognition.
+    signal: requestSignal(signal, 430_000),
   })
   if (!response.ok) {
     const error: unknown = await response.json().catch(() => null)

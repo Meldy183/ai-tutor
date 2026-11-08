@@ -6,7 +6,7 @@ logging:
 voice:
   address: "voice-gateway:8021"
   profile: "geek-default"
-  timeout: 330s
+  timeout: 400s
 uploads:
   max_bytes: 26214400
 storage:

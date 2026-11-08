@@ -379,28 +379,28 @@ function delayedTurnAudio(delay: number) {
 }
 
 it('waits for a queued multi-part turn synthesis within the backend budget', async () => {
-  delayedTurnAudio(325_000)
+  delayedTurnAudio(395_000)
   const checked = expect(
     fetchTurnAudio('d1', 't1', signal()).then((audio) => ({
       type: audio.type,
       size: audio.size,
     })),
   ).resolves.toEqual({ type: 'audio/wav', size: 4 })
-  await vi.advanceTimersByTimeAsync(325_000)
+  await vi.advanceTimersByTimeAsync(395_000)
   await checked
 })
 
-it('bounds turn audio waiting by 360 seconds', async () => {
-  delayedTurnAudio(400_000)
+it('bounds turn audio waiting by 430 seconds', async () => {
+  delayedTurnAudio(460_000)
   const checked = expect(
     fetchTurnAudio('d1', 't1', signal()),
   ).rejects.toMatchObject({ code: 'TIMEOUT' })
-  await vi.advanceTimersByTimeAsync(360_000)
+  await vi.advanceTimersByTimeAsync(430_000)
   await checked
 })
 
 it('cancels queued turn audio immediately when the listener leaves', async () => {
-  delayedTurnAudio(325_000)
+  delayedTurnAudio(395_000)
   const controller = new AbortController()
   const checked = expect(
     fetchTurnAudio('d1', 't1', controller.signal),

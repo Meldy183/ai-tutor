@@ -265,7 +265,7 @@ function delayedTranscription(delay: number) {
 }
 
 it('keeps waiting for recognition after two minutes within the backend budget', async () => {
-  delayedTranscription(325_000)
+  delayedTranscription(395_000)
   const result = transcribeRecording(
     new Blob(['audio']),
     new AbortController().signal,
@@ -274,23 +274,23 @@ it('keeps waiting for recognition after two minutes within the backend budget', 
     id: 'tr-long',
     text: 'Ответ',
   })
-  await vi.advanceTimersByTimeAsync(325_000)
+  await vi.advanceTimersByTimeAsync(395_000)
   await checked
 })
 
 it('stops recognition after the browser budget is exhausted', async () => {
-  delayedTranscription(400_000)
+  delayedTranscription(460_000)
   const result = transcribeRecording(
     new Blob(['audio']),
     new AbortController().signal,
   )
   const checked = expect(result).rejects.toMatchObject({ name: 'TimeoutError' })
-  await vi.advanceTimersByTimeAsync(360_000)
+  await vi.advanceTimersByTimeAsync(430_000)
   await checked
 })
 
 it('allows the caller to cancel recognition while it waits in the queue', async () => {
-  delayedTranscription(325_000)
+  delayedTranscription(395_000)
   const controller = new AbortController()
   const result = transcribeRecording(new Blob(['audio']), controller.signal)
   const checked = expect(result).rejects.toMatchObject({ name: 'AbortError' })

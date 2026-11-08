@@ -18,8 +18,8 @@ const apiBase = `${(import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(
 // An answer waits for the model: evaluation and the next question.
 const ANSWER_TIMEOUT = 240_000
 const READ_TIMEOUT = 30_000
-// The backend shares its 330 s budget across sequential TTS chunks.
-const AUDIO_TIMEOUT = 360_000
+// The backend shares its 400 s budget across sequential TTS chunks.
+const AUDIO_TIMEOUT = 430_000
 
 const id = z.string().min(1)
 const unix = z.number().int().nonnegative()

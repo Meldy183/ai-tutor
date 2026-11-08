@@ -2,7 +2,7 @@ grpc_address: ":8021"
 http_address: ":8020"
 log_level: info
 data_dir: "/var/lib/voice-gateway"
-request_timeout: 300s
+request_timeout: 370s
 retention: 24h
 max_connections: 16 # Отдельный лимит для STT, TTS и DescribeVoice.
 max_payload_bytes: 2147483648
@@ -17,7 +17,7 @@ stt:
       token: "REPLACE_WITH_SERVER_TOKEN" # Provision the server secret outside Git.
       url: "https://speech.example.invalid/transcribe"
       slots: 1
-      timeout: 270s
+      timeout: 40s
       model: ""
       longform: false
       abort_on_disconnect: false
@@ -29,7 +29,7 @@ tts:
       token: "REPLACE_WITH_SERVER_TOKEN"
       url: "https://speech.example.invalid/synthesize"
       slots: 1
-      timeout: 270s
+      timeout: 340s
       profiles: [geek-default]
       abort_on_disconnect: false
 voices:
