@@ -205,20 +205,6 @@ function backend(
         competencies: [],
       })
     }
-    if (
-      url.includes('/learn/admin/subjects/') &&
-      url.endsWith('/competency-map/import')
-    )
-      return Response.json({
-        revision: 1,
-        imported_at: 2,
-        competency_count: 0,
-        constituent_count: 0,
-        outcome_count: 0,
-        task_count: 0,
-        unparsed_task_cell_count: 0,
-        warnings: [],
-      })
     if (url.endsWith('/admin/material-kinds'))
       return Response.json([
         { code: 'lecture', label: 'Лекция' },

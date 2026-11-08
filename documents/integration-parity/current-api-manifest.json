@@ -1,6 +1,6 @@
 {
   "baseline_count": 76,
-  "implemented_count": 76,
+  "implemented_count": 75,
   "routes": [
     {
       "mode": "common",
@@ -37,12 +37,6 @@
       "method": "GET",
       "source_path": "/auth/me",
       "target_path": "/api/v1/auth/me"
-    },
-    {
-      "mode": "learn",
-      "method": "POST",
-      "source_path": "/admin/subjects/{subject_id}/competency-map/import",
-      "target_path": "/api/v1/learn/admin/subjects/{subject_id}/competency-map/import"
     },
     {
       "mode": "learn",
