@@ -80,6 +80,31 @@ const sampleMaterials = [
 ]
 
 // The admin panel is the /admin site; the browser address decides the portal.
+// A book of two sheets: Geek's and the learning diagnostic's.
+function twoSheetBook(name = 'map.xlsx') {
+  const sheets = ['Geek', 'Обучение']
+    .map(
+      (sheet, index) =>
+        `<sheet name="${sheet}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
+    )
+    .join('')
+  const workbook = zipSync({
+    'xl/workbook.xml': new TextEncoder().encode(
+      `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>${sheets}</sheets></workbook>`,
+    ),
+  })
+  return new File([workbook], name)
+}
+
+// The submit button once the book has been checked.
+async function submitButton() {
+  const button = await screen.findByRole('button', {
+    name: 'Подготовить для обучения и Geek',
+  })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
+
 function renderApp(path = '/admin/courses/subject-a?direction=exam') {
   window.history.replaceState({}, '', path)
   const router = createRouter({
@@ -599,7 +624,7 @@ it('does not redirect when a learning resource is missing but its course still e
   ).toBeVisible()
 })
 
-it('imports a learning map only into the course selected in its route', async () => {
+it('imports a map only into the course selected in its route', async () => {
   const fetch = backend()
   renderApp('/admin/courses/subject-b')
   expect(
@@ -608,12 +633,12 @@ it('imports a learning map only into the course selected in its route', async ()
       level: 3,
     }),
   ).toBeVisible()
-  const file = new File(['competency map'], 'map.csv', { type: 'text/csv' })
+  const file = twoSheetBook()
   fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
     target: { files: [file] },
   })
   const submit = await screen.findByRole('button', {
-    name: 'Подтвердить изменения',
+    name: 'Подготовить для обучения и Geek',
   })
   await waitFor(() => expect(submit).toBeEnabled())
   fireEvent.click(submit)
@@ -622,43 +647,33 @@ it('imports a learning map only into the course selected in its route', async ()
     expect(
       fetch.mock.calls.some(
         ([url, request]) =>
-          url.endsWith(
-            '/learn/admin/subjects/subject-b/competency-map/import',
-          ) && request?.method === 'POST',
+          url.endsWith('/exam/admin/subjects/subject-b/graph/competency-map') &&
+          request?.method === 'POST',
       ),
     ).toBe(true),
   )
   expect(
     fetch.mock.calls.some(([url]) =>
-      url.endsWith('/learn/admin/subjects/subject-a/competency-map/import'),
+      url.endsWith('/exam/admin/subjects/subject-a/graph/competency-map'),
     ),
   ).toBe(false)
 })
 
-it('sends a two-sheet workbook through the single shared map import', async () => {
+it('sends a two-sheet workbook through the single map import', async () => {
   const fetch = backend()
   renderApp('/admin/courses/subject-b')
   await screen.findByRole('heading', {
     name: 'Текущее состояние карты',
     level: 3,
   })
-  const sheets = ['Geek', 'Обучение']
-    .map(
-      (name, index) =>
-        `<sheet name="${name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`,
-    )
-    .join('')
-  const workbook = zipSync({
-    'xl/workbook.xml': new TextEncoder().encode(
-      `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>${sheets}</sheets></workbook>`,
-    ),
-  })
-  const file = new File([workbook], 'map.xlsx')
+  const file = twoSheetBook()
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
     target: { files: [file] },
   })
   fireEvent.click(
-    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
+    await screen.findByRole('button', {
+      name: 'Подготовить для обучения и Geek',
+    }),
   )
   await screen.findByText('Карта компетенций успешно загружена')
   expect(
@@ -668,30 +683,25 @@ it('sends a two-sheet workbook through the single shared map import', async () =
         request?.method === 'POST',
     ),
   ).toBe(true)
-  expect(
-    fetch.mock.calls.some(([url]) =>
-      url.endsWith('/learn/admin/subjects/subject-b/competency-map/import'),
-    ),
-  ).toBe(false)
 })
 
-it('asks for confirmation before replacing an existing learning map', async () => {
+it('asks for confirmation before replacing an existing map', async () => {
   const fetch = backend({ learningMapExists: true })
   renderApp('/admin/courses/subject-b')
   await screen.findByText('Карта компетенций успешно загружена')
-  const file = new File(['competency map'], 'map.csv', { type: 'text/csv' })
+  const file = twoSheetBook()
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
     target: { files: [file] },
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить изменения' }))
+  fireEvent.click(await submitButton())
   expect(await screen.findByRole('alertdialog')).toBeVisible()
   expect(
-    fetch.mock.calls.some(([url]) => url.endsWith('/competency-map/import')),
+    fetch.mock.calls.some(([url]) => url.endsWith('/graph/competency-map')),
   ).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Перезаписать' }))
   await waitFor(() =>
     expect(
-      fetch.mock.calls.some(([url]) => url.endsWith('/competency-map/import')),
+      fetch.mock.calls.some(([url]) => url.endsWith('/graph/competency-map')),
     ).toBe(true),
   )
 })
@@ -710,13 +720,15 @@ it('waits for a fresh map state before submitting a cached empty map', async () 
     return originalFetch(url, init)
   })
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+    target: { files: [twoSheetBook()] },
   })
   act(() => {
     void router.options.context.queryClient.invalidateQueries()
   })
   await waitFor(() => expect(finish).toBeDefined())
-  const submit = screen.getByRole('button', { name: 'Подтвердить изменения' })
+  const submit = screen.getByRole('button', {
+    name: 'Подготовить для обучения и Geek',
+  })
   expect(submit).toBeDisabled()
   await act(async () =>
     finish(Response.json({ revision: 1, imported_at: 2, competencies: [] })),
@@ -733,7 +745,7 @@ it('refreshes a stale empty map after an import conflict and asks before retryin
   const originalFetch = fetch.getMockImplementation()!
   let conflict = false
   fetch.mockImplementation((url, init) => {
-    if (url.endsWith('/competency-map/import')) {
+    if (url.endsWith('/graph/competency-map')) {
       conflict = true
       return Promise.resolve(
         Response.json({ message: 'Карта изменилась.' }, { status: 409 }),
@@ -750,12 +762,14 @@ it('refreshes a stale empty map after an import conflict and asks before retryin
     return originalFetch(url, init)
   })
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+    target: { files: [twoSheetBook()] },
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить изменения' }))
+  fireEvent.click(await submitButton())
   await screen.findByText('Карта изменилась.')
   await screen.findByText('Карта компетенций успешно загружена')
-  const submit = screen.getByRole('button', { name: 'Подтвердить изменения' })
+  const submit = screen.getByRole('button', {
+    name: 'Подготовить для обучения и Geek',
+  })
   await waitFor(() => expect(submit).toBeEnabled())
   fireEvent.click(submit)
   expect(await screen.findByRole('alertdialog')).toBeVisible()
@@ -766,9 +780,9 @@ it('blocks confirmation while the map state is refreshing', async () => {
   const router = renderApp('/admin/courses/subject-b')
   await screen.findByText('Карта компетенций успешно загружена')
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+    target: { files: [twoSheetBook()] },
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить изменения' }))
+  fireEvent.click(await submitButton())
   const originalFetch = fetch.getMockImplementation()!
   fetch.mockImplementation((url, init) => {
     if (url.includes('/learn/subjects/') && url.endsWith('/competency-map'))
@@ -782,7 +796,7 @@ it('blocks confirmation while the map state is refreshing', async () => {
     expect(screen.getByRole('button', { name: 'Перезаписать' })).toBeDisabled(),
   )
   expect(
-    fetch.mock.calls.some(([url]) => url.endsWith('/competency-map/import')),
+    fetch.mock.calls.some(([url]) => url.endsWith('/graph/competency-map')),
   ).toBe(false)
 })
 
@@ -791,9 +805,9 @@ it('requires a new confirmation when the map changes while the dialog is open', 
   const router = renderApp('/admin/courses/subject-b')
   await screen.findByText('Карта компетенций успешно загружена')
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+    target: { files: [twoSheetBook()] },
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить изменения' }))
+  fireEvent.click(await submitButton())
   const originalFetch = fetch.getMockImplementation()!
   fetch.mockImplementation((url, init) => {
     if (url.includes('/learn/subjects/') && url.endsWith('/competency-map'))
@@ -810,16 +824,17 @@ it('requires a new confirmation when the map changes while the dialog is open', 
   ).toBeVisible()
   expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
   expect(
-    fetch.mock.calls.some(([url]) => url.endsWith('/competency-map/import')),
+    fetch.mock.calls.some(([url]) => url.endsWith('/graph/competency-map')),
   ).toBe(false)
-  fireEvent.click(screen.getByRole('button', { name: 'Подтвердить изменения' }))
+  fireEvent.click(await submitButton())
   fireEvent.click(await screen.findByRole('button', { name: 'Перезаписать' }))
   await waitFor(() =>
     expect(
       fetch.mock.calls.some(
         ([url, init]) =>
-          url.endsWith('/competency-map/import') &&
-          new Headers(init?.headers).get('X-Expected-Map-Revision') === '2',
+          url.endsWith('/graph/competency-map') &&
+          new Headers(init?.headers).get('X-Expected-Learning-Revision') ===
+            '2',
       ),
     ).toBe(true),
   )
@@ -830,9 +845,9 @@ it('returns focus to the submit button after cancelling replacement', async () =
   renderApp('/admin/courses/subject-b')
   await screen.findByText('Карта компетенций успешно загружена')
   fireEvent.change(screen.getByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
+    target: { files: [twoSheetBook()] },
   })
-  const submit = screen.getByRole('button', { name: 'Подтвердить изменения' })
+  const submit = await submitButton()
   submit.focus()
   fireEvent.click(submit)
   fireEvent.click(await screen.findByRole('button', { name: 'Отмена' }))

@@ -1,7 +1,6 @@
 export {
   useCompetencyMapQuery,
   useCompetencyMapOutlineQuery,
-  useImportCompetencyMapMutation,
 } from './model/use-competency-map'
 export { hasMultipleXlsxSheets } from './model/workbook'
 export {

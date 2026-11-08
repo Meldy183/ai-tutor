@@ -156,7 +156,12 @@ it('opens the points and reasons of a topic from its graph card', () => {
             reason: 'Неполно',
             quote: 'мой ответ',
           },
-          { id: 'k2', title: '', score: 2, maxScore: 2, reason: '', quote: '' },
+          {
+            id: 'reason-0',
+            title: '',
+            reason: 'Связь не объяснена',
+            quote: '',
+          },
         ],
       }),
     ]),
@@ -166,7 +171,9 @@ it('opens the points and reasons of a topic from its graph card', () => {
   expect(details.getByText('Суть')).toBeVisible()
   expect(details.getByText('Неполно')).toBeVisible()
   expect(details.getByText('«мой ответ»')).toBeVisible()
-  expect(details.getByText('Логика и обоснование')).toBeVisible()
+  // A ground of the score is shown without a title or points.
+  expect(details.getByText('Связь не объяснена')).toBeVisible()
+  expect(details.queryByText('Пункт 2')).not.toBeInTheDocument()
 })
 
 it('shows a criterion without points as met or not', () => {

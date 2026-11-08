@@ -7,10 +7,9 @@ export const Route = createFileRoute('/admin/courses/$subjectId')({
   component: CourseMaterialsRoute,
 })
 
+// The direction of the catalog the admin came from; the preparation of a course
+// is the same for both.
 function CourseMaterialsRoute() {
   const { subjectId } = Route.useParams()
-  const { direction } = Route.useSearch()
-  return (
-    <CompetencyMapAdminScreen subjectId={subjectId} direction={direction} />
-  )
+  return <CompetencyMapAdminScreen subjectId={subjectId} />
 }

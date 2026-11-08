@@ -110,15 +110,6 @@ const gapSchema = z.object({
 
 const points = z.number().int().min(0)
 
-const markSchema = z.object({
-  id,
-  title: z.string(),
-  score: points,
-  max_score: points,
-  reason: z.string(),
-  quote: z.string(),
-})
-
 const resultSummarySchema = z
   .object({ session_id: id, summary: z.string() })
   .transform((r) => r.summary)
@@ -142,14 +133,14 @@ const resultSchema = z
           'credited_by_parent',
           'unchecked',
         ]),
-        grade,
         top_level: z.boolean(),
         // Older backends do not send prerequisites; the graph then has no edges.
         requires: z.array(id).optional().default([]),
         assisted: z.boolean(),
+        // 0–2 for a top-level topic, 0–1 for a prerequisite.
         score: points.nullable(),
-        max_score: points.nullable(),
-        marks: z.array(markSchema),
+        max_score: z.number().int().min(1).max(2),
+        reasons: z.array(z.string()),
         reply: z.string(),
       }),
     ),
@@ -167,20 +158,12 @@ const resultSchema = z
       nodeId: n.node_id,
       title: n.title,
       status: n.status,
-      grade: n.grade,
       topLevel: n.top_level,
       requires: n.requires,
       assisted: n.assisted,
       score: n.score,
       maxScore: n.max_score,
-      marks: n.marks.map((m) => ({
-        id: m.id,
-        title: m.title,
-        score: m.score,
-        maxScore: m.max_score,
-        reason: m.reason,
-        quote: m.quote,
-      })),
+      reasons: n.reasons,
       reply: n.reply,
     })),
     gaps: r.gaps.map(toGap),

@@ -88,13 +88,7 @@ type MaterialListRow =
   | { id: string; week: string; queued: MaterialQueueItem }
   | { id: string; week: string; saved: CourseMaterial }
 
-export function CompetencyMapAdminScreen({
-  subjectId,
-  direction,
-}: {
-  subjectId: string
-  direction?: 'learn' | 'exam'
-}) {
+export function CompetencyMapAdminScreen({ subjectId }: { subjectId: string }) {
   const { t } = useTranslation()
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -115,7 +109,6 @@ export function CompetencyMapAdminScreen({
       key={subjectId}
       userId={user.id}
       subjectId={subjectId}
-      legacyDirection={direction}
     />
   )
 }
@@ -123,11 +116,9 @@ export function CompetencyMapAdminScreen({
 function CompetencyMapAdmin({
   userId,
   subjectId,
-  legacyDirection,
 }: {
   userId: string
   subjectId: string
-  legacyDirection?: 'learn' | 'exam'
 }) {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
@@ -403,7 +394,6 @@ function CompetencyMapAdmin({
             hasGraph={hasGraph}
             disabled={uploadsBlocked}
             map={courseGraph.data?.map}
-            legacyDirection={legacyDirection ?? 'learn'}
           />
 
           <section

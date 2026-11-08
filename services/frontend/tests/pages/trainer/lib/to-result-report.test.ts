@@ -9,13 +9,12 @@ const topic = (overrides: Partial<TopicResult>): TopicResult => ({
   nodeId: 'a',
   title: 'Тема',
   status: 'independent',
-  grade: 'A',
   topLevel: true,
   requires: [],
   assisted: false,
-  score: 4,
-  maxScore: 4,
-  marks: [],
+  score: 2,
+  maxScore: 2,
+  reasons: [],
   reply: '',
   ...overrides,
 })
@@ -35,17 +34,17 @@ const statusOf = (overrides: Partial<TopicResult>) =>
   toResultReport(result([topic(overrides)])).topics[0].status
 
 it('shows an asked topic by its points, not its status', () => {
-  expect(statusOf({ score: 4, maxScore: 4 })).toBe('full')
-  expect(statusOf({ score: 3, maxScore: 4, status: 'assisted' })).toBe(
+  expect(statusOf({ score: 2, maxScore: 2 })).toBe('full')
+  expect(statusOf({ score: 1, maxScore: 2, status: 'assisted' })).toBe(
     'partial',
   )
-  expect(statusOf({ score: 4, maxScore: 4, status: 'assisted' })).toBe('full')
+  expect(statusOf({ score: 1, maxScore: 1, status: 'assisted' })).toBe('full')
   // Not a gap, so at least partial: no points never read as a full answer.
   expect(statusOf({ score: 0, maxScore: 1 })).toBe('partial')
 })
 
 it('keeps the statuses that points cannot express', () => {
-  expect(statusOf({ status: 'gap', score: 1, maxScore: 4 })).toBe('gap')
+  expect(statusOf({ status: 'gap', score: 1, maxScore: 2 })).toBe('gap')
   expect(statusOf({ status: 'credited_by_parent', score: null })).toBe(
     'credited',
   )
@@ -53,12 +52,11 @@ it('keeps the statuses that points cannot express', () => {
   expect(statusOf({ status: 'unchecked', score: null })).toBe('unchecked')
 })
 
-it('passes the overall points, the closing reply and the marks', () => {
-  const marks = [
-    { id: 'r1', title: 'Суть', score: 1, maxScore: 2, reason: 'р', quote: 'ц' },
-  ]
+it('passes the overall points, the closing reply and the grounds of a score', () => {
   const report = toResultReport(
-    result([topic({ reply: 'Разбор', marks, requires: ['b'] })]),
+    result([
+      topic({ reply: 'Разбор', reasons: ['суть верна'], requires: ['b'] }),
+    ]),
   )
   expect(report).toMatchObject({
     grade: 'B',
@@ -68,7 +66,7 @@ it('passes the overall points, the closing reply and the marks', () => {
   })
   expect(report.topics[0]).toMatchObject({
     note: 'Разбор',
-    marks,
+    marks: [{ id: 'reason-0', title: '', reason: 'суть верна', quote: '' }],
     requires: ['b'],
     main: true,
   })

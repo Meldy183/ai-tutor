@@ -16,9 +16,9 @@ const accepted = {
   completed_tasks: 1,
   skipped_tasks: 2,
   total_tasks: 3,
-  score: 3,
-  grader_score: 3,
-  grader_max_score: 3,
+  score: 2,
+  grader_score: 2,
+  grader_max_score: 2,
   verdict: 'correct',
   criterion_results: [
     { key: 'choice', satisfied: true, explanation: 'Верно.' },
@@ -196,7 +196,7 @@ it('allows an answer to finish after sequential transcription and grading exceed
   )
   await vi.advanceTimersByTimeAsync(150_000)
   expect(await result).toMatchObject({
-    value: { session_id: 's1', score: 3, status: 'completed' },
+    value: { session_id: 's1', score: 2, status: 'completed' },
   })
 })
 

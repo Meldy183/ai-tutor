@@ -3,7 +3,6 @@ import {
   Button,
   Flex,
   Heading,
-  RadioGroup,
   Table,
   Text,
 } from '@radix-ui/themes'
@@ -20,12 +19,11 @@ import {
   TriangleAlert,
   Upload,
 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  CompetencyMapApiError,
-  type CompetencyMapSummary,
-} from '@/entities/learning-competency-map'
+import type { CompetencyMapSummary } from '@/entities/learning-competency-map'
+import { subjectQueryKeys as learningSubjectQueryKeys } from '@/entities/learning-subject'
 import {
   CourseGraphApiError,
   type CourseGraphMapFile,
@@ -33,7 +31,6 @@ import {
 import {
   useCompetencyMapQuery,
   hasMultipleXlsxSheets,
-  useImportCompetencyMapMutation as useImportLearningMapMutation,
 } from '@/features/import-learning-competency-map'
 import {
   useImportCompetencyMapMutation as useImportCourseMapMutation,
@@ -42,36 +39,30 @@ import {
 import { selectVisibleMapBuild } from '../model/select-visible-map-build'
 import styles from './competency-map.module.scss'
 
-type ImportMode = 'learn' | 'exam' | 'both'
-
-// One card owns competency-map uploads for both modes. Two-sheet books are
-// always imported together; old CSV and one-sheet paths stay available.
+// One card owns competency-map uploads for both modes: a map is one two-sheet
+// book, the first sheet Geek's and the second the learning diagnostic's.
 export function CompetencyMapImport({
   userId,
   subjectId,
   hasGraph,
   disabled,
   map,
-  legacyDirection,
 }: {
   userId: string
   subjectId: string
   hasGraph: boolean
   disabled: boolean
   map: CourseGraphMapFile | null | undefined
-  legacyDirection: 'learn' | 'exam'
 }) {
   const { t } = useTranslation()
   const input = useRef<HTMLInputElement>(null)
   const submitRef = useRef<HTMLButtonElement>(null)
   const learningMap = useCompetencyMapQuery(userId, subjectId)
-  const importLearningMap = useImportLearningMapMutation(userId, subjectId)
   const importCourseMap = useImportCourseMapMutation(userId, subjectId)
+  const cache = useQueryClient()
   const graphBuild = useLatestCourseGraphBuildQuery(userId, subjectId)
   const [file, setFile] = useState<File | null>(null)
-  const [sheetCount, setSheetCount] = useState(0)
   const [checkingWorkbook, setCheckingWorkbook] = useState(false)
-  const [mode, setMode] = useState<ImportMode>(legacyDirection)
   const [confirming, setConfirming] = useState(false)
   const [confirmedRevision, setConfirmedRevision] = useState<number | null>(
     null,
@@ -86,31 +77,28 @@ export function CompetencyMapImport({
   const [fileError, setFileError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!file || !/\.xlsx$/i.test(file.name)) {
-      setSheetCount(0)
+    if (!file) {
       setCheckingWorkbook(false)
       return
     }
     let cancelled = false
     setCheckingWorkbook(true)
+    const reject = () => {
+      if (cancelled) return
+      setFile(null)
+      setFileError(t('learningCompetencyMap.pairedRequired'))
+      setCheckingWorkbook(false)
+    }
     void hasMultipleXlsxSheets(file)
       .then((paired) => {
-        if (cancelled) return
-        setSheetCount(paired ? 2 : 1)
-        const nextMode = paired ? 'both' : legacyDirection
-        setMode(nextMode)
-        setCheckingWorkbook(false)
+        if (!paired) return reject()
+        if (!cancelled) setCheckingWorkbook(false)
       })
-      .catch(() => {
-        if (cancelled) return
-        setSheetCount(1)
-        setMode(legacyDirection)
-        setCheckingWorkbook(false)
-      })
+      .catch(reject)
     return () => {
       cancelled = true
     }
-  }, [file, legacyDirection])
+  }, [file, t])
 
   useEffect(() => {
     const build = graphBuild.data
@@ -149,7 +137,6 @@ export function CompetencyMapImport({
   useEffect(() => {
     if (
       !importCourseMap.isSuccess &&
-      !importLearningMap.isSuccess &&
       confirmedRevision !== null &&
       learningMap.isSuccess &&
       learningMap.data.revision !== confirmedRevision
@@ -161,23 +148,20 @@ export function CompetencyMapImport({
   }, [
     confirmedRevision,
     importCourseMap.isSuccess,
-    importLearningMap.isSuccess,
     learningMap.isSuccess,
     learningMap.data,
   ])
 
   function selectFile(selected?: File) {
-    importLearningMap.reset()
     importCourseMap.reset()
     setPairedFingerprint(null)
     setBuildObserved(false)
-    setSheetCount(0)
     setFile(null)
     setFileError(null)
     setConfirmedRevision(null)
     setRevisionChanged(false)
     if (!selected) return
-    if (!/\.(csv|xlsx)$/i.test(selected.name)) {
+    if (!/\.xlsx$/i.test(selected.name)) {
       setFileError(t('learningCompetencyMap.invalidType'))
       return
     }
@@ -189,27 +173,20 @@ export function CompetencyMapImport({
       setFileError(t('learningCompetencyMap.emptyFile'))
       return
     }
-    setMode(
-      selected.name.toLowerCase().endsWith('.csv') ? 'learn' : legacyDirection,
-    )
     setFile(selected)
   }
 
-  function sendLearningMap(expectedRevision: number) {
-    if (!file) return
-    importLearningMap.mutate(
-      { file, subjectId, expectedRevision },
-      {
-        onSuccess: () => setFile(null),
-        onError: (error) => {
-          if (
-            error instanceof CompetencyMapApiError &&
-            [400, 413, 415, 422].includes(error.status)
-          )
-            setFile(null)
-        },
-      },
-    )
+  // The import changes the learning side too: its map, catalog and state.
+  // The server may have committed before a timeout or a conflict answer.
+  function refreshLearning() {
+    void learningMap.refetch()
+    void cache.invalidateQueries({
+      queryKey: learningSubjectQueryKeys.subjects(userId),
+      exact: false,
+    })
+    void cache.invalidateQueries({
+      queryKey: learningSubjectQueryKeys.learningState(userId, subjectId),
+    })
   }
 
   function sendCourseMap(expectedLearningRevision: number) {
@@ -218,13 +195,13 @@ export function CompetencyMapImport({
     importCourseMap.mutate(
       { file, expectedLearningRevision },
       {
+        onSettled: refreshLearning,
         onSuccess: (build) => {
           setPairedFingerprint(build.map?.fingerprint ?? null)
           setBuildObserved(
             build.status === 'queued' || build.status === 'running',
           )
           setFile(null)
-          void learningMap.refetch()
           if (build.status === 'succeeded') {
             setPairedFingerprint(null)
           }
@@ -245,7 +222,6 @@ export function CompetencyMapImport({
     disabled ||
     checkingWorkbook ||
     learningMap.isFetching ||
-    importLearningMap.isPending ||
     importCourseMap.isPending ||
     (pairedFingerprint !== null &&
       graphBuild.data?.map?.fingerprint === pairedFingerprint &&
@@ -255,40 +231,18 @@ export function CompetencyMapImport({
   function startImport() {
     if (!file || busy || !learningMap.data) return
     setRevisionChanged(false)
-    if (mode === 'both') {
-      const expectedRevision = learningMap.data.revision
-      setConfirmedRevision(expectedRevision)
-      if (learningMap.data.importedAt !== null || hasGraph) {
-        setConfirming(true)
-        return
-      }
-      sendCourseMap(expectedRevision)
-      return
-    }
-    if (mode === 'exam') {
-      setConfirmedRevision(learningMap.data.revision)
+    const expectedRevision = learningMap.data.revision
+    setConfirmedRevision(expectedRevision)
+    if (learningMap.data.importedAt !== null || hasGraph) {
       setConfirming(true)
       return
     }
-    if (learningMap.data.importedAt !== null) {
-      setConfirmedRevision(learningMap.data.revision)
-      setConfirming(true)
-      return
-    }
-    sendLearningMap(learningMap.data.revision)
+    sendCourseMap(expectedRevision)
   }
 
   function confirmImport() {
     if (!file || busy) return
     setConfirming(false)
-    if (mode === 'learn') {
-      if (
-        confirmedRevision !== null &&
-        learningMap.data?.revision === confirmedRevision
-      )
-        sendLearningMap(confirmedRevision)
-      return
-    }
     if (
       confirmedRevision !== null &&
       learningMap.data?.revision === confirmedRevision
@@ -299,14 +253,9 @@ export function CompetencyMapImport({
     setRevisionChanged(true)
   }
 
-  const error = importLearningMap.error ?? importCourseMap.error
-  const details =
-    error instanceof CompetencyMapApiError ||
-    error instanceof CourseGraphApiError
-      ? error.details
-      : []
+  const error = importCourseMap.error
+  const details = error instanceof CourseGraphApiError ? error.details : []
   const warnings = groupWarnings([
-    ...(importLearningMap.data?.warnings ?? []),
     ...(importCourseMap.data?.learningWarnings ?? []).map((warning) => ({
       row: warning.row,
       columnIndex: warning.column_index,
@@ -505,7 +454,7 @@ export function CompetencyMapImport({
         <input
           ref={input}
           type="file"
-          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           hidden
           aria-label={t('learningCompetencyMap.file')}
           onChange={(event) => {
@@ -533,11 +482,7 @@ export function CompetencyMapImport({
               onClick={startImport}
             >
               <Check size={18} aria-hidden="true" />
-              {mode === 'both'
-                ? t('learningCompetencyMap.submitUnified')
-                : mode === 'exam'
-                  ? t('courseGraph.mapImportStart')
-                  : t('learningCompetencyMap.submitEdit')}
+              {t('learningCompetencyMap.submitUnified')}
             </Button>
           )}
         </Flex>
@@ -546,25 +491,6 @@ export function CompetencyMapImport({
             {t('learningCompetencyMap.checkingWorkbook')}
           </Text>
         )}
-        {file &&
-          sheetCount === 1 &&
-          file.name.toLowerCase().endsWith('.xlsx') && (
-            <fieldset className={styles.mapMode} disabled={busy}>
-              <legend>{t('learningCompetencyMap.singleSheetMode')}</legend>
-              <RadioGroup.Root
-                value={mode}
-                onValueChange={(value) => setMode(value as ImportMode)}
-                aria-label={t('learningCompetencyMap.singleSheetMode')}
-              >
-                <RadioGroup.Item value="learn">
-                  {t('learningCompetencyMap.modeLearning')}
-                </RadioGroup.Item>
-                <RadioGroup.Item value="exam">
-                  {t('learningCompetencyMap.modeGeek')}
-                </RadioGroup.Item>
-              </RadioGroup.Root>
-            </fieldset>
-          )}
         {fileError && (
           <Text as="p" role="alert" color="red" size="2">
             {fileError}
@@ -585,7 +511,7 @@ export function CompetencyMapImport({
             {t('learningCompetencyMap.cancelEdit')}
           </Button>
         )}
-        {importLearningMap.isPending || importCourseMap.isPending ? (
+        {importCourseMap.isPending ? (
           <Text as="p" role="status" size="2">
             {t('learningCompetencyMap.uploading')}
           </Text>
@@ -643,16 +569,9 @@ export function CompetencyMapImport({
               {t('learningCompetencyMap.confirmTitle')}
             </AlertDialog.Title>
             <AlertDialog.Description>
-              {t(
-                mode === 'both'
-                  ? 'learningCompetencyMap.confirmHelpUnified'
-                  : mode === 'exam'
-                    ? hasGraph
-                      ? 'courseGraph.mapImportReplace'
-                      : 'courseGraph.mapImportConfirm'
-                    : 'learningCompetencyMap.confirmHelp',
-                { filename: file?.name ?? '' },
-              )}
+              {t('learningCompetencyMap.confirmHelpUnified', {
+                filename: file?.name ?? '',
+              })}
             </AlertDialog.Description>
             <Flex gap="3" mt="4" justify="end">
               <AlertDialog.Cancel>
@@ -670,82 +589,67 @@ export function CompetencyMapImport({
                   }
                   onClick={confirmImport}
                 >
-                  {mode === 'learn'
-                    ? t('learningCompetencyMap.confirm')
-                    : t('courseGraph.mapImportStart')}
+                  {t('learningCompetencyMap.confirm')}
                 </Button>
               </AlertDialog.Action>
             </Flex>
           </AlertDialog.Content>
         </AlertDialog.Root>
       </section>
-      {(importLearningMap.data || warnings.length > 0) &&
-        ((importLearningMap.data?.unparsedTaskCellCount ?? 0) > 0 ||
-          warnings.length > 0) && (
-          <section
-            className={styles.card}
-            aria-labelledby="import-warnings-title"
-          >
-            <div className={styles.sectionHeading} data-tone="warning">
-              <TriangleAlert aria-hidden="true" />
-              <Heading as="h3" size="4" id="import-warnings-title">
-                {t('learningCompetencyMap.warnings')}
-              </Heading>
-            </div>
-            {(importLearningMap.data?.unparsedTaskCellCount ?? 0) > 0 && (
-              <Text as="p" color="gray" size="2">
-                {t('learningCompetencyMap.unparsed', {
-                  count: importLearningMap.data?.unparsedTaskCellCount ?? 0,
-                  rows: warnings.length,
-                })}
-              </Text>
-            )}
-            {warnings.length > 0 && (
-              <div className={styles.tableScroll}>
-                <Table.Root variant="surface">
-                  <Table.Header>
-                    <Table.Row>
-                      <Table.ColumnHeaderCell>
-                        {t('learningCompetencyMap.row')}
-                      </Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>
-                        {t('learningCompetencyMap.reason')}
-                      </Table.ColumnHeaderCell>
+      {warnings.length > 0 && (
+        <section
+          className={styles.card}
+          aria-labelledby="import-warnings-title"
+        >
+          <div className={styles.sectionHeading} data-tone="warning">
+            <TriangleAlert aria-hidden="true" />
+            <Heading as="h3" size="4" id="import-warnings-title">
+              {t('learningCompetencyMap.warnings')}
+            </Heading>
+          </div>
+          {warnings.length > 0 && (
+            <div className={styles.tableScroll}>
+              <Table.Root variant="surface">
+                <Table.Header>
+                  <Table.Row>
+                    <Table.ColumnHeaderCell>
+                      {t('learningCompetencyMap.row')}
+                    </Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>
+                      {t('learningCompetencyMap.reason')}
+                    </Table.ColumnHeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {warnings.map((warning) => (
+                    <Table.Row key={warning.row}>
+                      <Table.RowHeaderCell>{warning.row}</Table.RowHeaderCell>
+                      <Table.Cell>
+                        {warning.reasons.map((reason) => (
+                          <Text
+                            as="p"
+                            size="2"
+                            key={reason.code}
+                            className={styles.warningReason}
+                          >
+                            <strong>{reason.columns.join(', ')}:</strong>{' '}
+                            {t(`learningCompetencyMap.warning.${reason.code}`, {
+                              defaultValue: t(
+                                'learningCompetencyMap.warning.unknown',
+                                { code: reason.code },
+                              ),
+                            })}
+                          </Text>
+                        ))}
+                      </Table.Cell>
                     </Table.Row>
-                  </Table.Header>
-                  <Table.Body>
-                    {warnings.map((warning) => (
-                      <Table.Row key={warning.row}>
-                        <Table.RowHeaderCell>{warning.row}</Table.RowHeaderCell>
-                        <Table.Cell>
-                          {warning.reasons.map((reason) => (
-                            <Text
-                              as="p"
-                              size="2"
-                              key={reason.code}
-                              className={styles.warningReason}
-                            >
-                              <strong>{reason.columns.join(', ')}:</strong>{' '}
-                              {t(
-                                `learningCompetencyMap.warning.${reason.code}`,
-                                {
-                                  defaultValue: t(
-                                    'learningCompetencyMap.warning.unknown',
-                                    { code: reason.code },
-                                  ),
-                                },
-                              )}
-                            </Text>
-                          ))}
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
-                  </Table.Body>
-                </Table.Root>
-              </div>
-            )}
-          </section>
-        )}
+                  ))}
+                </Table.Body>
+              </Table.Root>
+            </div>
+          )}
+        </section>
+      )}
     </>
   )
 }

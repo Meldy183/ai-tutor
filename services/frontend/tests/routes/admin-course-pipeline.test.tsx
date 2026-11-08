@@ -182,22 +182,6 @@ function setup({
               ]
             : [],
       })
-    if (
-      url.includes('/learn/admin/subjects/') &&
-      url.endsWith('/competency-map/import')
-    ) {
-      activeLearningRevision += 1
-      return Response.json({
-        revision: activeLearningRevision,
-        imported_at: 2,
-        competency_count: 1,
-        constituent_count: 1,
-        outcome_count: 3,
-        task_count: 3,
-        unparsed_task_cell_count: learningWarnings.length,
-        warnings: learningWarnings,
-      })
-    }
     if (url.endsWith('/materials') && init?.method === 'POST') {
       await uploadGate
       const files = (init.body as FormData).getAll('file') as File[]
@@ -377,6 +361,7 @@ function setup({
           inputs_ready: true,
           updated_at: 0,
           graph_fingerprint: hasSavedMap ? 'published-map' : '',
+          learning_warnings: learningWarnings,
         },
         { status: 202 },
       )
@@ -794,42 +779,42 @@ it('keeps the legacy exam route on the unified course preparation screen', async
   ).not.toBeInTheDocument()
 })
 
-it('lets admins choose the destination of a one-sheet workbook on the legacy exam URL', async () => {
+it('rejects a one-sheet workbook before sending it', async () => {
   const calls = setup({ materials: [] })
   open('/admin/courses/subject-b?direction=exam')
-  await chooseMap()
-
-  const modePicker = await screen.findByRole('radiogroup', {
-    name: 'Куда загрузить однолистовую карту?',
+  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
+    target: { files: [singleWorkbook()] },
   })
-  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
-  fireEvent.click(
-    within(modePicker).getByRole('radio', { name: 'Карта обучения' }),
-  )
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
-  )
-
-  await waitFor(() =>
-    expect(
-      calls.mock.calls.some(([url]) =>
-        String(url).endsWith(
-          '/learn/admin/subjects/subject-b/competency-map/import',
-        ),
-      ),
-    ).toBe(true),
-  )
-  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  expect(
+    await screen.findByText(
+      'Нужна книга с двумя листами: первый — для экзамена Geek, второй — для учебной диагностики.',
+    ),
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Подготовить для обучения и Geek' }),
+  ).not.toBeInTheDocument()
+  expect(
+    calls.mock.calls.some(([url]) =>
+      String(url).endsWith('/graph/competency-map'),
+    ),
+  ).toBe(false)
 })
 
 function chooseMap() {
-  return screen.findByLabelText('Файл карты компетенций').then((input) =>
-    fireEvent.change(input, {
-      target: {
-        files: [new File(['PK'], 'map.xlsx', { type: 'application/zip' })],
-      },
-    }),
-  )
+  return screen
+    .findByLabelText('Файл карты компетенций')
+    .then((input) =>
+      fireEvent.change(input, { target: { files: [pairedWorkbook()] } }),
+    )
+}
+
+// The submit button once the book has been checked.
+async function submitMap() {
+  const submit = await screen.findByRole('button', {
+    name: 'Подготовить для обучения и Geek',
+  })
+  await waitFor(() => expect(submit).toBeEnabled())
+  fireEvent.click(submit)
 }
 
 function pairedWorkbook() {
@@ -1040,12 +1025,8 @@ it('keeps imported learning warnings in a readable row and reason table', async 
     ],
   })
   open('/admin/courses/subject-b?direction=learn')
-  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
-    target: { files: [new File(['map'], 'map.csv', { type: 'text/csv' })] },
-  })
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Подтвердить изменения' }),
-  )
+  await chooseMap()
+  await submitMap()
 
   const warnings = await screen.findByRole('region', {
     name: 'Предупреждения импорта',
@@ -1061,24 +1042,12 @@ it('keeps imported learning warnings in a readable row and reason table', async 
   expect(within(warnings).getByText(/обрывок без «Экран:»/)).toBeVisible()
 })
 
-it('builds the graph from the first sheet of a competency map', async () => {
+it('builds the graph of a competency map in one send', async () => {
   const calls = setup({ competencyMap: 'valid' })
   open()
-  fireEvent.change(await screen.findByLabelText('Файл карты компетенций'), {
-    target: { files: [singleWorkbook()] },
-  })
-  const modePicker = await screen.findByRole('radiogroup', {
-    name: 'Куда загрузить однолистовую карту?',
-  })
-  fireEvent.click(within(modePicker).getByRole('radio', { name: 'Граф Geek' }))
-  const submit = screen.getByRole('button', { name: 'Импортировать' })
-  await waitFor(() => expect(submit).toBeEnabled())
-  fireEvent.click(submit)
-  const dialog = await screen.findByRole('alertdialog')
-  expect(within(dialog).getByText(/по карте «map\.xlsx»/)).toBeVisible()
-  const confirm = within(dialog).getByRole('button', { name: 'Импортировать' })
-  await waitFor(() => expect(confirm).toBeEnabled())
-  fireEvent.click(confirm)
+  await chooseMap()
+  // A course without a map or a graph needs no confirmation.
+  await submitMap()
   await waitFor(() =>
     expect(
       calls.mock.calls.some(([url]) =>
@@ -1092,7 +1061,9 @@ it('builds the graph from the first sheet of a competency map', async () => {
     }),
   ).toBeVisible()
   expect(
-    screen.getByText('Последняя карта: map.xlsx, лист «Карта компетенций v2».'),
+    screen.getByText(
+      'Последняя карта: paired-map.xlsx, лист «Карта компетенций v2».',
+    ),
   ).toBeVisible()
   expect(
     screen.getByText('Курс готов для студентов. В графе тем: 2.'),
@@ -1193,13 +1164,7 @@ it('names the bad cells of a rejected competency map', async () => {
   setup({ competencyMap: 'invalid' })
   open()
   await chooseMap()
-  fireEvent.click(
-    await screen.findByRole('button', {
-      name: /^(Импортировать|Подготовить для обучения и Geek|Подтвердить изменения)$/,
-    }),
-  )
-  const dialog = await screen.findByRole('alertdialog')
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }))
+  await submitMap()
   const alert = await screen.findByText(
     'Строка 3, «Уровень по Блуму»: Неизвестный уровень по Блуму.',
   )
