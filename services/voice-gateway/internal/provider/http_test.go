@@ -73,7 +73,7 @@ func TestExistingModelProtocols(t *testing.T) {
 	}
 }
 
-func TestErrorWithoutExecutionConfirmationKeepsSlot(t *testing.T) {
+func TestHTTPFailureUsesOptionalExecutionState(t *testing.T) {
 	for _, status := range []int{401, 403, 408, 422, 429, 500, 502, 503, 504} {
 		for _, state := range []string{"", "unknown", "uncertain", "not-started", "finished"} {
 			for _, stt := range []bool{true, false} {
@@ -81,7 +81,10 @@ func TestErrorWithoutExecutionConfirmationKeepsSlot(t *testing.T) {
 				if state != "" {
 					response.Header.Set("X-Voice-Execution-State", state)
 				}
-				want := state != "not-started" && state != "finished"
+				want := status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout
+				if state != "" {
+					want = state != "not-started" && state != "finished"
+				}
 				if info := diagnostic.Info(responseFailure(response, stt)); info.Uncertain != want {
 					t.Fatalf("status=%d state=%q stt=%v: %+v", status, state, stt, info)
 				}

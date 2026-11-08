@@ -88,8 +88,16 @@ func responseFailure(resp *http.Response, stt bool) error {
 		}
 	}
 	states := resp.Header.Values("X-Voice-Execution-State")
-	confirmed := len(states) == 1 && (states[0] == "not-started" || states[0] == "finished")
-	return &diagnostic.Error{Code: code, Uncertain: !confirmed, Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
+	// Existing model APIs do not report execution state. Preserve their HTTP
+	// error handling; a receiver header, when present, takes precedence.
+	uncertain := resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		uncertain = true // Redirects are not followed.
+	}
+	if len(states) != 0 {
+		uncertain = !(len(states) == 1 && (states[0] == "not-started" || states[0] == "finished"))
+	}
+	return &diagnostic.Error{Code: code, Uncertain: uncertain, Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
 }
 
 type STT struct {
