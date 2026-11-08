@@ -363,6 +363,48 @@ func TestSkippingGeekTaskKeepsThePublishedGraphAndTheCourseStructure(t *testing.
 	if err := json.Unmarshal(newProjection, &shape); err != nil || len(shape.Topics) != 2 {
 		t.Fatalf("new Geek projection should omit one fallback-only topic: topics=%d err=%v", len(shape.Topics), err)
 	}
+	var preparedGraph map[string]json.RawMessage
+	var topics []map[string]any
+	if err := json.Unmarshal(newProjection, &preparedGraph); err != nil || json.Unmarshal(preparedGraph["topics"], &topics) != nil {
+		t.Fatalf("decode filtered projection: %v", err)
+	}
+	var prepared []string
+	for _, topic := range topics {
+		variants, _ := topic["variants"].([]any)
+		for _, item := range variants {
+			variant := item.(map[string]any)
+			id, _ := variant["task_id"].(string)
+			if id == "" {
+				t.Fatalf("filtered projection lost a task_id: %s", newProjection)
+			}
+			variant["rephrase"] = "prepared " + id
+			prepared = append(prepared, id)
+		}
+	}
+	if len(prepared) == 0 {
+		t.Fatalf("filtered projection has no variants: %s", newProjection)
+	}
+	var err2 error
+	if preparedGraph["topics"], err2 = json.Marshal(topics); err2 != nil {
+		t.Fatal(err2)
+	}
+	preparedRaw, err := json.Marshal(preparedGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebuildJob, err := repo.Claim(context.Background(), "skip-map-rebuild", time.Now())
+	if err != nil || rebuildJob.SubjectID != "subject:test" {
+		t.Fatalf("claim filtered map build: %+v %v", rebuildJob, err)
+	}
+	if ok, err := repo.Finish(context.Background(), rebuildJob, preparedRaw, time.Now()); err != nil || !ok {
+		t.Fatalf("publish filtered Geek map: ok=%v err=%v", ok, err)
+	}
+	for _, id := range prepared {
+		var rephrase string
+		if err := f.pool.QueryRow(context.Background(), `SELECT rephrase FROM course_map_tasks WHERE id=$1 AND mode='exam'`, id).Scan(&rephrase); err != nil || rephrase != "prepared "+id {
+			t.Fatalf("rephrase of task %s after filtering: %q err=%v", id, rephrase, err)
+		}
+	}
 	var afterOutcomes int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_outcomes o JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&afterOutcomes); err != nil || afterOutcomes != originalOutcomes {
 		t.Fatalf("Geek filtering changed the canonical full structure: before=%d after=%d err=%v", originalOutcomes, afterOutcomes, err)

@@ -457,6 +457,7 @@ type mapTopic struct {
 
 // mapVariant has the shape of exam.Variant.
 type mapVariant struct {
+	TaskID             string `json:"task_id,omitempty"`
 	Question           string `json:"question"`
 	Content            string `json:"content"`
 	AssessmentGuidance string `json:"assessment_guidance,omitempty"`
