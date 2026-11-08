@@ -1,0 +1,30 @@
+# Provision YAML and TLS certificates outside Git; existing .env is unchanged.
+services:
+  grafana:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+  voice-gateway:
+    command: ["--config", "/work/voice-gateway/config/prod.yaml"]
+    volumes:
+      - ./deployment/voice-gateway/prod.yaml:/work/voice-gateway/config/prod.yaml:ro
+    healthcheck:
+      test: ["CMD", "/voice-gateway", "--config", "/work/voice-gateway/config/prod.yaml", "healthcheck"]
+  api:
+    environment:
+      BACKEND_CONFIG: /work/backend/config/prod.yaml
+    volumes:
+      - ./deployment/backend/prod.yaml:/work/backend/config/prod.yaml:ro
+  llm-gateway:
+    environment:
+      GATEWAY_CONFIG: /work/llm-gateway/config/prod.yaml
+    volumes:
+      - ./deployment/llm-gateway/prod.yaml:/work/llm-gateway/config/prod.yaml:ro
+  course-graph:
+    environment:
+      COURSE_GRAPH_CONFIG: /app/config/prod.yaml
+    volumes:
+      - ./deployment/course-graph/prod.yaml:/app/config/prod.yaml:ro

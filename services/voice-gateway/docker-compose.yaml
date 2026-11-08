@@ -13,8 +13,7 @@ services:
       context: ../..
       dockerfile: services/voice-gateway/Dockerfile
       target: runtime
-    environment:
-      VOICE_GATEWAY_CONFIG: ${VOICE_GATEWAY_CONFIG:-/work/voice-gateway/config/dev.yaml}
+    command: ["--config", "/work/voice-gateway/config/dev.yaml"]
     volumes:
       - ./config:/work/voice-gateway/config:ro
       - voice_gateway_data:/var/lib/voice-gateway
@@ -25,7 +24,7 @@ services:
         condition: service_completed_successfully
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "/voice-gateway", "healthcheck"]
+      test: ["CMD", "/voice-gateway", "--config", "/work/voice-gateway/config/dev.yaml", "healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 6

@@ -19,3 +19,6 @@ services/llm-gateway/.air/
 
 services/voice-gateway/.air/
 services/voice-gateway/voice-gateway
+
+# Server YAML contains deployment credentials.
+deployment/

@@ -37,7 +37,7 @@ func TestInvalidConfiguration(t *testing.T) {
 		"string number": strings.Replace(string(body), "slots: 1", "slots: '1'", 1),
 		"float slots":   strings.Replace(string(body), "slots: 1", "slots: 1.5", 1),
 		"empty pool":    strings.Replace(string(body), "max_waiting: 32", "max_waiting: 0", 1),
-		"bad time":      strings.Replace(string(body), "request_timeout: 120s", "request_timeout: 120", 1),
+		"bad time":      strings.Replace(string(body), "request_timeout: 370s", "request_timeout: 370", 1),
 		"same topics":   strings.Replace(string(body), "voice.tts.v1", "voice.stt.v1", 1),
 		"bad profile":   strings.Replace(string(body), "profiles: [geek-default]", "profiles: [absent]", 1),
 	} {
@@ -50,5 +50,22 @@ func TestInvalidConfiguration(t *testing.T) {
 				t.Fatal("invalid config accepted")
 			}
 		})
+	}
+}
+
+func TestReceiverTokenConfiguration(t *testing.T) {
+	c, err := Load("../../config/dev.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.STT.Instances[0].Token = "local-development-client-token-0001"
+	c.TTS.Instances[0].Token = "local-development-client-token-0001"
+	p := c.Provider()
+	if p.STT[c.STT.Instances[0].ID].Token != c.STT.Instances[0].Token || p.TTS[c.TTS.Instances[0].ID].Token != c.TTS.Instances[0].Token {
+		t.Fatal("receiver token not forwarded to provider")
+	}
+	c.STT.Instances[0].Token = "token\r\nInjected: header"
+	if err := c.Validate(); err == nil {
+		t.Fatal("unsafe token accepted")
 	}
 }

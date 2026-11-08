@@ -3,7 +3,7 @@ tmp_dir = "voice-gateway/.air"
 
 [build]
 cmd = "GOWORK=off GOMAXPROCS=2 go build -p 1 -o ./.air/voice-gateway ./cmd/voice-gateway"
-entrypoint = ["voice-gateway/.air/voice-gateway"]
+entrypoint = ["voice-gateway/.air/voice-gateway", "--config", "config/dev.yaml"]
 include_dir = ["voice-gateway", "shared", "audio"]
 include_ext = ["go", "mod", "sum", "proto", "yaml", "yml"]
 exclude_dir = ["voice-gateway/.air", ".git"]

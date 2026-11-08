@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,10 +30,23 @@ func main() {
 		os.Exit(1)
 	}
 }
+func commandLine(arguments []string) (string, []string, error) {
+	flags := flag.NewFlagSet("voice-gateway", flag.ContinueOnError)
+	path := flags.String("config", "config/dev.yaml", "runtime YAML configuration")
+	if err := flags.Parse(arguments); err != nil {
+		return "", nil, err
+	}
+	args := flags.Args()
+	if len(args) == 0 || len(args) == 1 && args[0] == "healthcheck" || len(args) == 3 && args[0] == "release-held" && args[2] == "--upstream-stopped" {
+		return *path, args, nil
+	}
+	return "", nil, errors.New("usage: voice-gateway [--config PATH] [healthcheck | release-held INSTANCE --upstream-stopped]")
+}
+
 func run() error {
-	path := os.Getenv("VOICE_GATEWAY_CONFIG")
-	if path == "" {
-		path = "config/dev.yaml"
+	path, args, err := commandLine(os.Args[1:])
+	if err != nil {
+		return err
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -49,7 +63,7 @@ func run() error {
 		return a
 	}})).With("service", "voice-gateway")
 	slog.SetDefault(logger)
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+	if len(args) > 0 && args[0] == "healthcheck" {
 		_, port, _ := net.SplitHostPort(cfg.HTTPAddress)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -64,12 +78,9 @@ func run() error {
 		}
 		return nil
 	}
-	if len(os.Args) > 1 && os.Args[1] == "release-held" {
-		if len(os.Args) != 4 || os.Args[3] != "--upstream-stopped" {
-			return errors.New("usage: voice-gateway release-held INSTANCE --upstream-stopped")
-		}
+	if len(args) > 0 && args[0] == "release-held" {
 		socket := filepath.Join(cfg.DataDir, "admin.sock")
-		payload, _ := json.Marshal(map[string]any{"instance": os.Args[2], "upstream_stopped": true})
+		payload, _ := json.Marshal(map[string]any{"instance": args[1], "upstream_stopped": true})
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		req, _ := http.NewRequestWithContext(ctx, "POST", "http://unix/admin/release-held", bytes.NewReader(payload))
@@ -87,9 +98,6 @@ func run() error {
 			return errors.New("held slots could not be released")
 		}
 		return nil
-	}
-	if len(os.Args) > 1 {
-		return errors.New("unknown voice gateway command")
 	}
 	blobs, err := journal.OpenBlobs(cfg.DataDir, cfg.MaxPayloadBytes)
 	if err != nil {

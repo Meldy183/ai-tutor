@@ -36,6 +36,7 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 
 type Instance struct {
 	ID                string   `yaml:"id"`
+	Token             string   `yaml:"token"`
 	URL               string   `yaml:"url"`
 	API               string   `yaml:"api"`
 	Slots             int      `yaml:"slots"`
@@ -183,6 +184,18 @@ func checkTypes(n *yaml.Node, t reflect.Type) error {
 	return nil
 }
 func (c Config) Validate() error {
+	for _, pool := range []Pool{c.STT, c.TTS} {
+		for _, in := range pool.Instances {
+			for _, value := range in.Token {
+				if value < 33 || value > 126 {
+					return fmt.Errorf("instance token must contain only printable ASCII without spaces")
+				}
+			}
+			if strings.HasPrefix(in.Token, "REPLACE_") || strings.ContainsAny(in.Token, "\r\n\t ") || (in.Token != "" && len(in.Token) < 24) || len(in.Token) > 4096 {
+				return fmt.Errorf("instance token must be a single bounded header value")
+			}
+		}
+	}
 	for _, address := range []string{c.GRPCAddress, c.HTTPAddress} {
 		_, port, err := net.SplitHostPort(address)
 		if err != nil || port == "" {
@@ -284,14 +297,14 @@ func (c Config) Queues() (map[string]*scheduler.Queue, error) {
 func (c Config) Provider() *provider.HTTP {
 	p := &provider.HTTP{STT: map[string]provider.STT{}, TTS: map[string]provider.TTS{}}
 	for _, in := range c.STT.Instances {
-		p.STT[in.ID] = provider.STT{URL: in.URL, Model: in.Model, Longform: in.Longform, Timeout: in.Timeout.Duration}
+		p.STT[in.ID] = provider.STT{Token: in.Token, URL: in.URL, Model: in.Model, Longform: in.Longform, Timeout: in.Timeout.Duration}
 	}
 	for _, in := range c.TTS.Instances {
 		profiles := map[string]provider.Options{}
 		for _, id := range in.Profiles {
 			profiles[id] = c.Voices[id].Options()
 		}
-		p.TTS[in.ID] = provider.TTS{URL: in.URL, Timeout: in.Timeout.Duration, Profiles: profiles}
+		p.TTS[in.ID] = provider.TTS{Token: in.Token, URL: in.URL, Timeout: in.Timeout.Duration, Profiles: profiles}
 	}
 	return p
 }

@@ -2,7 +2,7 @@ grpc_address: ":8021"
 http_address: ":8020"
 log_level: info
 data_dir: "/var/lib/voice-gateway"
-request_timeout: 120s
+request_timeout: 370s
 retention: 24h
 max_connections: 16 # Отдельный лимит для STT, TTS и DescribeVoice.
 max_payload_bytes: 2147483648
@@ -14,9 +14,10 @@ stt:
   instances:
     - id: gigaam-1
       api: gigaam
+      token: "local-development-client-token-0001" # Public local-only credential.
       url: "http://10.100.30.83:8000/transcribe"
       slots: 1
-      timeout: 120s
+      timeout: 40s # На каждый HTTP-фрагмент; весь RPC ограничен request_timeout.
       model: ""
       longform: false
       abort_on_disconnect: false
@@ -25,9 +26,10 @@ tts:
   instances:
     - id: voxcpm-1
       api: voxcpm
+      token: "local-development-client-token-0001"
       url: "http://10.100.30.83:8001/synthesize"
       slots: 1
-      timeout: 120s
+      timeout: 340s
       profiles: [geek-default]
       abort_on_disconnect: false
 voices:
