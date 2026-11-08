@@ -117,12 +117,12 @@ func TestMapGraphSkipsACompetencyWithoutThreeOutcomes(t *testing.T) {
 	}
 }
 
-func TestMapGraphRenamesTheRubricOfTheMap(t *testing.T) {
+func TestMapGraphKeepsTheCriteriaOfTheMapForTheGrader(t *testing.T) {
 	reference, guidance := splitCriteria("Эталон: конфликт законов.\nДопустимо: «вред».\nАналитическая рубрика (макс. 2):\nК1 «Конфликт»: 1 — названы законы.\nК2 «Решение»: 1 — обосновано.")
 	if reference != "Эталон: конфликт законов.\nДопустимо: «вред»." {
 		t.Fatalf("reference = %q", reference)
 	}
-	if strings.Contains(guidance, "К1 «") || !strings.Contains(guidance, "Пункт рубрики 1 «Конфликт»") || !strings.Contains(guidance, "Пункт рубрики 2 «Решение»") {
+	if !strings.HasPrefix(guidance, "Критерии задания из карты компетенций") || !strings.Contains(guidance, "К1 «Конфликт»") || !strings.Contains(guidance, "К2 «Решение»") {
 		t.Fatalf("guidance = %q", guidance)
 	}
 }
@@ -190,7 +190,7 @@ func TestMapGraphReadsTheTasksOfEveryColumnAsVariants(t *testing.T) {
 	if oral.Question != "Устно: В?" || !strings.Contains(oral.Content, "Эталон: устный В.") || !strings.Contains(oral.Guidance, "Балл (макс. 1)") {
 		t.Fatalf("first variant = %+v", oral)
 	}
-	if academic.Question != "Академически: В." || !strings.Contains(academic.Content, "академический В") || !strings.Contains(academic.Guidance, "Пункт рубрики 1 «Полнота»") {
+	if academic.Question != "Академически: В." || !strings.Contains(academic.Content, "академический В") || !strings.Contains(academic.Guidance, "К1 «Полнота»") {
 		t.Fatalf("second variant = %+v", academic)
 	}
 	if main.Question != oral.Question || main.Text != oral.Content || main.Guidance != oral.Guidance {
@@ -201,7 +201,9 @@ func TestMapGraphReadsTheTasksOfEveryColumnAsVariants(t *testing.T) {
 func TestMapGraphUsesDefaultsOnlyForMissingTaskCriteria(t *testing.T) {
 	header := []string{"Субкомпетенция", "Составляющая", "Образовательный результат", "Уровень по Блуму", "Важность",
 		"Что должно войти в тест", "Задание 1", "Задание 2", "Критерии оценивания", "ID темы", "Пререквизиты"}
-	rows := [][]string{header, {"К1", "С", "А", "Помнить", "3", "TRUE", "Задание А", "Второе задание без критериев", "Эталон: а.", "a", ""}}
+	rows := [][]string{header, {"К1", "С", "А", "Помнить", "3", "TRUE", "Задание А", "Второе задание без критериев", "Эталон: а.", "a", ""},
+		{"К1", "С", "Б", "Понимать", "3", "TRUE", "Вопрос Б", "", "Эталон: б.", "b", ""},
+		{"К1", "С", "В", "Применять", "3", "TRUE", "Вопрос В", "", "Эталон: в.", "c", ""}}
 	_, shape := buildShape(t, rows)
 	variants := shape.Topics[0].Variants
 	if len(variants) != 2 || variants[0].Guidance == DefaultAssessmentGuidance || !strings.Contains(variants[0].Content, "Эталон: а.") || variants[1].Guidance != DefaultAssessmentGuidance || strings.Contains(variants[1].Content, "Эталон: а.") {
@@ -241,8 +243,12 @@ func TestMapGraphDefaultsWithoutAnyCriteriaColumn(t *testing.T) {
 
 func TestDefaultCriteriaWarningRetainsTaskPositionAcrossEmptyVariants(t *testing.T) {
 	header := []string{"Компетенция", "Составляющая", "Образовательный результат", "Таксономия", "Важность", "Что должно войти в тест", "Задание 1", "Задание 2", "ID темы", "Пререквизиты"}
-	_, shape := buildShape(t, [][]string{header, {"ИИ", "Агенты", "Агент", "Понимать", "3", "TRUE", "", "Вопрос второго задания", "agent", ""}})
-	if len(shape.Topics[0].Variants) != 1 || shape.Topics[0].Variants[0].Question != "Вопрос второго задания" || len(shape.Warnings) != 1 || shape.Warnings[0].Column != "Задание 2" {
+	_, shape := buildShape(t, [][]string{header,
+		{"ИИ", "Агенты", "Агент", "Анализировать", "3", "TRUE", "", "Вопрос второго задания", "agent", ""},
+		{"ИИ", "Агенты", "База 1", "Помнить", "3", "TRUE", "Базовый вопрос", "", "base1", ""},
+		{"ИИ", "Агенты", "База 2", "Понимать", "3", "TRUE", "Базовый вопрос", "", "base2", ""},
+	})
+	if len(shape.Topics[2].Variants) != 1 || shape.Topics[2].Variants[0].Question != "Вопрос второго задания" || len(shape.Warnings) != 3 || shape.Warnings[0].Column != "Задание 2" {
 		t.Fatalf("warning attributed to an empty variant: %+v", shape)
 	}
 }

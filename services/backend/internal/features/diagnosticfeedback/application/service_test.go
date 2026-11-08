@@ -172,7 +172,7 @@ func TestAnalyzeResultDeterministicRules(t *testing.T) {
 	}
 
 	if len(report.Strengths) != 4 {
-		t.Fatalf("Strengths count = %d, want 4 checked learning_outcomes", len(report.Strengths))
+		t.Fatalf("Strengths count = %d, want 4 checked course_map_outcomes", len(report.Strengths))
 	}
 
 	if len(report.PartialCompetencies) != 1 {

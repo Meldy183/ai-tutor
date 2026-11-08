@@ -15,23 +15,23 @@ func TestLearningReadinessRequiresThreeOutcomesInOneConstituent(t *testing.T) {
 	admin := f.admin(t)
 	ctx := context.Background()
 	if _, err := f.pool.Exec(ctx, `
-INSERT INTO learning_map_imports(revision,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers,subject_id)
+INSERT INTO course_map_imports(revision,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers,subject_id)
 VALUES (1,1,(SELECT id FROM users WHERE role='admin' LIMIT 1),1,2,4,5,'paired','[]','subject:test');
 `); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.pool.Exec(ctx, `
 INSERT INTO learning_subject_state(subject_id,active_revision) VALUES ('subject:test',1);
-INSERT INTO learning_competencies(id,name,revision) VALUES ('c1','Компетенция',1);
-INSERT INTO learning_constituents(id,competency_id,name) VALUES ('s1','c1','Первая'),('s2','c1','Вторая');
-INSERT INTO learning_outcomes(id,constituent_id,name,include_in_test,taxonomy_id,importance)
+INSERT INTO course_map_competencies(id,name,revision) VALUES ('c1','Компетенция',1);
+INSERT INTO course_map_constituents(id,competency_id,name) VALUES ('s1','c1','Первая'),('s2','c1','Вторая');
+INSERT INTO course_map_outcomes(id,constituent_id,name,include_in_test,taxonomy_id,importance)
 VALUES ('o1','s1','Первый',true,'taxonomy:knowledge',3),
        ('o2','s1','Второй',true,'taxonomy:understanding',3),
        ('o3','s2','Третий',true,'taxonomy:application',3),
        ('o4','s2','Четвёртый',true,'taxonomy:analysis',3);
-INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,reference_answer,created_at)
-SELECT 'task-' || id,id,'Вопрос','Ответьте','Эталон',1 FROM learning_outcomes;
-INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,reference_answer,created_at)
+INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,reference_answer,created_at)
+SELECT 'task-' || id,id,'Вопрос','Ответьте','Эталон',1 FROM course_map_outcomes;
+INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,reference_answer,created_at)
 VALUES ('another-task','o1','Другой вопрос','Ответьте','Эталон',1);
 `); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ VALUES ('another-task','o1','Другой вопрос','Ответьте','Эт
 	check(false)
 	requireCode(t, f.keyed(http.MethodPost, "/learn/variants", "short-constituents", `{"subject_id":"subject:test"}`, student), http.StatusConflict, "NO_ELIGIBLE_COMPETENCIES")
 	// Moving one outcome makes a complete block; the short constituent is skipped.
-	if _, err := f.pool.Exec(ctx, `UPDATE learning_outcomes SET constituent_id='s1' WHERE id='o3'`); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE course_map_outcomes SET constituent_id='s1' WHERE id='o3'`); err != nil {
 		t.Fatal(err)
 	}
 	check(true)
@@ -69,7 +69,7 @@ VALUES ('another-task','o1','Другой вопрос','Ответьте','Эт
 		t.Fatalf("create variant for ready course: %d %s", response.Code, response.Body.String())
 	}
 	// A third outcome without a usable task must not make the course ready.
-	if _, err := f.pool.Exec(ctx, `UPDATE learning_tasks SET reference_answer='' WHERE outcome_id='o3'`); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE course_map_tasks SET reference_answer='' WHERE outcome_id='o3'`); err != nil {
 		t.Fatal(err)
 	}
 	check(false)
@@ -236,19 +236,19 @@ VALUES ($1,'exam.xlsx','Экзамен','exam-v1','{"marker":"exam-before-learni
 	if err != nil {
 		t.Fatal(err)
 	}
-	missingImport := upload(f, "/learn/admin/subjects/subject-does-not-exist/competency-map/import", "file", "ml_map.csv", "text/csv", mapCSV, admin)
+	missingImport := importCourseMap(t, f, "subject-does-not-exist", mapCSV, 0, admin)
 	requireCode(t, missingImport, http.StatusNotFound, "SUBJECT_NOT_FOUND")
 	var missingMapCount int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id='subject-does-not-exist'`).Scan(&missingMapCount); err != nil || missingMapCount != 0 {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_imports WHERE subject_id='subject-does-not-exist'`).Scan(&missingMapCount); err != nil || missingMapCount != 0 {
 		t.Fatalf("import for missing course created global learning data: count=%d err=%v", missingMapCount, err)
 	}
-	imported := upload(f, "/learn/admin/subjects/"+course.ID+"/competency-map/import", "file", "ml_map.csv", "text/csv", mapCSV, admin)
-	if imported.Code != http.StatusOK {
+	imported := importCourseMap(t, f, course.ID, mapCSV, 0, admin)
+	if imported.Code != http.StatusAccepted {
 		t.Fatalf("learning map upload for common course: %d %s", imported.Code, imported.Body.String())
 	}
 	var importedCounts string
 	if err := f.pool.QueryRow(context.Background(), `SELECT format('c=%s k=%s o=%s t=%s', competency_count, constituent_count, outcome_count, task_count)
-FROM learning_map_imports WHERE subject_id=$1`, course.ID).Scan(&importedCounts); err != nil {
+FROM course_map_imports WHERE subject_id=$1`, course.ID).Scan(&importedCounts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,8 +267,8 @@ FROM learning_map_imports WHERE subject_id=$1`, course.ID).Scan(&importedCounts)
 		t.Fatalf("learning readiness must not make exam course ready: %+v", items)
 	}
 	var examFilename string
-	if err := f.pool.QueryRow(context.Background(), `SELECT filename FROM course_graph_maps WHERE subject_id=$1`, course.ID).Scan(&examFilename); err != nil || examFilename != "exam.xlsx" {
-		t.Fatalf("learning import changed exam map filename=%q err=%v", examFilename, err)
+	if err := f.pool.QueryRow(context.Background(), `SELECT filename FROM course_graph_maps WHERE subject_id=$1`, course.ID).Scan(&examFilename); err != nil || examFilename != "map.xlsx" {
+		t.Fatalf("one import saves the Geek sheet too: filename=%q err=%v", examFilename, err)
 	}
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at)
 VALUES ($1,'competency_map','exam-v1','{"marker":"exam-after-learning-import"}',1)`, course.ID); err != nil {
@@ -283,7 +283,7 @@ VALUES ($1,'competency_map','exam-v1','{"marker":"exam-after-learning-import"}',
 		t.Fatalf("exam graph change must not affect learning readiness: %+v", items)
 	}
 	var count int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id=$1`, course.ID).Scan(&count); err != nil || count != 1 {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_imports WHERE subject_id=$1`, course.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("exam graph change removed learning import count=%d err=%v", count, err)
 	}
 	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM subjects WHERE id=$1", course.ID).Scan(&count); err != nil || count != 1 {

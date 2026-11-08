@@ -117,14 +117,7 @@ test('shows an available old graph while a new course build is queued', async ({
   }
   await courseCard.click()
   await expect(
-    page.getByRole('heading', { name: 'Материалы для обучения' }),
-  ).toBeVisible()
-  await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .getByRole('link', { name: 'Материалы для экзамена' })
-    .click()
-  await expect(
-    page.getByRole('heading', { name: 'Материалы для экзамена' }),
+    page.getByRole('heading', { name: 'Подготовка курса', level: 2 }),
   ).toBeVisible()
   await expect(
     page.getByText('Экзамен: готов · обновление в очереди'),

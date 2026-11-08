@@ -20,6 +20,7 @@ import (
 type Repository struct{ pool *pgxpool.Pool }
 
 func New(pool *pgxpool.Pool) *Repository { return &Repository{pool} }
+
 func (r *Repository) Claim(ctx context.Context, token string, now time.Time) (coursegraph.Job, error) {
 	job, err := db.New(r.pool).ClaimCourseGraph(ctx, db.ClaimCourseGraphParams{Token: token, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -37,12 +38,29 @@ func (r *Repository) Release(ctx context.Context, job coursegraph.Job, now time.
 	_, err := db.New(r.pool).ReleaseCourseGraph(ctx, db.ReleaseCourseGraphParams{SubjectID: job.SubjectID, Token: job.Token, Now: now.Unix()})
 	return err
 }
+
+// Finish publishes a build; a graph of a competency map also keeps the
+// prepared rephrases with its exam tasks, in the same transaction.
 func (r *Repository) Finish(ctx context.Context, job coursegraph.Job, graph json.RawMessage, now time.Time) (bool, error) {
-	_, err := db.New(r.pool).FinishCourseGraph(ctx, db.FinishCourseGraphParams{SubjectID: job.SubjectID, Fingerprint: job.Fingerprint, Token: job.Token, Graph: graph, Now: now.Unix()})
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+	if job.Source == coursegraph.SourceMap {
+		if err := keepRephrases(ctx, q, graph); err != nil {
+			return false, err
+		}
+	}
+	_, err = q.FinishCourseGraph(ctx, db.FinishCourseGraphParams{SubjectID: job.SubjectID, Fingerprint: job.Fingerprint, Token: job.Token, Graph: graph, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 func (r *Repository) Fail(ctx context.Context, job coursegraph.Job, message string, now time.Time) error {
 	return db.New(r.pool).FailCourseGraph(ctx, db.FailCourseGraphParams{SubjectID: job.SubjectID, Token: job.Token, ErrorMessage: message, Now: now.Unix()})
@@ -56,12 +74,14 @@ func (r *Repository) Read(ctx context.Context, subjectID string) (coursegraph.Sn
 		return coursegraph.Snapshot{}, err
 	}
 	snapshot := coursegraph.Snapshot{Status: row.Status, Attempts: row.Attempts, ErrorMessage: row.ErrorMessage, Graph: row.Graph,
-		GraphSource: row.GraphSource, UpdatedAt: row.UpdatedAt, Stale: row.Stale, InputsReady: row.InputsReady}
+		GraphSource: row.GraphSource, GraphFingerprint: row.GraphFingerprint, GraphMapRevision: row.GraphMapRevision,
+		UpdatedAt: row.UpdatedAt, Stale: row.Stale, InputsReady: row.InputsReady}
 	if row.JobSource != "" {
 		snapshot.BuildSource = &row.JobSource
 	}
 	if row.MapFilename != "" {
-		snapshot.Map = &coursegraph.MapFile{Filename: row.MapFilename, Sheet: row.MapSheet, Fingerprint: row.MapFingerprint}
+		snapshot.Map = &coursegraph.MapFile{Filename: row.MapFilename, Sheet: row.MapSheet,
+			Fingerprint: row.MapFingerprint, LearningRevision: row.MapRevision}
 	}
 	return snapshot, nil
 }
@@ -69,10 +89,6 @@ func (r *Repository) Read(ctx context.Context, subjectID string) (coursegraph.Sn
 // SaveMap stores an imported competency map and queues a build of it in one
 // transaction; false, with nothing stored, when a build is already queued or
 // running.
-func (r *Repository) SaveMap(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) (bool, error) {
-	return r.saveMap(ctx, subjectID, filename, sheet, graph, "", now)
-}
-
 // SaveMapIfCurrent atomically replaces only the confirmed, published map.
 func (r *Repository) SaveMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, expectedFingerprint string, now time.Time) (bool, error) {
 	if expectedFingerprint == "" {
@@ -104,9 +120,6 @@ func (r *Repository) saveMap(ctx context.Context, subjectID, filename, sheet str
 		if n != 1 {
 			return false, mapChanged()
 		}
-	} else if err = q.SaveCourseGraphMap(ctx, db.SaveCourseGraphMapParams{SubjectID: subjectID, Filename: filename, Sheet: sheet,
-		Fingerprint: hex.EncodeToString(sum[:]), Graph: graph, Now: now.Unix()}); err != nil {
-		return false, err
 	}
 	_, err = q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {

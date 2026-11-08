@@ -24,7 +24,7 @@ func (r *skipRepo) SaveMapIfCurrent(_ context.Context, _, _, _ string, graph jso
 
 func TestSkipMissingCriteriaRequiresAdminAndKeepsAuthoredQuestion(t *testing.T) {
 	fallback, _ := json.Marshal(coursegraph.DefaultAssessmentGuidance)
-	graph := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","variants":[{"question":"skip","assessment_guidance":` + string(fallback) + `},{"question":"keep","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
+	graph := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","variants":[{"question":"skip","assessment_guidance":` + string(fallback) + `},{"question":"keep","assessment_guidance":"author"}]},{"id":"b","variants":[{"question":"b","assessment_guidance":"author"}]},{"id":"c","variants":[{"question":"c","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
 	repo := &skipRepo{requestRepo: requestRepo{snapshot: coursegraph.Snapshot{Status: "ready", GraphSource: coursegraph.SourceMap, Map: &coursegraph.MapFile{Filename: "map.xlsx", Sheet: "sheet", Fingerprint: "map-a"}}, mapGraph: graph}}
 	w := New(repo, nil, nil, nil, nil, nil)
 	if _, err := w.SkipMissingCriteria(context.Background(), user.User{Role: user.Student}, "s", "map-a"); err == nil || repo.saved != nil {
@@ -43,7 +43,7 @@ func TestSkipMissingCriteriaRequiresAdminAndKeepsAuthoredQuestion(t *testing.T) 
 	if err := json.Unmarshal(repo.saved, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Skipped != 1 || len(result.Topics) != 1 || result.Topics[0].Question != "keep" || len(result.Topics[0].Variants) != 1 {
+	if result.Skipped != 1 || len(result.Topics) != 3 || result.Topics[0].Question != "keep" || len(result.Topics[0].Variants) != 1 {
 		t.Fatalf("wrong graph: %s", repo.saved)
 	}
 }

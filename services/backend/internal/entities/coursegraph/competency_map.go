@@ -1,7 +1,6 @@
 package coursegraph
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -42,11 +41,7 @@ var mapColumns = map[string][]string{
 	"importance":  {"Важность"},
 	"include":     {"Что должно войти в тест"},
 	"evidence":    {"Свидетельство"},
-	// Both graph columns opt in to an explicit graph, without the legacy
-	// selection of three outcomes per constituent. Other books are unchanged.
-	"topic_id":      {"ID темы"},
-	"prerequisites": {"Пререквизиты"},
-	"content":       {"Текст темы"},
+	"content":     {"Текст темы"},
 }
 
 // The tasks and their criteria are every column with these prefixes, paired
@@ -174,57 +169,62 @@ type mapOutcome struct {
 	constituent, evidence string
 	tasks                 []mapTask
 	bloom, importance     int
+	included              bool
 	order                 int
-	id, content           string
-	requires              []string
+	content               string
 }
 
-// BuildMapGraph builds the course graph from the first sheet of the book, the
-// simulation's; the other sheets are not read.
+// BuildMapGraph builds the Geek course graph from the first sheet. Paired-map
+// structure is validated by the importer before it stages the learning sheet.
 func BuildMapGraph(sheets []MapSheet) (MapGraph, error) {
 	if len(sheets) == 0 {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "В книге нет листов."}
 	}
 	sheet, rows := sheets[0].Name, sheets[0].Rows
-	layout, valid := mapHeader(rows)
+	_, valid := mapHeader(rows)
 	if !valid {
 		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID",
 			Message: fmt.Sprintf("На первом листе «%s» нет обязательных колонок карты: Субкомпетенция (или Компетенция), Составляющая, Образовательный результат, Уровень по Блуму (или Таксономия), Важность, Что должно войти в тест, Задание.", sheet)}
 	}
-	_, explicit := layout.columns["topic_id"]
-	_, dependencies := layout.columns["prerequisites"]
-	if explicit != dependencies {
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: "Для явного графа нужны обе колонки: «ID темы» и «Пререквизиты»."}
-	}
-	outcomes, constituents, issues := readMapOutcomes(rows)
+	all, constituents, issues := readMapOutcomes(rows)
 	if len(issues) > 0 {
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID",
-			Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet), Issues: issues}
+		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_INVALID", Message: fmt.Sprintf("Карта на листе «%s» содержит ошибки.", sheet), Issues: issues}
 	}
-	var graph json.RawMessage
-	var topics int
-	var skipped []SkippedCompetency
-	var err error
-	if explicit {
-		graph, topics, err = explicitMapGraph(outcomes)
-	} else {
-		graph, topics, skipped, err = mapGraph(constituents, outcomes)
+	outcomes := []mapOutcome{}
+	for _, o := range all {
+		if o.included && len(o.tasks) > 0 {
+			outcomes = append(outcomes, o)
+		}
 	}
+	graph, topics, skipped, err := mapGraph(constituents, outcomes)
 	if err != nil {
 		return MapGraph{}, err
 	}
 	if topics == 0 {
-		if explicit {
-			return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY", Message: "В явной карте нет включённых тем с заданием."}
-		}
-		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY",
-			Message: "Ни одна составляющая не набрала трёх ОР с TRUE и заданием; граф не из чего собрать.", Issues: skippedIssues(skipped)}
+		return MapGraph{}, &MapError{Code: "COMPETENCY_MAP_EMPTY", Message: "Ни одна составляющая не набрала трёх ОР с TRUE и заданием; граф не из чего собрать.", Issues: skippedIssues(skipped)}
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(graph, &shape); err != nil {
+		return MapGraph{}, err
+	}
+	bank := make([]mapTopic, 0, len(all))
+	for _, o := range all {
+		bank = append(bank, newMapTopic(o, "", nil))
+	}
+	shape["bank"], _ = json.Marshal(bank)
+	graph, err = json.Marshal(shape)
+	if err != nil {
+		return MapGraph{}, err
 	}
 	graph, err = withAssessmentWarnings(graph, outcomes)
 	if err != nil {
 		return MapGraph{}, err
 	}
 	return MapGraph{Graph: graph, Sheet: sheet, Topics: topics, Skipped: skipped}, nil
+}
+
+func normalizeMapKey(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
 func skippedIssues(skipped []SkippedCompetency) []MapIssue {
@@ -235,7 +235,7 @@ func skippedIssues(skipped []SkippedCompetency) []MapIssue {
 	return out
 }
 
-// readMapOutcomes reads the outcomes that may enter the graph and every
+// readMapOutcomes reads the full outcome bank and every
 // constituent of the map in its order; the competency and constituent are
 // filled on the first row of their group only.
 type mapGroup struct{ competency, constituent string }
@@ -262,6 +262,7 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 		issues                  []MapIssue
 		competency, constituent string
 	)
+	seenOutcomes := map[string]bool{}
 	issue := func(row int, key, message string) {
 		issues = append(issues, MapIssue{Row: row, Column: columnTitle(key), Message: message})
 	}
@@ -281,7 +282,7 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 		}
 		outcome := cell(row, "outcome")
 		if outcome == "" {
-			if _, explicit := layout.columns["topic_id"]; explicit && strings.EqualFold(cell(row, "include"), "TRUE") {
+			if strings.EqualFold(cell(row, "include"), "TRUE") {
 				issue(line, "outcome", "У включённой темы нет образовательного результата (названия темы).")
 			}
 			continue
@@ -294,6 +295,12 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 			issue(line, "constituent", "У ОР нет составляющей выше.")
 			continue
 		}
+		key := normalizeMapKey(competency) + "\x00" + normalizeMapKey(constituent) + "\x00" + normalizeMapKey(outcome)
+		if seenOutcomes[key] {
+			issue(line, "outcome", "Повтор образовательного результата внутри составляющей.")
+			continue
+		}
+		seenOutcomes[key] = true
 		group := mapGroup{competency, constituent}
 		if !slices.Contains(constituents, group) {
 			constituents = append(constituents, group)
@@ -317,38 +324,19 @@ func readMapOutcomes(rows [][]string) ([]mapOutcome, []mapGroup, []MapIssue) {
 				tasks = append(tasks, mapTask{task: task, criteria: criteria, position: k + 1})
 			}
 		}
-		// Only outcomes for the test with a task can be asked.
-		if include != "TRUE" || len(tasks) == 0 {
-			if _, explicit := layout.columns["topic_id"]; explicit && include == "TRUE" && len(tasks) == 0 {
-				issue(line, "task", "У включённой темы нет задания.")
-			}
-			continue
-		}
 		bloom, ok := bloomRanks[strings.ToLower(cell(row, "bloom"))]
-		if !ok {
+		if !ok && include == "TRUE" && len(tasks) > 0 {
 			issue(line, "bloom", "Неизвестный уровень по Блуму: ожидается Помнить, Понимать, Применять, Анализировать, Оценивать или Создавать.")
 			continue
 		}
 		importance, ok := importanceValue(cell(row, "importance"))
-		if !ok {
+		if !ok && include == "TRUE" && len(tasks) > 0 {
 			issue(line, "importance", "Ожидается целое число от 1 до 5.")
 			continue
 		}
 		o := mapOutcome{row: line, competency: competency, constituent: constituent, outcome: outcome,
-			evidence: cell(row, "evidence"), tasks: tasks, bloom: bloom, importance: importance, order: len(out)}
-		if _, explicit := layout.columns["topic_id"]; explicit {
-			o.id = cell(row, "topic_id")
-			o.content = cell(row, "content")
-			if o.id == "" {
-				issue(line, "topic_id", "У включённой темы нет ID.")
-				continue
-			}
-			for _, id := range strings.FieldsFunc(cell(row, "prerequisites"), func(r rune) bool { return r == ';' || r == ',' || r == '\n' || r == '\r' }) {
-				if id = strings.TrimSpace(id); id != "" && !slices.Contains(o.requires, id) {
-					o.requires = append(o.requires, id)
-				}
-			}
-		}
+			evidence: cell(row, "evidence"), tasks: tasks, bloom: bloom, importance: importance, order: len(out), included: include == "TRUE", content: cell(row, "content")}
+
 		out = append(out, o)
 	}
 	return out, constituents, issues
@@ -372,6 +360,9 @@ func blank(row []string) bool {
 }
 
 type mapTopic struct {
+	Included           bool   `json:"include_in_test"`
+	Bloom              int    `json:"bloom"`
+	Importance         int    `json:"importance"`
 	ID                 string `json:"id"`
 	Title              string `json:"title"`
 	Text               string `json:"text"`
@@ -379,16 +370,20 @@ type mapTopic struct {
 	AssessmentGuidance string `json:"assessment_guidance,omitempty"`
 	// Variants are all the tasks of the outcome; the topic's own question,
 	// text and guidance are those of the first one.
-	Variants    []mapVariant `json:"variants"`
-	Provides    []string     `json:"provides"`
-	Requires    []string     `json:"requires"`
-	ParentTitle string       `json:"parent_title"`
-	Role        string       `json:"role"`
-	Row         int          `json:"row"`
+	Variants         []mapVariant `json:"variants"`
+	Provides         []string     `json:"provides"`
+	Requires         []string     `json:"requires"`
+	ParentTitle      string       `json:"parent_title"`
+	ConstituentTitle string       `json:"constituent_title"`
+	CompetencyID     string       `json:"competency_id,omitempty"`
+	ConstituentID    string       `json:"constituent_id,omitempty"`
+	Role             string       `json:"role"`
+	Row              int          `json:"row"`
 }
 
 // mapVariant has the shape of exam.Variant.
 type mapVariant struct {
+	TaskID             string `json:"task_id,omitempty"`
 	Question           string `json:"question"`
 	Content            string `json:"content"`
 	AssessmentGuidance string `json:"assessment_guidance,omitempty"`
@@ -409,29 +404,36 @@ func mapGraph(order []mapGroup, outcomes []mapOutcome) (json.RawMessage, int, []
 	topics := []mapTopic{}
 	prerequisites, hierarchy := []mapEdge{}, []mapEdge{}
 	skipped := []SkippedCompetency{}
-	for _, group := range order {
-		name := group.constituent
-		pool := byConstituent[group]
-		if len(pool) < 3 {
-			skipped = append(skipped, SkippedCompetency{Name: name,
-				Reason: fmt.Sprintf("ОР с TRUE и заданием — %d, нужно не меньше трёх: основное и два базовых.", len(pool))})
-			continue
+	pools := make([]Pool, len(order))
+	byKey := map[string]mapOutcome{}
+	for i, group := range order {
+		pool := Pool{Key: strconv.Itoa(i), Name: group.constituent}
+		for _, o := range byConstituent[group] {
+			key := topicID(o)
+			byKey[key] = o
+			pool.Candidates = append(pool.Candidates, Candidate{Key: key, Name: o.outcome, Rank: o.bloom, Importance: o.importance, Order: o.order})
 		}
-		main := slices.MinFunc(pool, func(a, b mapOutcome) int {
-			return cmp.Or(cmp.Compare(b.bloom, a.bloom), cmp.Compare(b.importance, a.importance), cmp.Compare(a.order, b.order))
-		})
-		rest := slices.DeleteFunc(slices.Clone(pool), func(o mapOutcome) bool { return o.order == main.order })
-		slices.SortStableFunc(rest, func(a, b mapOutcome) int {
-			return cmp.Or(cmp.Compare(a.bloom, b.bloom), cmp.Compare(b.importance, a.importance), cmp.Compare(a.order, b.order))
-		})
+		pools[i] = pool
+	}
+	trees, skips := SelectTrees(pools)
+	for _, skip := range skips {
+		skipped = append(skipped, SkippedCompetency{Name: skip.Name,
+			Reason: fmt.Sprintf("ОР с TRUE и заданием — %d, нужно не меньше трёх: основное и два базовых.", skip.Eligible)})
+	}
+	for _, tree := range trees {
+		name := tree.Name
+		main := byKey[tree.Root.Key]
 		mainID := topicID(main)
 		// Study order: the basic tasks come before the main one.
-		for _, basic := range rest[:2] {
+		requires := make([]string, 0, len(tree.Children))
+		for _, child := range tree.Children {
+			basic := byKey[child.Key]
 			topics = append(topics, newMapTopic(basic, "basic", nil))
 			prerequisites = append(prerequisites, mapEdge{Source: topicID(basic), Target: mainID, Reason: "Базовое задание составляющей «" + name + "»."})
 			hierarchy = append(hierarchy, mapEdge{Source: mainID, Target: topicID(basic)})
+			requires = append(requires, topicID(basic))
 		}
-		topics = append(topics, newMapTopic(main, "main", []string{topicID(rest[0]), topicID(rest[1])}))
+		topics = append(topics, newMapTopic(main, "main", requires))
 	}
 	data, err := json.Marshal(struct {
 		Version       string     `json:"version"`
@@ -453,9 +455,6 @@ func mapGraph(order []mapGroup, outcomes []mapOutcome) (json.RawMessage, int, []
 }
 
 func topicID(o mapOutcome) string {
-	if o.id != "" {
-		return o.id
-	}
 	return "map-row-" + strconv.Itoa(o.row)
 }
 
@@ -481,21 +480,22 @@ func newMapTopic(o mapOutcome, role string, requires []string) mapTopic {
 	if requires == nil {
 		requires = []string{}
 	}
-	first := variants[0]
-	return mapTopic{ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
-		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, Role: role, Row: o.row}
+	first := mapVariant{Content: o.content}
+	if len(variants) > 0 {
+		first = variants[0]
+	}
+	return mapTopic{Included: o.included, Bloom: o.bloom, Importance: o.importance, ID: topicID(o), Title: o.outcome, Text: first.Content, Question: first.Question, AssessmentGuidance: first.AssessmentGuidance,
+		Variants: variants, Provides: []string{o.outcome}, Requires: requires, ParentTitle: o.competency, ConstituentTitle: o.constituent, Role: role, Row: o.row}
 }
 
 // scoringLine starts the scoring part of the criteria: «Балл (макс. 1)» or an
-// analytic rubric with its own К1, К2…, which are not Geek's К1–К4.
+// analytic rubric with its own К1, К2….
 var scoringLine = regexp.MustCompile(`(?i)^(Балл|Аналитическая рубрика|[КK]\d+(?:\s|:)|[+−-]?\d+(?:[.,]\d+)?\s*(?:балл|[—–−-]))`)
 
-var rubricCriterion = regexp.MustCompile(`(?i)^[КK](\d+)(\s|:)`)
-
 // splitCriteria keeps the reference answer (Эталон, Допустимо) as the text of
-// the topic and turns the scoring of the map into the teacher's rule for the
-// grader, renaming the rubric's К1, К2… so the grader does not take them for
-// its own criteria.
+// the topic and turns the scoring of the map into the teacher's criteria for
+// the grader. The grader scores on the topic's scale; the criteria tell what a
+// full answer is (decision of 08.11.2026).
 func splitCriteria(criteria string) (string, string) {
 	var reference, scoring []string
 	for _, line := range strings.Split(strings.ReplaceAll(criteria, "\r\n", "\n"), "\n") {
@@ -503,14 +503,14 @@ func splitCriteria(criteria string) (string, string) {
 		switch {
 		case line == "":
 		case len(scoring) > 0 || scoringLine.MatchString(line):
-			scoring = append(scoring, rubricCriterion.ReplaceAllString(line, "Пункт рубрики $1$2"))
+			scoring = append(scoring, line)
 		default:
 			reference = append(reference, line)
 		}
 	}
 	guidance := ""
 	if len(scoring) > 0 {
-		guidance = "Рубрика задания из карты компетенций (её пункты не совпадают с критериями К1–К4; учитывай их как ориентир, что считать полным ответом):\n" + strings.Join(scoring, "\n")
+		guidance = "Критерии задания из карты компетенций (ориентир, что считать полным ответом):\n" + strings.Join(scoring, "\n")
 	}
 	return strings.Join(reference, "\n"), guidance
 }

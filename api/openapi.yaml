@@ -338,55 +338,6 @@ components:
         - curriculum_competencies
         - title
       type: object
-    competencyhttp.ImportResult:
-      additionalProperties: false
-      properties:
-        competency_count:
-          type: integer
-        constituent_count:
-          type: integer
-        imported_at:
-          type: integer
-        outcome_count:
-          type: integer
-        revision:
-          type: integer
-        task_count:
-          type: integer
-        unparsed_task_cell_count:
-          type: integer
-        warnings:
-          items:
-            $ref: '#/components/schemas/competencyhttp.ImportWarning'
-          type: array
-          uniqueItems: false
-      required:
-        - competency_count
-        - constituent_count
-        - imported_at
-        - outcome_count
-        - revision
-        - task_count
-        - unparsed_task_cell_count
-        - warnings
-      type: object
-    competencyhttp.ImportWarning:
-      additionalProperties: false
-      properties:
-        code:
-          type: string
-        column:
-          type: string
-        column_index:
-          type: integer
-        row:
-          type: integer
-      required:
-        - code
-        - column
-        - column_index
-        - row
-      type: object
     competencyhttp.MapSnapshot:
       additionalProperties: false
       properties:
@@ -504,6 +455,23 @@ components:
         - stage_index
         - total
       type: object
+    coursegraph.ImportWarning:
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+        column:
+          type: string
+        column_index:
+          type: integer
+        row:
+          type: integer
+      required:
+        - code
+        - column
+        - column_index
+        - row
+      type: object
     coursegraph.MapFile:
       additionalProperties: false
       properties:
@@ -511,11 +479,16 @@ components:
           type: string
         fingerprint:
           type: string
+        learning_revision:
+          type:
+            - integer
+            - "null"
         sheet:
           type: string
       required:
         - filename
         - fingerprint
+        - learning_revision
         - sheet
       type: object
     coursegraph.Snapshot:
@@ -540,6 +513,14 @@ components:
           type:
             - object
             - "null"
+        graph_fingerprint:
+          description: GraphFingerprint identifies the currently published Geek graph.
+          type: string
+        graph_map_revision:
+          description: GraphMapRevision is the learning-map revision used to build the published Geek graph.
+          type:
+            - integer
+            - "null"
         graph_source:
           enum:
             - built
@@ -548,6 +529,14 @@ components:
           type: string
         inputs_ready:
           type: boolean
+        learning_warnings:
+          description: |-
+            LearningWarnings are parser warnings from the second sheet of the
+            just-imported paired workbook; they are not persisted in the map snapshot.
+          items:
+            $ref: '#/components/schemas/coursegraph.ImportWarning'
+          type: array
+          uniqueItems: false
         map:
           anyOf:
             - $ref: '#/components/schemas/coursegraph.MapFile'
@@ -577,8 +566,11 @@ components:
         - build_source
         - error_message
         - graph
+        - graph_fingerprint
+        - graph_map_revision
         - graph_source
         - inputs_ready
+        - learning_warnings
         - map
         - progress
         - stale
@@ -1293,30 +1285,19 @@ components:
         assisted:
           description: Ответ дан после переформулировки или подсказки
           type: boolean
-        grade:
-          description: Оценка A–D; null — оценки нет (тема не проверялась или недостаточно данных)
-          enum:
-            - A
-            - B
-            - C
-            - D
-            - null
-          type:
-            - string
-            - "null"
-        marks:
-          description: Результаты по пунктам рубрики или критериям К1–К4
-          items:
-            $ref: '#/components/schemas/geek.TopicMark'
-          type: array
-          uniqueItems: false
         max_score:
+          description: 'Максимум темы: 2 у вершины верхнего уровня, 1 у пререквизита'
+          maximum: 2
           minimum: 1
-          type:
-            - integer
-            - "null"
+          type: integer
         node_id:
           type: string
+        reasons:
+          description: Основания балла от модели
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         reply:
           description: Реплика Geek при закрытии темы; пустая, если её нет
           type: string
@@ -1327,7 +1308,8 @@ components:
           type: array
           uniqueItems: false
         score:
-          description: Баллы темы; null — тема не спрашивалась, засчитана или данных недостаточно
+          description: 'Балл темы: у вершины верхнего уровня 0–2, у пререквизита 0–1; null — тема не спрашивалась, засчитана или данных недостаточно'
+          maximum: 2
           minimum: 0
           type:
             - integer
@@ -1349,10 +1331,9 @@ components:
           type: boolean
       required:
         - assisted
-        - grade
-        - marks
         - max_score
         - node_id
+        - reasons
         - reply
         - requires
         - score
@@ -1465,7 +1446,7 @@ components:
         session_id:
           type: string
         weak_spots:
-          description: 'Слабые места — темы на C: засчитаны, но ответ неполный; источники и материалы — как у пробела'
+          description: 'Слабые места — темы с баллом ниже максимума: засчитаны, но ответ неполный; источники и материалы — как у пробела'
           items:
             $ref: '#/components/schemas/geek.Gap'
           type: array
@@ -1654,34 +1635,6 @@ components:
       required:
         - display_name
         - id
-      type: object
-    geek.TopicMark:
-      additionalProperties: false
-      properties:
-        id:
-          type: string
-        max_score:
-          minimum: 1
-          type: integer
-        quote:
-          description: Дословная цитата из ответа студента; пустая, если её нет
-          type: string
-        reason:
-          description: Основание балла; пустое, если модель его не сохранила
-          type: string
-        score:
-          minimum: 0
-          type: integer
-        title:
-          description: Короткое название пункта из карты; пустое у К1–К4 и пунктов без названия
-          type: string
-      required:
-        - id
-        - max_score
-        - quote
-        - reason
-        - score
-        - title
       type: object
     geek.Turn:
       additionalProperties: false
@@ -4026,7 +3979,7 @@ paths:
       x-implementation: planned
   /exam/admin/subjects/{subject_id}/graph:
     get:
-      description: 'Доступно только admin. Сборку запускает POST .../graph/build. stale — источник графа (материалы или карта) изменился после публикации; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source — откуда граф: built (собран из материалов), competency_map (собран по карте компетенций) или none — графа нет, курс студентам не виден. build_source — что читает последняя запрошенная сборка; map — последняя импортированная карта.'
+      description: Доступно только admin. Сборку запускает POST .../graph/build. stale — источник опубликованного Geek-графа изменился; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source, graph_fingerprint и graph_map_revision описывают опубликованную версию Geek; status, build_source и error_message — последнюю подготовку. map и map.learning_revision описывают последнюю сохранённую карту. Для двухлистовой карты учебная версия активируется при сохранении карты; опубликованный Geek-граф остаётся доступен до успешной подготовки новой версии.
       operationId: getCourseGraph
       parameters:
         - description: ID предмета
@@ -4155,7 +4108,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED
         "422":
           content:
             application/json:
@@ -4176,7 +4129,7 @@ paths:
       x-implementation: implemented
   /exam/admin/subjects/{subject_id}/graph/competency-map:
     post:
-      description: 'Доступно только admin. Кнопка «Импортировать карту компетенций»: граф курса собирается по карте вместо материалов — на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; вопрос — задание карты без изменений. Карта проверяется сразу, затем вопросы готовятся и граф публикуется так же, как сборка из материалов, и заменяет прежний граф курса. Граф строится по первому листу книги (второй — для диагностики режима «Обучение»); колонки «Компетенция» и «Таксономия» принимаются вместо «Субкомпетенция» и «Уровень по Блуму». Все колонки «Задание N» ОР становятся вариантами темы с критериями из колонки «Критерии оценивания…» того же номера по порядку; экзамен при старте выбирает один вариант случайно.'
+      description: 'Доступно только admin. Одна XLSX-книга: первый лист — Geek, второй — учебная диагностика; дополнительные листы не читаются. Содержание листов может различаться. Полные ОР и задания обоих источников сохраняются в общей схеме и одной ревизии. Обучение активируется в транзакции импорта, Geek остаётся на предыдущем графе до успешной подготовки нового. Оба режима выбирают основное и два базовых ОР на составляющую с минимум тремя подходящими ОР; невыбранные ОР остаются для обучения. Авторские ID и пререквизиты не меняют отбор. Все варианты задания сохраняют свой эталон и критерии.'
       operationId: importCourseGraphCompetencyMap
       parameters:
         - description: ID предмета
@@ -4185,6 +4138,12 @@ paths:
           required: true
           schema:
             type: string
+        - description: 'Активная ревизия карты из GET /learn/subjects/{subject_id}/competency-map (0 — карты ещё нет): подтверждает замену'
+          in: header
+          name: X-Expected-Learning-Revision
+          required: true
+          schema:
+            type: integer
       requestBody:
         content:
           multipart/form-data:
@@ -4236,7 +4195,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: 'GRAPH_BUILD_IN_PROGRESS: сборка уже идёт'
+          description: GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED
         "413":
           content:
             application/json:
@@ -4248,7 +4207,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY
+          description: UNIFIED_COMPETENCY_MAP_REQUIRED, COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY
         "503":
           content:
             application/json:
@@ -4323,7 +4282,7 @@ paths:
       x-implementation: implemented
   /exam/admin/subjects/{subject_id}/graph/competency-map/skip-missing-criteria:
     post:
-      description: Доступно только admin. Исключает задания с общей рубрикой, пустые темы и связанные с ними рёбра из сохранённой карты и ставит пересборку в очередь. Исходный XLSX не меняется. Повтор без новых исключений не запускает сборку. Активные диагностики отменяются при публикации изменённого графа. Если вопросов не останется, операция отклоняется без изменения карты.
+      description: Доступно только admin. Исключает задания с общей рубрикой, пустые темы, составляющие, где осталось меньше трёх тем, и связанные с ними рёбра из сохранённой карты и ставит пересборку в очередь. Исходный XLSX не меняется. Повтор без новых исключений не запускает сборку. Активные диагностики отменяются при публикации изменённого графа. Если вопросов не останется, операция отклоняется без изменения карты.
       operationId: skipCourseGraphMissingCriteria
       parameters:
         - description: Fingerprint карты из подтверждённого snapshot; несовпадение или неопубликованная карта — 409
@@ -5375,98 +5334,6 @@ paths:
       summary: Создать общий предмет
       tags:
         - Предметы обучения
-      x-implementation: implemented
-  /learn/admin/subjects/{subject_id}/competency-map/import:
-    post:
-      description: Доступно только admin. Импорт атомарно заменяет карту указанного предмета.
-      operationId: importSubjectCompetencyMap
-      parameters:
-        - description: ID предмета
-          in: path
-          name: subject_id
-          required: true
-          schema:
-            type: string
-        - description: Ожидаемая ревизия карты
-          in: header
-          name: X-Expected-Map-Revision
-          schema:
-            type: integer
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              additionalProperties: false
-              properties:
-                file:
-                  description: Карта компетенций CSV или XLSX, до 25 МиБ
-                  format: binary
-                  type: string
-              required:
-                - file
-              type: object
-        description: Карта компетенций CSV или XLSX, до 25 МиБ
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/competencyhttp.ImportResult'
-          description: OK
-        "401":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unauthorized
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Conflict
-        "413":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Request Entity Too Large
-        "415":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unsupported Media Type
-        "422":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unprocessable Entity
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Service Unavailable
-      security:
-        - accessCookie: []
-      summary: Заменить карту предмета
-      tags:
-        - Учебная база
       x-implementation: implemented
   /learn/assessments/evaluate:
     post:
@@ -6833,7 +6700,7 @@ paths:
       x-implementation: implemented
   /learn/subjects/{subject_id}/diagnostic-outline:
     get:
-      description: Применяет отбор constituent-map-v1 к текущей карте без сохранения варианта и запуска диагностики. Возвращает только названия и ID выбранных компетенций, составляющих и ОР с ролью main/basic. Короткие display_name компетенций и составляющих готовятся через LLM gateway и кэшируются; исходные name сохранены. Вопросы, эталоны, criteria и ОС не выдаются. Пустой отбор возвращается пустым списком.
+      description: Применяет отбор constituent-map-v2 к текущей карте без сохранения варианта и запуска диагностики. Возвращает только названия и ID выбранных компетенций, составляющих и ОР с ролью main/basic. Короткие display_name компетенций и составляющих готовятся через LLM gateway и кэшируются; исходные name сохранены. Вопросы, эталоны, criteria и ОС не выдаются. Пустой отбор возвращается пустым списком.
       operationId: previewDiagnosticOutline
       parameters:
         - description: ID предмета

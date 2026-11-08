@@ -41,11 +41,12 @@ func TestConversationDoesNotSpendAttemptOrHintOrChangeScores(t *testing.T) {
 			t.Fatal("conversation made extra model calls")
 		}
 		s = f.answer(t, s, Answer{Text: "сильно"})
-		want := exam.GradeA
+		want := 2
 		if initial == "слабо" {
-			want = exam.GradeB
+			// After a rephrase help caps the top-level topic.
+			want = 1
 		}
-		if state := s.Exam.Nodes[nodeID]; state.Grade == nil || *state.Grade != want {
+		if state := s.Exam.Nodes[nodeID]; state.Score == nil || *state.Score != want {
 			t.Fatalf("answer after conversation: %+v", state)
 		}
 		if f.examiner.feedbacks[len(f.examiner.feedbacks)-1].AddressPreference != exam.AddressNeutral {
@@ -59,7 +60,7 @@ func TestNameInAnswerIsNotRecognized(t *testing.T) {
 	s, _, _ := f.service.Start(context.Background(), "student", "subject", "start")
 	id := s.Exam.Current.NodeID
 	s = f.answer(t, s, Answer{Text: "Меня зовут Кирилл, сильно"})
-	if s.PreferredName != "" || s.Exam.Nodes[id].Grade == nil || *s.Exam.Nodes[id].Grade != exam.GradeA {
+	if s.PreferredName != "" || s.Exam.Nodes[id].Score == nil || *s.Exam.Nodes[id].Score != 2 {
 		t.Fatal("name was stored or answer was not graded")
 	}
 }
@@ -69,7 +70,7 @@ func TestMixedAnswerAndAddressCorrectionStillGradesTheAnswer(t *testing.T) {
 	s, _, _ := f.service.Start(context.Background(), "student", "subject", "start")
 	id := s.Exam.Current.NodeID
 	s = f.answer(t, s, Answer{Text: "сильно; женский род"})
-	if s.AddressPreference != exam.AddressNeutral || *s.Exam.Nodes[id].Grade != exam.GradeA {
+	if s.AddressPreference != exam.AddressNeutral || *s.Exam.Nodes[id].Score != 2 {
 		t.Fatal("mixed answer lost either knowledge or preference")
 	}
 }
@@ -127,7 +128,7 @@ func TestQuestionExplanationDoesNotReduceGrade(t *testing.T) {
 		t.Fatal("explanation changed the attempt")
 	}
 	s = f.answer(t, s, Answer{Text: "сильно"})
-	if s.Exam.Nodes[id].Grade == nil || *s.Exam.Nodes[id].Grade != exam.GradeA {
+	if s.Exam.Nodes[id].Score == nil || *s.Exam.Nodes[id].Score != 2 {
 		t.Fatal("explanation reduced the grade")
 	}
 }

@@ -73,18 +73,20 @@ func Decode(data []byte) (exam.Graph, bool, error) {
 		Source  string      `json:"source"`
 		Nodes   []exam.Node `json:"nodes"`
 		Topics  []struct {
-			ID       string                `json:"id"`
-			Title    string                `json:"title"`
-			Text     string                `json:"text"`
-			Content  string                `json:"content"`
-			Question string                `json:"question"`
-			Rephrase string                `json:"rephrase"`
-			Guidance string                `json:"assessment_guidance"`
-			Variants []exam.Variant        `json:"variants"`
-			Provides []string              `json:"provides"`
-			Requires []string              `json:"requires"`
-			Sources  []exam.SourceCitation `json:"sources"`
-			Parent   string                `json:"parent_title"`
+			ID            string                `json:"id"`
+			Title         string                `json:"title"`
+			Text          string                `json:"text"`
+			Content       string                `json:"content"`
+			Question      string                `json:"question"`
+			Rephrase      string                `json:"rephrase"`
+			Guidance      string                `json:"assessment_guidance"`
+			Variants      []exam.Variant        `json:"variants"`
+			Provides      []string              `json:"provides"`
+			Requires      []string              `json:"requires"`
+			CompetencyID  string                `json:"competency_id"`
+			ConstituentID string                `json:"constituent_id"`
+			Sources       []exam.SourceCitation `json:"sources"`
+			Parent        string                `json:"parent_title"`
 		} `json:"topics"`
 		Prerequisites []struct {
 			Source string `json:"source"`
@@ -129,6 +131,8 @@ func Decode(data []byte) (exam.Graph, bool, error) {
 			}
 			if raw.Source == coursegraph.SourceMap {
 				g.Nodes[i].Competency = strings.TrimSpace(t.Parent)
+				g.Nodes[i].CompetencyID = strings.TrimSpace(t.CompetencyID)
+				g.Nodes[i].ConstituentID = strings.TrimSpace(t.ConstituentID)
 			}
 		}
 	} else {

@@ -251,11 +251,17 @@ function GraphNodeCard({
 
 function MarkRow({ mark, index }: { mark: ReportMark; index: number }) {
   const { t } = useTranslation()
+  // A ground of the score is shown as it is: it has no title or points.
+  if (mark.score === undefined && mark.met === undefined)
+    return (
+      <li className={styles.mark}>
+        <span className={styles.markBody}>
+          <Text className={styles.markReason}>{mark.reason}</Text>
+        </span>
+      </li>
+    )
   const title =
-    mark.title ||
-    (/^k[1-4]$/.test(mark.id)
-      ? t(`resultReport.criteria.${mark.id}`)
-      : t('resultReport.markFallback', { number: index + 1 }))
+    mark.title || t('resultReport.markFallback', { number: index + 1 })
   return (
     <li className={styles.mark}>
       <span className={styles.markPoints}>

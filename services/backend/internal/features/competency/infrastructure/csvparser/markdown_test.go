@@ -44,7 +44,7 @@ func TestMapFormatsPreserveAuthoredMarkdown(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(parsed.Tasks) != 1 {
-				t.Fatalf("learning_tasks = %d, want 1", len(parsed.Tasks))
+				t.Fatalf("course_map_tasks = %d, want 1", len(parsed.Tasks))
 			}
 			if options := parsed.Tasks[0].Options; len(options) != 2 || options[0] != "**Первый**; с пояснением" || options[1] != "Второй" {
 				t.Fatalf("numbered options changed: %#v", options)

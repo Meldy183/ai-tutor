@@ -198,6 +198,8 @@ func (s *Store) Accept(ctx context.Context, ownerID, id, token, key, digest stri
 	value.Answers = append(value.Answers, answer)
 	value.CurrentCompetency = transition.CurrentCompetency
 	value.CurrentTask = transition.CurrentTask
+	value.Traversal = append(json.RawMessage(nil), transition.Traversal...)
+	value.CurrentPosition = transition.CurrentPosition
 	value.Status = transition.Status
 	value.SkippedBasics = append(value.SkippedBasics, transition.SkippedBasics...)
 	value.InFlight = nil

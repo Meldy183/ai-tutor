@@ -111,7 +111,7 @@ func TestImportAudioPersistsTypedMapAndReplacesAllMapData(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id,instruction,status FROM learning_audio_assets`).Scan(&assetID, &instruction, &status); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT audio_asset_id FROM learning_tasks`).Scan(&taskAssetID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT audio_asset_id FROM course_map_tasks`).Scan(&taskAssetID); err != nil {
 		t.Fatal(err)
 	}
 	if assetID != "taskaudio_"+mustTaskID(t, pool, ctx) || taskAssetID == nil || *taskAssetID != assetID || instruction != "Объясните выбор" || status != "pending" {
@@ -126,7 +126,9 @@ func TestImportAudioPersistsTypedMapAndReplacesAllMapData(t *testing.T) {
 		t.Fatalf("replacement revision = %d, want 2", second.Revision)
 	}
 	var names []string
-	if err := pool.QueryRow(ctx, `SELECT array_agg(name ORDER BY name) FROM learning_outcomes`).Scan(&names); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT array_agg(o.name ORDER BY o.name) FROM course_map_outcomes o
+JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id
+JOIN learning_subject_state state ON state.active_revision=c.revision WHERE state.subject_id='subject:test'`).Scan(&names); err != nil {
 		t.Fatal(err)
 	}
 	if len(names) != 1 || names[0] != "ОР два" {
@@ -134,21 +136,23 @@ func TestImportAudioPersistsTypedMapAndReplacesAllMapData(t *testing.T) {
 	}
 	var imports, sourceRows, oldTasks, transcriptions int
 	for query, target := range map[string]*int{
-		`SELECT count(*) FROM learning_map_imports`:                         &imports,
-		`SELECT count(*) FROM learning_map_source_rows`:                     &sourceRows,
-		`SELECT count(*) FROM learning_tasks WHERE question='Вопрос один'`:  &oldTasks,
-		`SELECT count(*) FROM transcriptions WHERE id='transcription-keep'`: &transcriptions,
+		`SELECT count(*) FROM course_map_imports`:                            &imports,
+		`SELECT count(*) FROM learning_map_source_rows`:                      &sourceRows,
+		`SELECT count(*) FROM course_map_tasks WHERE question='Вопрос один'`: &oldTasks,
+		`SELECT count(*) FROM transcriptions WHERE id='transcription-keep'`:  &transcriptions,
 	} {
 		if err := pool.QueryRow(ctx, query).Scan(target); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if imports != 1 || sourceRows != 1 || oldTasks != 0 || transcriptions != 1 {
-		t.Fatalf("replacement cleanup/preservation imports=%d source_rows=%d old_tasks=%d transcriptions=%d", imports, sourceRows, oldTasks, transcriptions)
+	// The earlier revision stays for a published Geek graph and started
+	// sessions; the active one is the new.
+	if imports != 2 || sourceRows != 2 || oldTasks != 1 || transcriptions != 1 {
+		t.Fatalf("replacement history/preservation imports=%d source_rows=%d old_tasks=%d transcriptions=%d", imports, sourceRows, oldTasks, transcriptions)
 	}
 }
 
-func TestReplaceAllowsDeletingImportReferencedBySubjectActiveRevision(t *testing.T) {
+func TestReplaceKeepsTheImportReferencedBySubjectActiveRevision(t *testing.T) {
 	repository, ctx, userID := setupImportRepository(t)
 	first, err := repository.Replace(ctx, "subject:test", userID, importMap("до миграции"), 10, nil)
 	if err != nil {
@@ -166,7 +170,9 @@ func TestReplaceAllowsDeletingImportReferencedBySubjectActiveRevision(t *testing
 		t.Fatalf("replacement revision=%d, want %d", second.Revision, first.Revision+1)
 	}
 	var outcome string
-	if err := repository.pool.QueryRow(ctx, `SELECT name FROM learning_outcomes`).Scan(&outcome); err != nil || outcome != "ОР после миграции" {
+	if err := repository.pool.QueryRow(ctx, `SELECT o.name FROM course_map_outcomes o
+JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id
+WHERE c.revision=$1`, second.Revision).Scan(&outcome); err != nil || outcome != "ОР после миграции" {
 		t.Fatalf("active outcome=%q err=%v", outcome, err)
 	}
 	var activeRevision *int64
@@ -208,13 +214,13 @@ func TestSubjectReplacementRollbackRestoresSelectedAndOtherMaps(t *testing.T) {
 		t.Fatalf("rollback revisions: A=%d B=%d global=%d, want %d %d %d", activeA, activeB, globalRevision, firstA.Revision, firstB.Revision, firstB.Revision)
 	}
 	var imports, outcomeA, outcomeB, cancelledA int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_map_imports`).Scan(&imports); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM course_map_imports`).Scan(&imports); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_outcomes WHERE name='ОР A-сохранена'`).Scan(&outcomeA); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM course_map_outcomes WHERE name='ОР A-сохранена'`).Scan(&outcomeA); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_outcomes WHERE name='ОР B-сохранён'`).Scan(&outcomeB); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM course_map_outcomes WHERE name='ОР B-сохранён'`).Scan(&outcomeB); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_audio_assets WHERE status='cancelled'`).Scan(&cancelledA); err != nil {
@@ -295,7 +301,7 @@ func TestImportAudioRollsBackInvalidMapWithoutLosingActiveMap(t *testing.T) {
 	if err := repository.pool.QueryRow(ctx, `SELECT revision FROM learning_map_state WHERE singleton=true`).Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.pool.QueryRow(ctx, `SELECT outcome.name, task.question FROM learning_outcomes outcome JOIN learning_tasks task ON task.outcome_id=outcome.id`).Scan(&outcomeName, &question); err != nil {
+	if err := repository.pool.QueryRow(ctx, `SELECT outcome.name, task.question FROM course_map_outcomes outcome JOIN course_map_tasks task ON task.outcome_id=outcome.id`).Scan(&outcomeName, &question); err != nil {
 		t.Fatal(err)
 	}
 	var assets int
@@ -314,11 +320,11 @@ func TestTaskSourceCoordinatesCannotBePartiallyNull(t *testing.T) {
 	}
 	var outcomeID string
 	var revision int64
-	if err := repository.pool.QueryRow(ctx, `SELECT outcome_id, source_revision FROM learning_tasks LIMIT 1`).Scan(&outcomeID, &revision); err != nil {
+	if err := repository.pool.QueryRow(ctx, `SELECT outcome_id, source_revision FROM course_map_tasks LIMIT 1`).Scan(&outcomeID, &revision); err != nil {
 		t.Fatal(err)
 	}
 	_, err := repository.pool.Exec(ctx, `
-INSERT INTO learning_tasks(id,outcome_id,question,criteria,source_row,source_column,origin,
+INSERT INTO course_map_tasks(id,outcome_id,question,criteria,source_row,source_column,origin,
                   source_revision,source_row_index,source_column_index,created_at)
 VALUES ('partial-coordinate-task',$1,'invalid',NULL,2,'Задание1','authored',$2,NULL,11,11)`, outcomeID, revision)
 	if err == nil {
@@ -329,7 +335,7 @@ VALUES ('partial-coordinate-task',$1,'invalid',NULL,2,'Задание1','authore
 func mustTaskID(t *testing.T, pool *pgxpool.Pool, ctx context.Context) string {
 	t.Helper()
 	var id string
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_tasks`).Scan(&id); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_tasks`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -347,14 +353,14 @@ SELECT outcome.name, outcome.include_in_test, taxonomy.code, ald.code, outcome.i
        constituent.name, topic.code, section.code, source.cells->>10,
        task.question, task.options, task.source_row_index, task.source_column_index, source.source_line,
        codes.codes
-FROM learning_outcomes outcome
-JOIN learning_constituents constituent ON constituent.id=outcome.constituent_id
+FROM course_map_outcomes outcome
+JOIN course_map_constituents constituent ON constituent.id=outcome.constituent_id
 LEFT JOIN learning_topic_levels topic ON topic.id=constituent.topic_level_id
 LEFT JOIN learning_taxonomies taxonomy ON taxonomy.id=outcome.taxonomy_id
 LEFT JOIN learning_ald_levels ald ON ald.id=outcome.ald_level_id
 JOIN learning_constituent_sections link ON link.constituent_id=constituent.id
 JOIN learning_curriculum_sections section ON section.id=link.section_id
-JOIN learning_tasks task ON task.outcome_id=outcome.id
+JOIN course_map_tasks task ON task.outcome_id=outcome.id
 JOIN learning_map_source_rows source ON source.revision=task.source_revision AND source.row_index=task.source_row_index
 JOIN LATERAL (SELECT string_agg(curriculum.code, ',' ORDER BY curriculum.code) AS codes
               FROM learning_constituent_section_competencies mapped

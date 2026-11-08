@@ -47,7 +47,7 @@ func TestOriginalMLMapProvidesMarkdownPythonTasks(t *testing.T) {
 		}
 	}
 	if codeTasks != 2 {
-		t.Fatalf("code learning_tasks = %d, want 2", codeTasks)
+		t.Fatalf("code course_map_tasks = %d, want 2", codeTasks)
 	}
 }
 
@@ -69,7 +69,7 @@ func TestOriginalMLMapProvidesReadableFormulaTasks(t *testing.T) {
 		}
 	}
 	if standardized != 3 {
-		t.Fatalf("standardized learning_tasks = %d, want 3", standardized)
+		t.Fatalf("standardized course_map_tasks = %d, want 3", standardized)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestOriginalMLMapHasTypedMetadataAndKeepsSourceCoordinates(t *testing.T) {
 		t.Fatalf("source format = %q, want ml-map", parsed.SourceFormat)
 	}
 	if got := [4]int{len(parsed.Competencies), len(parsed.Constituents), len(parsed.Outcomes), len(parsed.Tasks)}; got != [4]int{13, 17, 101, 13} {
-		t.Fatalf("map counts = learning_competencies/learning_constituents/learning_outcomes/learning_tasks %v, want [13 17 101 13]", got)
+		t.Fatalf("map counts = course_map_competencies/course_map_constituents/course_map_outcomes/course_map_tasks %v, want [13 17 101 13]", got)
 	}
 	if parsed.UnparsedTaskCells != 41 {
 		t.Fatalf("unparsed nonempty task cells = %d, want 41", parsed.UnparsedTaskCells)
@@ -113,7 +113,7 @@ func TestOriginalMLMapHasTypedMetadataAndKeepsSourceCoordinates(t *testing.T) {
 	}
 
 	// The same RPD section has a different set of curriculum competency codes
-	// for these two learning_constituents. Keep codes on the constituent-section link.
+	// for these two course_map_constituents. Keep codes on the constituent-section link.
 	var rawPrep, featureSelection []string
 	for _, constituent := range parsed.Constituents {
 		switch {
@@ -260,7 +260,7 @@ func TestMLMapReadsTheDiagnosticSheetOfMap4(t *testing.T) {
 	if len(parsed.Constituents) != 3 || len(parsed.Outcomes) != 5 || len(parsed.Tasks) != 1 {
 		t.Fatalf("map = %+v", parsed)
 	}
-	// The level of the competency holds for its learning_constituents without one.
+	// The level of the competency holds for its course_map_constituents without one.
 	for i, want := range []string{"intermediate", "intermediate", "advanced"} {
 		if got := parsed.Constituents[i].TopicLevelCode; got != want {
 			t.Fatalf("constituent %d level = %q, want %q", i, got, want)

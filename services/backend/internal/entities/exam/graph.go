@@ -32,11 +32,16 @@ type Node struct {
 	// the first variant.
 	Variants []Variant `json:"variants,omitempty"`
 	// Competency groups the topics of a competency map; other graphs have none.
-	Competency string `json:"competency,omitempty"`
+	Competency    string `json:"competency,omitempty"`
+	CompetencyID  string `json:"competency_id,omitempty"`
+	ConstituentID string `json:"constituent_id,omitempty"`
 }
 
 // Variant is one task of a topic with what grading it needs.
 type Variant struct {
+	// TaskID is the exam task of the course map the variant comes from;
+	// empty for a graph of materials.
+	TaskID   string `json:"task_id,omitempty"`
 	Question string `json:"question"`
 	// Rephrase is the prepared rephrase of Question; empty until prepared.
 	Rephrase           string `json:"rephrase,omitempty"`
@@ -246,13 +251,19 @@ func (g Graph) competencyShares(topics map[string]float64) []float64 {
 	return out
 }
 
-func (g Graph) TopLevel() []string {
-	required := map[string]bool{}
+// required indexes the topics that are a prerequisite of another topic.
+func (g Graph) required() map[string]bool {
+	required := make(map[string]bool, len(g.Nodes))
 	for _, n := range g.Nodes {
 		for _, p := range n.Prerequisites {
 			required[p] = true
 		}
 	}
+	return required
+}
+
+func (g Graph) TopLevel() []string {
+	required := g.required()
 	top := []string{}
 	for _, n := range g.Nodes {
 		if !required[n.ID] {

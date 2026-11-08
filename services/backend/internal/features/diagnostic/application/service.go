@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"math/rand/v2"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,7 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audio"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audioasset"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/diagnostic"
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/exam"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/transcription"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/variant"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
@@ -28,6 +30,8 @@ type Service struct {
 	grader         Grader
 	ids            IDGenerator
 	now            func() time.Time
+	// rng shuffles constituents of equal coverage; tests may fix it.
+	rng func() *rand.Rand
 }
 
 func (s *Service) WithAudioReader(reader audioasset.MetadataReader) *Service {
@@ -49,7 +53,15 @@ func New(store Store, variants VariantReader, voice Voice, grader Grader, ids ID
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: store, variants: variants, voice: voice, grader: grader, ids: ids, now: now}
+	return &Service{store: store, variants: variants, voice: voice, grader: grader, ids: ids, now: now,
+		rng: func() *rand.Rand { return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())) }}
+}
+
+// WithOrder fixes the order of constituents of equal coverage; nil keeps the
+// variant order.
+func (s *Service) WithOrder(rng func() *rand.Rand) *Service {
+	s.rng = rng
+	return s
 }
 
 func (s *Service) Start(ctx context.Context, ownerID, variantID, key string) (diagnostic.Progress, bool, error) {
@@ -80,9 +92,15 @@ func (s *Service) Start(ctx context.Context, ownerID, variantID, key string) (di
 	if err != nil {
 		return diagnostic.Progress{}, false, err
 	}
+	first, err := newTraversal(snapshot, s.rng())
+	if err != nil {
+		return diagnostic.Progress{}, false, err
+	}
 	session := diagnostic.Session{
 		ID: id, OwnerID: ownerID, VariantID: variantID, Status: diagnostic.StatusActive,
+		CurrentCompetency: first.CurrentCompetency, CurrentTask: first.CurrentTask, CurrentPosition: first.CurrentPosition,
 		Variant:            snapshot,
+		Traversal:          first.Traversal,
 		AcceptedRequests:   make(map[string]diagnostic.AcceptedRequest),
 		StartRequestDigest: requestDigest,
 	}
@@ -264,9 +282,9 @@ func (s *Service) answerRequest(ctx context.Context, ownerID, sessionID, taskID,
 		if err != nil {
 			return diagnostic.Progress{}, err
 		}
-		maxScore := 1
+		maxScore := exam.NestedMaxScore
 		if current.Role == "main" {
-			maxScore = 3
+			maxScore = exam.RootMaxScore
 		}
 		answer := diagnostic.Answer{
 			Skipped:       true,
@@ -278,7 +296,11 @@ func (s *Service) answerRequest(ctx context.Context, ownerID, sessionID, taskID,
 			Feedback:         "Вопрос пропущен. Ответ оценён в 0 баллов.",
 			CreatedAt:        s.now().Unix(),
 		}
-		return s.store.Accept(ctx, ownerID, sessionID, token, key, fingerprint, answer, nextTransition(value, answer))
+		transition, err := advance(value, answer)
+		if err != nil {
+			return diagnostic.Progress{}, err
+		}
+		return s.store.Accept(ctx, ownerID, sessionID, token, key, fingerprint, answer, transition)
 	}
 	if transcriptionID == "" {
 		var transcribed transcription.Transcription
@@ -322,7 +344,10 @@ func (s *Service) answerRequest(ctx context.Context, ownerID, sessionID, taskID,
 		CriterionResults: criteria, Feedback: evaluation.Feedback,
 		CreatedAt: s.now().Unix(),
 	}
-	transition := nextTransition(value, answer)
+	transition, err := advance(value, answer)
+	if err != nil {
+		return diagnostic.Progress{}, err
+	}
 	return s.store.Accept(ctx, ownerID, sessionID, token, key, fingerprint, answer, transition)
 }
 
@@ -341,11 +366,14 @@ func (s *Service) Result(ctx context.Context, ownerID, sessionID string) (diagno
 		SessionID: value.ID, Status: value.Status, VariantID: value.VariantID,
 		MapRevision: value.Variant.MapRevision, IncludedCompetencyCount: value.Variant.IncludedCompetencyCount,
 		SkippedCompetencies: append([]diagnostic.SkippedCompetency{}, value.Variant.SkippedCompetencies...), CompletedTasks: len(value.Answers),
-		TotalTasks: value.Variant.TaskCount(), MaximumScore: value.Variant.IncludedCompetencyCount * 3,
-		Answers: append([]diagnostic.Answer(nil), value.Answers...), UntestedBasics: append([]diagnostic.TaskSnapshot{}, value.SkippedBasics...),
+		TotalTasks: value.Variant.TaskCount(),
+		Answers:    append([]diagnostic.Answer(nil), value.Answers...), UntestedBasics: append([]diagnostic.TaskSnapshot{}, value.SkippedBasics...),
 	}
 	for _, answer := range value.Answers {
+		// The raw points are those of the asked tasks on their scales; the
+		// course result normalizes them by constituent and competency.
 		result.DiagnosticScore += answer.Score
+		result.MaximumScore += answer.GraderMaxScore
 	}
 	return result, nil
 }
@@ -355,19 +383,19 @@ func (s *Service) ResultForTraining(ctx context.Context, ownerID, sessionID stri
 }
 
 func validateEvaluation(value assessment.Evaluation, role string) error {
-	maxScore := 3
+	maxScore := exam.RootMaxScore
 	if role == "basic" {
-		maxScore = 1
+		maxScore = exam.NestedMaxScore
 	} else if role != "main" {
 		return fault.New(fault.Upstream, "ASSESSMENT_INVALID_RESPONSE", "Задание содержит неизвестную роль.")
 	}
-	if value.MaxScore != maxScore || value.Score < 0 || value.Score > maxScore || (role == "main" && value.Score == 2) {
+	if value.MaxScore != maxScore || value.Score < 0 || value.Score > maxScore {
 		return fault.New(fault.Upstream, "ASSESSMENT_INVALID_RESPONSE", "Грейдер вернул оценку вне диапазона роли задания.")
 	}
 	want := "incorrect"
 	if value.Score == maxScore {
 		want = "correct"
-	} else if maxScore == 3 && value.Score == 1 {
+	} else if value.Score > 0 {
 		want = "partial"
 	}
 	if value.Verdict != want || len(value.CriterionResults) == 0 {
@@ -382,29 +410,6 @@ func validateEvaluation(value assessment.Evaluation, role string) error {
 		return fault.New(fault.Upstream, "ASSESSMENT_INVALID_RESPONSE", "Грейдер вернул некорректный фидбэк.")
 	}
 	return nil
-}
-
-func nextTransition(value diagnostic.Session, answer diagnostic.Answer) diagnostic.Transition {
-	transition := diagnostic.Transition{
-		CurrentCompetency: value.CurrentCompetency,
-		CurrentTask:       value.CurrentTask,
-		Status:            value.Status,
-	}
-	competency := value.Variant.Competencies[value.CurrentCompetency]
-	if answer.Role == "main" && answer.Verdict == "correct" {
-		transition.SkippedBasics = append(transition.SkippedBasics, competency.Tasks[value.CurrentTask+1:]...)
-		transition.CurrentCompetency++
-		transition.CurrentTask = 0
-	} else if value.CurrentTask+1 < len(competency.Tasks) {
-		transition.CurrentTask++
-	} else {
-		transition.CurrentCompetency++
-		transition.CurrentTask = 0
-	}
-	if transition.CurrentCompetency >= len(value.Variant.Competencies) {
-		transition.Status = diagnostic.StatusCompleted
-	}
-	return transition
 }
 
 func snapshotVariant(value variant.Variant) (diagnostic.VariantSnapshot, error) {

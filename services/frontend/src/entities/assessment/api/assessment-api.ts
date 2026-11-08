@@ -59,11 +59,10 @@ export async function evaluateAnswer(
     typeof data.score !== 'number' ||
     !Number.isInteger(data.score) ||
     data.score < 0 ||
-    data.score > 3 ||
+    data.score > 2 ||
     !('max_score' in data) ||
-    (data.max_score !== 1 && data.max_score !== 2 && data.max_score !== 3) ||
+    (data.max_score !== 1 && data.max_score !== 2) ||
     data.score > data.max_score ||
-    (data.max_score === 3 && data.score === 2) ||
     !('verdict' in data) ||
     !isVerdict(data.verdict) ||
     data.verdict !==

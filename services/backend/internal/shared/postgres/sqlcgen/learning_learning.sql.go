@@ -132,9 +132,9 @@ SELECT competency.id AS competency_id, competency.name AS competency_name,
        COALESCE(outcome.importance, 0)::smallint AS importance,
        COALESCE(outcome.educational_content, '')::text AS educational_content,
        outcome.theory_minutes, outcome.practice_minutes
-FROM learning_outcomes AS outcome
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+FROM course_map_outcomes AS outcome
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 WHERE competency.id = ANY($1::text[])
 ORDER BY competency.id,

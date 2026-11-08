@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,13 +12,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/application"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
 	shared "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres"
+	db "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres/sqlcgen"
 )
 
 // repositoryPool has course s with material m: OCR done, cleaning pending.
@@ -174,10 +178,10 @@ func TestAMapIsBuiltWithoutMaterialsAndReplacesTheGraph(t *testing.T) {
 	ctx, now := context.Background(), time.Unix(100, 0)
 	graph := json.RawMessage(`{"version":"competency-map-v1","source":"competency_map","topics":[{"id":"a","title":"ОР"}]}`)
 	// The materials of s are still being cleaned: a map does not wait for them.
-	if queued, err := repo.SaveMap(ctx, "s", "map.xlsx", "Карта", graph, now); err != nil || !queued {
+	if queued, err := saveTestMap(ctx, repo, "s", "map.xlsx", "Карта", graph, now); err != nil || !queued {
 		t.Fatalf("save map: %v %v", queued, err)
 	}
-	if queued, err := repo.SaveMap(ctx, "s", "other.xlsx", "Карта", graph, now); err != nil || queued {
+	if queued, err := saveTestMap(ctx, repo, "s", "other.xlsx", "Карта", graph, now); err != nil || queued {
 		t.Fatalf("a second map during the build: %v %v", queued, err)
 	}
 	job, err := repo.Claim(ctx, "w1", now)
@@ -214,7 +218,7 @@ func TestConfirmedMapReplacementChecksPublicationAndConcurrentImport(t *testing.
 			graphA := json.RawMessage(`{"topics":[{"id":"a"}]}`)
 			graphB := json.RawMessage(`{"topics":[{"id":"b"}]}`)
 			excluded := json.RawMessage(`{"topics":[{"id":"kept"}],"assessment_skipped":1}`)
-			if ok, err := repo.SaveMap(ctx, "s", "a.xlsx", "sheet", graphA, now); err != nil || !ok {
+			if ok, err := saveTestMap(ctx, repo, "s", "a.xlsx", "sheet", graphA, now); err != nil || !ok {
 				t.Fatalf("save A: %v %v", ok, err)
 			}
 			job, err := repo.Claim(ctx, "a", now)
@@ -230,7 +234,7 @@ func TestConfirmedMapReplacementChecksPublicationAndConcurrentImport(t *testing.
 			}
 			confirmed := snapshot.Map.Fingerprint
 			if scenario == "stale failed replacement" || scenario == "published replacement" {
-				if ok, err := repo.SaveMap(ctx, "s", "b.xlsx", "sheet", graphB, now); err != nil || !ok {
+				if ok, err := saveTestMap(ctx, repo, "s", "b.xlsx", "sheet", graphB, now); err != nil || !ok {
 					t.Fatalf("save B: %v %v", ok, err)
 				}
 				job, err = repo.Claim(ctx, "b", now)
@@ -328,12 +332,12 @@ func TestFailedFilteredMapCanBePreparedAgainWithoutRestoringExcludedTasks(t *tes
 	repo := New(pool)
 	ctx := context.Background()
 	fallback, _ := json.Marshal(coursegraph.DefaultAssessmentGuidance)
-	graphA := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","title":"Тема","variants":[{"question":"skip","content":"","assessment_guidance":` + string(fallback) + `},{"question":"keep","content":"Эталон","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
-	if ok, err := repo.SaveMap(ctx, "s", "map.xlsx", "Карта", graphA, time.Now()); err != nil || !ok {
+	graphA := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","title":"Тема","variants":[{"question":"skip","content":"","assessment_guidance":` + string(fallback) + `},{"question":"keep","content":"Эталон","assessment_guidance":"author"}]},{"id":"b","title":"Тема Б","variants":[{"question":"b","content":"Эталон","assessment_guidance":"author"}]},{"id":"c","title":"Тема В","variants":[{"question":"c","content":"Эталон","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
+	if ok, err := saveTestMap(ctx, repo, "s", "map.xlsx", "Карта", graphA, time.Now()); err != nil || !ok {
 		t.Fatalf("save A: %v %v", ok, err)
 	}
 	questions := &retryQuestions{}
-	worker := application.New(repo, nil, nil, nil, nil, nil)
+	worker := application.New(importlessRepo{repo}, nil, nil, nil, nil, nil)
 	worker.SetQuestions(questions)
 	if ok, err := worker.ProcessOne(ctx); err != nil || !ok {
 		t.Fatalf("publish A: %v %v", ok, err)
@@ -380,7 +384,7 @@ func TestFailedFilteredMapCanBePreparedAgainWithoutRestoringExcludedTasks(t *tes
 	if err := json.Unmarshal(published.Graph, &shape); err != nil {
 		t.Fatal(err)
 	}
-	if shape.Skipped != 1 || len(shape.Topics) != 1 || len(shape.Topics[0].Variants) != 1 || shape.Topics[0].Variants[0].Question != "keep" {
+	if shape.Skipped != 1 || len(shape.Topics) != 3 || len(shape.Topics[0].Variants) != 1 || shape.Topics[0].Variants[0].Question != "keep" {
 		t.Fatalf("excluded task restored: %s", published.Graph)
 	}
 	if ok, err := repo.RetryMap(ctx, "s", published.Map.Fingerprint, time.Now()); err != nil || ok {
@@ -392,7 +396,7 @@ func TestMapRetryRejectsImportThatCommitsWhileWaitingForMapLock(t *testing.T) {
 	pool := repositoryPool(t)
 	repo := New(pool)
 	ctx := context.Background()
-	if ok, err := repo.SaveMap(ctx, "s", "a.xlsx", "Карта", json.RawMessage(`{"topics":[]}`), time.Now()); err != nil || !ok {
+	if ok, err := saveTestMap(ctx, repo, "s", "a.xlsx", "Карта", json.RawMessage(`{"topics":[]}`), time.Now()); err != nil || !ok {
 		t.Fatalf("save A: %v %v", ok, err)
 	}
 	exec(t, pool, `UPDATE course_graph_jobs SET status='failed',attempts=3,error_message='failure'`)
@@ -433,4 +437,34 @@ func TestMapRetryRejectsImportThatCommitsWhileWaitingForMapLock(t *testing.T) {
 	if err != nil || b.Status != "failed" || b.Attempts != 3 || b.ErrorMessage != "failure" || b.Map.Fingerprint != "b" {
 		t.Fatalf("retry changed state: %+v %v", b, err)
 	}
+}
+
+// saveTestMap stores a map of no map revision and queues its build, as an
+// import does for the Geek sheet.
+func saveTestMap(ctx context.Context, repo *Repository, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) (bool, error) {
+	tx, err := repo.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	sum := sha256.Sum256(graph)
+	q := db.New(tx)
+	if err := q.SaveCourseGraphMap(ctx, db.SaveCourseGraphMapParams{SubjectID: subjectID, Filename: filename, Sheet: sheet,
+		Fingerprint: hex.EncodeToString(sum[:]), Graph: graph, Now: now.Unix()}); err != nil {
+		return false, err
+	}
+	if _, err := q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+// importlessRepo is the repository of a worker that only prepares saved maps.
+type importlessRepo struct{ *Repository }
+
+func (importlessRepo) SaveMapWithLearning(context.Context, string, string, string, json.RawMessage, time.Time, string, int64, competencymap.Map) (bool, int64, error) {
+	return false, 0, errors.New("imports are not part of this test")
 }

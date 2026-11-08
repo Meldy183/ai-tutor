@@ -53,27 +53,18 @@ export type TopicResult = {
   nodeId: string
   title: string
   status: TopicStatus
-  grade: Grade | null
   topLevel: boolean
   // Direct prerequisites of the topic (node ids) in the diagnostic graph.
   requires: string[]
   assisted: boolean
-  // Points of the topic; null when it has none, such as a credited topic.
+  // Points of the topic on its scale: 0–2 at the top level, 0–1 for a
+  // prerequisite; null when it has none, such as a credited topic.
   score: number | null
-  maxScore: number | null
-  marks: TopicMark[]
+  maxScore: number
+  // The grader's grounds for the score.
+  reasons: string[]
   // What Geek said when the topic closed; empty when unknown.
   reply: string
-}
-
-// One rubric item or one of К1–К4 (id k1…k4).
-export type TopicMark = {
-  id: string
-  title: string
-  score: number
-  maxScore: number
-  reason: string
-  quote: string
 }
 
 export type DiagnosticResult = {
@@ -85,7 +76,7 @@ export type DiagnosticResult = {
   maxScore: number
   topics: TopicResult[]
   gaps: DiagnosticGap[]
-  // Topics passed on C: credited, but answered only in part.
+  // Topics passed below their maximum: mastered, but answered only in part.
   weakSpots: DiagnosticGap[]
 }
 

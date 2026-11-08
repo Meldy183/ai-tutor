@@ -128,10 +128,10 @@ func TestGatewayAsksWithComplexityAndJSONFormat(t *testing.T) {
 }
 
 func TestGatewayEvaluatesAndRetriesAnInvalidAnswerOnce(t *testing.T) {
-	f := &fakeGateway{answers: []string{"не JSON", "```json\n{\"verdict\":\"answered\",\"answer_complete\":true,\"criteria\":{\"k1\":2,\"k2\":1,\"k3\":0,\"k4\":1},\"evidence_lines\":[2]}\n```"}}
+	f := &fakeGateway{answers: []string{"не JSON", "```json\n{\"verdict\":\"answered\",\"score\":1,\"reasons\":[\" нет обоснования \",\"\"],\"evidence_lines\":[2]}\n```"}}
 	g := serve(t, f, time.Second)
-	e, err := g.Evaluate(context.Background(), application.EvaluationRequest{Kind: exam.KindQuestion, Node: node, Dialogue: turns})
-	if err != nil || e.Verdict != exam.VerdictAnswered || e.Criteria != (exam.Criteria{K1: 2, K2: 1, K4: 1}) || e.Evidence[0] != 2 {
+	e, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: node, Dialogue: turns})
+	if err != nil || e.Verdict != exam.VerdictAnswered || e.Score != 1 || !slices.Equal(e.Reasons, []string{"нет обоснования"}) || e.Evidence[0] != 2 {
 		t.Fatalf("evaluation = %+v, %v", e, err)
 	}
 	if len(f.requests) != 2 || f.requests[0].GetComplexity() != llmgatewayv1.Complexity_COMPLEXITY_LOW || !f.requests[0].GetUrgent() {
@@ -152,7 +152,7 @@ func TestGatewayKeepsARejectedAnswerOutOfInfoLogsAndErrors(t *testing.T) {
 	answer := `{"verdict":"` + invented + `"}`
 	g := serve(t, &fakeGateway{answers: []string{answer, answer}}, time.Second)
 	core, logs := observer.New(zap.InfoLevel)
-	_, err := g.Evaluate(logx.With(context.Background(), zap.New(core)), application.EvaluationRequest{Kind: exam.KindQuestion, Node: node, Dialogue: turns})
+	_, err := g.Evaluate(logx.With(context.Background(), zap.New(core)), application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: node, Dialogue: turns})
 	if err == nil {
 		t.Fatal("an invalid verdict was accepted")
 	}
@@ -171,10 +171,10 @@ func TestGatewayKeepsARejectedAnswerOutOfInfoLogsAndErrors(t *testing.T) {
 func TestGatewayEvidenceAcceptsOnlyIntegerLineNumbers(t *testing.T) {
 	for _, evidence := range []string{`[2]`, `["2"]`, `["2.5"]`, `[2.5]`, `["wrong"]`, `[null]`, `["999999999999999999999999999999"]`} {
 		t.Run(evidence, func(t *testing.T) {
-			answer := `{"verdict":"answered","answer_complete":true,"criteria":{"k1":2,"k2":2,"k3":null,"k4":null},"evidence_lines":` + evidence + `}`
+			answer := `{"verdict":"answered","score":2,"reasons":["основание"],"evidence_lines":` + evidence + `}`
 			f := &fakeGateway{answers: []string{answer, answer}}
 			g := serve(t, f, time.Second)
-			got, err := g.Evaluate(context.Background(), application.EvaluationRequest{Kind: exam.KindQuestion, Node: node, Dialogue: turns})
+			got, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: node, Dialogue: turns})
 			valid := evidence == `[2]` || evidence == `["2"]`
 			if valid {
 				if err != nil || len(got.Evidence) != 1 || got.Evidence[0] != 2 {
@@ -189,8 +189,8 @@ func TestGatewayEvidenceAcceptsOnlyIntegerLineNumbers(t *testing.T) {
 
 func TestGatewayReturnsTheReplyAndLeavesTheRecapOutOfTheDialogue(t *testing.T) {
 	f := &fakeGateway{answers: []string{
-		`{"verdict":"answered","answer_complete":true,"criteria":{"k1":1,"k2":1,"k3":0,"k4":0},"evidence_lines":[2],"reaction":" Близко. ","explanation":"Близко. На самом деле f = g + h."}`,
-		`{"verdict":"answered","answer_complete":true,"criteria":{"k1":1,"k2":1,"k3":0,"k4":0},"evidence_lines":[2]}`,
+		`{"verdict":"answered","score":1,"reasons":["основание"],"evidence_lines":[2],"reaction":" Близко. ","explanation":"Близко. На самом деле f = g + h."}`,
+		`{"verdict":"answered","score":1,"reasons":["основание"],"evidence_lines":[2]}`,
 	}}
 	g := serve(t, f, time.Second)
 	recap := "Разбор прошлой темы.\n\n"
@@ -198,7 +198,7 @@ func TestGatewayReturnsTheReplyAndLeavesTheRecapOutOfTheDialogue(t *testing.T) {
 		{Line: 1, Speaker: exam.SpeakerGeek, Text: recap + "Вопрос?", Recap: recap},
 		{Line: 2, Speaker: exam.SpeakerStudent, Text: "Ответ."},
 	}
-	request := application.EvaluationRequest{Kind: exam.KindQuestion, Node: node, Prerequisites: []string{"Эвристика"}, Dialogue: dialogue}
+	request := application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: node, Prerequisites: []string{"Эвристика"}, Dialogue: dialogue}
 	a, err := g.Evaluate(context.Background(), request)
 	if err != nil || a.Verdict != exam.VerdictAnswered {
 		t.Fatalf("assessment = %+v, %v", a, err)
@@ -217,20 +217,18 @@ func TestEvaluationGradesTheQuestionNotAllOutcomes(t *testing.T) {
 	// A correct answer to the selected concept must not be compared to every outcome.
 	n := node
 	n.Outcomes = []string{"объяснять, из чего складывается оценка f(n)"}
-	prompt := evaluationPrompt(application.EvaluationRequest{Kind: exam.KindQuestion, Node: n, Dialogue: turns})
+	prompt := evaluationPrompt(application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: n, Dialogue: turns})
 	for _, want := range []string{
 		"на заданный вопрос",
-		"К3/К4 — null без материала",
+		"по шкале темы: 0, 1 или 2",
 		"verdict определи по последней реплике",
 		"Не приписывай студенту знания",
 		"Принимай разумные примеры вне теории",
 		"Не принимай выдуманные факты",
-		"покрыты ли все явно запрошенные части",
+		"все явно запрошенные части покрыты",
 		"которых не спрашивали",
-		"Пропуск части фиксируй в answer_complete, не штрафуй повторно правильные знания",
 		"в том числе ошибочная, неполная или тавтологичная",
 		"не требуй конкретных примеров",
-		"выбирай более высокий",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("evaluation prompt lacks %q", want)
@@ -247,8 +245,8 @@ func TestEvaluationGradesTheQuestionNotAllOutcomes(t *testing.T) {
 func TestEvaluationIncludesOnlyExplicitInstructorGuidance(t *testing.T) {
 	n := node
 	n.AssessmentGuidance = "Оцени объяснение по смыслу, без совпадения с текстом темы."
-	p := evaluationPrompt(application.EvaluationRequest{Node: n, Kind: exam.KindQuestion})
-	if !strings.Contains(p, n.AssessmentGuidance) || !strings.Contains(p, "Отдельное правило преподавателя") {
+	p := evaluationPrompt(application.EvaluationRequest{MaxScore: 2, Node: n, Kind: exam.KindQuestion})
+	if !strings.Contains(p, n.AssessmentGuidance) || !strings.Contains(p, "Критерии преподавателя") {
 		t.Fatal("evaluation lost the instructor's scope")
 	}
 	if strings.Contains(questionPrompt(application.QuestionRequest{Node: n}), n.AssessmentGuidance) {
@@ -269,8 +267,8 @@ func TestOralExamPromptsAskForReasoningAndStayNeutral(t *testing.T) {
 	if p := questionPrompt(application.QuestionRequest{Kind: exam.KindFollowup, Node: node, Dialogue: turns}); strings.Contains(p, "измени условия задачи") {
 		t.Error("follow-up prompt still asks to change the conditions of a problem")
 	}
-	p := evaluationPrompt(application.EvaluationRequest{Kind: exam.KindQuestion, Node: node, Dialogue: turns})
-	for _, want := range []string{"не требуй вычислений, формул, кода, схем", "ошибки распознавания", "К3 — возражения и контрпримеры"} {
+	p := evaluationPrompt(application.EvaluationRequest{MaxScore: 2, Kind: exam.KindQuestion, Node: node, Dialogue: turns})
+	for _, want := range []string{"не требуй вычислений, формул, кода, схем", "ошибки распознавания", "Ложное обоснование и круговое объяснение"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("evaluation prompt lacks %q", want)
 		}
@@ -283,7 +281,7 @@ func TestOralExamPromptsAskForReasoningAndStayNeutral(t *testing.T) {
 func TestExamSpeechDoesNotUseStudentName(t *testing.T) {
 	const name = "Андрей"
 	q := application.QuestionRequest{PreferredName: name, Kind: exam.KindFollowup, Node: node}
-	f := application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{PreferredName: name, Node: node}}
+	f := application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{MaxScore: 2, PreferredName: name, Node: node}}
 	for _, prompt := range []string{questionPrompt(q), feedbackPrompt(f)} {
 		if strings.Contains(prompt, name) || strings.Contains(prompt, "Студент попросил обращаться к нему по имени") {
 			t.Fatalf("stored student name leaked into speech instructions: %s", prompt)
@@ -297,7 +295,7 @@ func TestExamSpeechDoesNotUseStudentName(t *testing.T) {
 	fake := &fakeGateway{answers: []string{`{"kind":"repeat","text":"Повтори ответ"}`}}
 	g := serve(t, fake, time.Second)
 	a := application.Assessment{}
-	if err := g.clarifySupport(context.Background(), application.EvaluationRequest{PreferredName: name, Dialogue: turns}, &a); err != nil {
+	if err := g.clarifySupport(context.Background(), application.EvaluationRequest{MaxScore: 2, PreferredName: name, Dialogue: turns}, &a); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(fake.requests[0].Messages[1].GetContent(), name) {
@@ -308,7 +306,7 @@ func TestExamSpeechDoesNotUseStudentName(t *testing.T) {
 func TestGatewayFeedbackOnTheLowPool(t *testing.T) {
 	f := &fakeGateway{answers: []string{`{"text": "A* складывает g и h."}`}}
 	g := serve(t, f, time.Second)
-	text, err := g.Feedback(context.Background(), application.FeedbackRequest{Closed: true, EvaluationRequest: application.EvaluationRequest{Node: node, Prerequisites: []string{"Эвристика"}, Dialogue: turns}})
+	text, err := g.Feedback(context.Background(), application.FeedbackRequest{Closed: true, EvaluationRequest: application.EvaluationRequest{MaxScore: 2, Node: node, Prerequisites: []string{"Эвристика"}, Dialogue: turns}})
 	if err != nil || text != "A* складывает g и h." {
 		t.Fatalf("explanation = %q, %v", text, err)
 	}
@@ -336,12 +334,14 @@ func TestGatewayRejectsEmptyOrExcessiveFeedbackAndRetries(t *testing.T) {
 }
 
 func TestFeedbackUsesDifferentInstructionsForActualDecisions(t *testing.T) {
-	a := exam.GradeA
+	full, partial := 2, 1
 	for _, tc := range []struct {
 		r    application.FeedbackRequest
 		want string
 	}{
-		{application.FeedbackRequest{Closed: true, Result: exam.NodeState{Grade: &a}}, "не ищи недостатков"},
+		{application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{MaxScore: 2}, Closed: true, Result: exam.NodeState{Score: &full}}, "не ищи недостатков"},
+		{application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{MaxScore: 2}, Closed: true, Result: exam.NodeState{Score: &partial}}, "сам восполни существенный пробел"},
+		{application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{MaxScore: 2}, Closed: true, Result: exam.NodeState{Score: &full, Assisted: true}}, "сам восполни существенный пробел"},
 		{application.FeedbackRequest{Closed: true}, "сам восполни существенный пробел"},
 	} {
 		tc.r.Node = node
@@ -388,14 +388,10 @@ func TestHintTransitionAlsoAppliesToFollowups(t *testing.T) {
 func TestFollowupTransitionDoesNotCallTheModelOrOverpraiseWeakKnowledge(t *testing.T) {
 	f := &fakeGateway{}
 	g := serve(t, f, time.Second)
-	for _, k := range []exam.Criteria{{K1: 2, K2: 2}, {K1: 1, K2: 1}} {
-		text, err := g.Feedback(context.Background(), application.FeedbackRequest{Next: exam.KindFollowup, Result: exam.NodeState{Criteria: &k}})
-		if err != nil || f.count() != 0 || strings.Contains(text, "?") {
-			t.Fatalf("transition=%q, %v", text, err)
-		}
-		if slices.Contains(soundFollowupTransitions, text) != (k.K1 == 2 && k.K2 == 2) {
-			t.Fatalf("unsupported praise: %q", text)
-		}
+	partial := 1
+	text, err := g.Feedback(context.Background(), application.FeedbackRequest{Next: exam.KindFollowup, Result: exam.NodeState{Score: &partial}})
+	if err != nil || f.count() != 0 || strings.Contains(text, "?") || !slices.Contains(partialFollowupTransitions, text) {
+		t.Fatalf("transition=%q, %v", text, err)
 	}
 }
 
@@ -428,76 +424,59 @@ func TestExaminerPromptsLeaveOutOutcomes(t *testing.T) {
 			t.Fatalf("question prompt has the wrong source: %s", p)
 		}
 	}
-	if p := feedbackPrompt(application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{Node: n, Dialogue: turns}}); strings.Contains(p, n.Outcomes[0]) {
+	if p := feedbackPrompt(application.FeedbackRequest{EvaluationRequest: application.EvaluationRequest{MaxScore: 2, Node: n, Dialogue: turns}}); strings.Contains(p, n.Outcomes[0]) {
 		t.Fatal("explanation contains outcomes")
 	}
 }
 
-func TestGatewayDistinguishesUntestedSkillsFromZeroAndMissingFields(t *testing.T) {
+func TestGatewayAcceptsOnlyAScoreOnTheTopicScale(t *testing.T) {
 	for _, tc := range []struct {
-		criteria string
+		score    string
+		maximum  int
 		valid    bool
-		scope    exam.UnassessedCriteria
+		expected int
 	}{
-		{`{"k1":2,"k2":2,"k3":null,"k4":null}`, true, exam.UnassessedCriteria{K3: true, K4: true}},
-		{`{"k1":2,"k2":2,"k3":0,"k4":null}`, true, exam.UnassessedCriteria{K4: true}},
-		{`{"k1":2,"k2":2,"k4":null}`, false, exam.UnassessedCriteria{}},
-		{`{"k1":null,"k2":2,"k3":null,"k4":null}`, false, exam.UnassessedCriteria{}},
-		{`{"k1":2,"k2":2,"k3":1.5,"k4":null}`, false, exam.UnassessedCriteria{}},
-		{`{"k1":2,"k2":2,"k3":3,"k4":null}`, false, exam.UnassessedCriteria{}},
+		{`2`, 2, true, 2},
+		{`0`, 2, true, 0},
+		{`1`, 1, true, 1},
+		{`2`, 1, false, 0},
+		{`-1`, 2, false, 0},
+		{`1.5`, 2, false, 0},
+		{`null`, 2, false, 0},
+		{`"2"`, 2, false, 0},
 	} {
-		t.Run(tc.criteria, func(t *testing.T) {
-			f := &fakeGateway{answers: []string{`{"verdict":"answered","answer_complete":true,"criteria":` + tc.criteria + `,"evidence_lines":[2]}`}}
+		t.Run(fmt.Sprintf("%s of %d", tc.score, tc.maximum), func(t *testing.T) {
+			f := &fakeGateway{answers: []string{`{"verdict":"answered","score":` + tc.score + `,"reasons":[],"evidence_lines":[2]}`}}
 			g := serve(t, f, time.Second)
-			a, err := g.Evaluate(context.Background(), application.EvaluationRequest{Node: node, Dialogue: turns})
+			a, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: tc.maximum, Node: node, Dialogue: turns})
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v got %v", tc.valid, err)
 			}
-			if tc.valid && a.Unassessed != tc.scope {
-				t.Fatalf("scope = %+v", a.Unassessed)
+			if tc.valid && a.Score != tc.expected {
+				t.Fatalf("score = %d", a.Score)
 			}
 			if !tc.valid && f.count() != 2 {
-				t.Fatal("invalid criteria were not retried")
+				t.Fatal("an invalid score was not retried")
 			}
 		})
 	}
 }
 
-func TestGatewayRequiresExplicitAnswerCompleteness(t *testing.T) {
-	for _, tc := range []struct {
-		field    string
-		valid    bool
-		complete bool
-	}{
-		{``, false, false},
-		{`,"answer_complete":null`, false, false},
-		{`,"answer_complete":"false"`, false, false},
-		{`,"answer_complete":false`, true, false},
-		{`,"answer_complete":true`, true, true},
-	} {
-		t.Run(tc.field, func(t *testing.T) {
-			content := `{"verdict":"answered"` + tc.field + `,"criteria":{"k1":2,"k2":2,"k3":null,"k4":null},"evidence_lines":[2]}`
-			f := &fakeGateway{answers: []string{content}}
-			g := serve(t, f, time.Second)
-			a, err := g.Evaluate(context.Background(), application.EvaluationRequest{Node: node, Dialogue: turns})
-			if (err == nil) != tc.valid {
-				t.Fatalf("valid=%v got %v", tc.valid, err)
-			}
-			if tc.valid && (a.AnswerComplete == nil || *a.AnswerComplete != tc.complete) {
-				t.Fatalf("coverage = %v", a.AnswerComplete)
-			}
-		})
+func TestEvaluationPromptStatesTheScaleOfThePrerequisite(t *testing.T) {
+	prompt := evaluationPrompt(application.EvaluationRequest{MaxScore: 1, Kind: exam.KindQuestion, Node: node, Dialogue: turns})
+	if !strings.Contains(prompt, "по шкале темы: 0 или 1") || strings.Contains(prompt, "0, 1 или 2") {
+		t.Fatalf("prompt = %s", prompt)
 	}
 }
 
 func TestGatewayDoesNotReuseFieldsOfARejectedAnswer(t *testing.T) {
 	f := &fakeGateway{answers: []string{
-		`{"verdict":"answered","answer_complete":true,"criteria":{"k1":2,"k2":2,"k3":2,"k4":3},"evidence_lines":[2]}`,
-		`{"verdict":"answered","answer_complete":true,"criteria":{"k4":2},"evidence_lines":[2]}`,
+		`{"verdict":"answered","score":2,"reasons":["основание"],"evidence_lines":[2]}`,
+		`{"verdict":"answered","reasons":["основание"],"evidence_lines":[2]}`,
 	}}
 	g := serve(t, f, time.Second)
-	if e, err := g.Evaluate(context.Background(), application.EvaluationRequest{Node: node, Dialogue: turns}); err == nil {
-		t.Fatalf("the second answer lacks K1-K3 but was accepted as %+v", e)
+	if e, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: 1, Node: node, Dialogue: turns}); err == nil {
+		t.Fatalf("the second answer lacks a score but was accepted as %+v", e)
 	}
 	if len(f.requests) != 2 {
 		t.Fatalf("requests = %d", len(f.requests))

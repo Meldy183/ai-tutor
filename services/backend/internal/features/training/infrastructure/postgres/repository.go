@@ -97,40 +97,11 @@ func (r *Repository) Practice(ctx context.Context, subjectID string) (int64, []t
 	if err != nil {
 		return 0, nil, err
 	}
-	tasks := []training.Task{}
-	for _, row := range rows {
-		if row.TaskID == nil {
-			continue
-		}
-		var t variant.TaskProfile
-		if err = json.Unmarshal(row.ProfileJson, &t); err != nil {
-			return 0, nil, err
-		}
-		// Free practice covers only outcomes marked TRUE for the test.
-		if t.Outcome.IncludeInTest == nil || !*t.Outcome.IncludeInTest {
-			continue
-		}
-		if strings.TrimSpace(t.Question) == "" || t.VoiceInstruction == nil || strings.TrimSpace(*t.VoiceInstruction) == "" || t.ReferenceAnswer == nil || strings.TrimSpace(*t.ReferenceAnswer) == "" {
-			continue
-		}
-		task := training.Task{SourceTaskID: t.ID, CompetencyID: t.Competency.ID, CompetencyName: t.Competency.Name, ConstituentID: t.Constituent.ID, ConstituentName: t.Constituent.Name, OutcomeID: t.Outcome.ID, OutcomeName: t.Outcome.Name, Question: t.Question, Options: t.Options, VoiceInstruction: *t.VoiceInstruction, ReferenceAnswer: *t.ReferenceAnswer, AudioAssetID: t.AudioAssetID}
-		if t.Criteria != nil {
-			task.Criteria = *t.Criteria
-		}
-		if t.Outcome.TaxonomyCode != nil {
-			task.TaxonomyCode = *t.Outcome.TaxonomyCode
-		}
-		if t.Outcome.ALDLevelCode != nil {
-			task.ALDLevelCode = *t.Outcome.ALDLevelCode
-		}
-		if t.Outcome.EducationalContent != nil {
-			task.EducationalContent = *t.Outcome.EducationalContent
-		}
-		if t.Outcome.Importance != nil {
-			task.Importance = *t.Outcome.Importance
-		}
-		tasks = append(tasks, task)
+	tasks, err := trainingTasks(rows, true)
+	if err != nil {
+		return 0, nil, err
 	}
+
 	if err = tx.Commit(ctx); err != nil {
 		return 0, nil, err
 	}
@@ -443,3 +414,50 @@ func (r *Repository) History(ctx context.Context, owner, id string, before int64
 }
 
 var _ application.Repository = (*Repository)(nil)
+
+// Tasks reads the immutable diagnostic bank of the completed session's revision.
+func (r *Repository) Tasks(ctx context.Context, revision int64) ([]training.Task, error) {
+	rows, err := r.q.LearningReadVariantCandidates(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	return trainingTasks(rows, false)
+}
+
+func trainingTasks(rows []db.LearningReadVariantCandidatesRow, onlyIncluded bool) ([]training.Task, error) {
+	tasks := []training.Task{}
+	for _, row := range rows {
+		if row.TaskID == nil {
+			continue
+		}
+		var t variant.TaskProfile
+		if err := json.Unmarshal(row.ProfileJson, &t); err != nil {
+			return nil, err
+		}
+		// Free practice covers only outcomes marked TRUE for the test.
+		if onlyIncluded && (t.Outcome.IncludeInTest == nil || !*t.Outcome.IncludeInTest) {
+			continue
+		}
+		if strings.TrimSpace(t.Question) == "" || t.VoiceInstruction == nil || strings.TrimSpace(*t.VoiceInstruction) == "" || t.ReferenceAnswer == nil || strings.TrimSpace(*t.ReferenceAnswer) == "" {
+			continue
+		}
+		task := training.Task{SourceTaskID: t.ID, CompetencyID: t.Competency.ID, CompetencyName: t.Competency.Name, ConstituentID: t.Constituent.ID, ConstituentName: t.Constituent.Name, OutcomeID: t.Outcome.ID, OutcomeName: t.Outcome.Name, Question: t.Question, Options: t.Options, VoiceInstruction: *t.VoiceInstruction, ReferenceAnswer: *t.ReferenceAnswer, AudioAssetID: t.AudioAssetID}
+		if t.Criteria != nil {
+			task.Criteria = *t.Criteria
+		}
+		if t.Outcome.TaxonomyCode != nil {
+			task.TaxonomyCode = *t.Outcome.TaxonomyCode
+		}
+		if t.Outcome.ALDLevelCode != nil {
+			task.ALDLevelCode = *t.Outcome.ALDLevelCode
+		}
+		if t.Outcome.EducationalContent != nil {
+			task.EducationalContent = *t.Outcome.EducationalContent
+		}
+		if t.Outcome.Importance != nil {
+			task.Importance = *t.Outcome.Importance
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}

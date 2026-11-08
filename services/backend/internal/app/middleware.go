@@ -18,8 +18,6 @@ func (a *App) middleware(next http.Handler) http.Handler {
 			// JSON may encode one supplementary Unicode scalar as a surrogate
 			// pair (12 wire bytes), so size for the worst valid 100,000-rune body.
 			limit = 12*100000 + 64*1024
-		} else if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/learn/admin/subjects/") && strings.HasSuffix(r.URL.Path, "/competency-map/import") {
-			limit = a.cfg.MaxUploadBytes + 64*1024
 		} else if strings.HasPrefix(r.URL.Path, "/exam/admin/subjects/") && strings.HasSuffix(r.URL.Path, "/materials") {
 			limit = 2500 * 1024 * 1024
 		} else if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/exam/admin/subjects/") && strings.HasSuffix(r.URL.Path, "/raw") {

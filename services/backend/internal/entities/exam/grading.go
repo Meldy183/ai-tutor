@@ -6,56 +6,7 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/stats"
 )
 
-// Criteria are the four exam criteria, each 0 (not shown), 1 (partly) or 2 (fully):
-// K1 correctness and terminology, K2 logic and justification, K3 objections and
-// counterexamples, K4 changed conditions and limits of the answer.
-type Criteria struct {
-	K1 int `json:"k1"`
-	K2 int `json:"k2"`
-	K3 int `json:"k3"`
-	K4 int `json:"k4"`
-}
-
-// UnassessedCriteria distinguishes an untested skill from a failed test (0).
-// K1 and K2 are always assessed; K3 and K4 may be outside the question's scope.
-type UnassessedCriteria struct {
-	K3 bool `json:"k3,omitempty"`
-	K4 bool `json:"k4,omitempty"`
-}
-
-func (u UnassessedCriteria) values(c Criteria) []int {
-	v := []int{c.K1, c.K2}
-	if !u.K3 {
-		v = append(v, c.K3)
-	}
-	if !u.K4 {
-		v = append(v, c.K4)
-	}
-	return v
-}
-
-// Complete reports whether every assessed criterion is fully demonstrated.
-func (u UnassessedCriteria) Complete(c Criteria) bool {
-	for _, v := range u.values(c) {
-		if v != 2 {
-			return false
-		}
-	}
-	return true
-}
-
-// Valid reports whether every criterion is 0, 1 or 2.
-func (c Criteria) Valid() bool {
-	for _, v := range c.values() {
-		if v < 0 || v > 2 {
-			return false
-		}
-	}
-	return true
-}
-
-func (c Criteria) values() [4]int { return [4]int{c.K1, c.K2, c.K3, c.K4} }
-
+// Grade is the letter of the course result; topics are scored in points.
 type Grade string
 
 const (
@@ -64,34 +15,6 @@ const (
 	GradeC Grade = "C"
 	GradeD Grade = "D"
 )
-
-// TopicGrade applies the README table to the assessed criteria. An assisted
-// answer is capped at B; help never raises identical observed scores.
-func TopicGrade(c Criteria, assisted bool, unassessed UnassessedCriteria) Grade {
-	v := unassessed.values(c)
-	all := func(min int) bool {
-		for _, x := range v {
-			if x < min {
-				return false
-			}
-		}
-		return true
-	}
-	anyTwo := false
-	for _, x := range v {
-		anyTwo = anyTwo || x == 2
-	}
-	grade := GradeD
-	switch {
-	case !assisted && all(2):
-		grade = GradeA
-	case c.K1 == 2 && c.K2 == 2 && all(1):
-		grade = GradeB
-	case c.K1 >= 1 && (c.K2 >= 1 || anyTwo):
-		grade = GradeC
-	}
-	return grade
-}
 
 // CompetencyPoints is what a competency weighs in the overall score, in the exam
 // and the learning diagnostic alike, however many constituents and tasks it took
@@ -128,4 +51,34 @@ func CourseGrade(percent *int) *Grade {
 		grade = GradeC
 	}
 	return &grade
+}
+
+// The topic scale (decision of 08.11.2026): a top-level topic scores 0, 1 or
+// 2, any prerequisite at any depth 0 or 1. Help caps a top-level topic at 1.
+const (
+	RootMaxScore    = 2
+	NestedMaxScore  = 1
+	AssistedRootCap = 1
+)
+
+// MaxScore is the maximum of a topic: RootMaxScore at the top level,
+// NestedMaxScore below it.
+func (g Graph) MaxScore(id string) int { return maxScore(g.required(), id) }
+
+// maxScore shares one index of required topics, so an operation over many
+// topics does not rebuild it for each of them.
+func maxScore(required map[string]bool, id string) int {
+	if required[id] {
+		return NestedMaxScore
+	}
+	return RootMaxScore
+}
+
+// capScore keeps a score within the topic's scale and applies the cap of help.
+func capScore(score, maximum int, assisted bool) int {
+	score = max(0, min(score, maximum))
+	if assisted && maximum == RootMaxScore {
+		score = min(score, AssistedRootCap)
+	}
+	return score
 }

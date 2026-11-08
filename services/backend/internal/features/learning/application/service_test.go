@@ -15,12 +15,12 @@ import (
 func minutes(v int) *int { return &v }
 
 func TestBuildItemsFitsImportantOutcomesIntoHours(t *testing.T) {
-	learning_outcomes := []learning.Outcome{
+	course_map_outcomes := []learning.Outcome{
 		{OutcomeID: "a", Importance: 2, TheoryMinutes: minutes(30), PracticeMinutes: minutes(30)},
 		{OutcomeID: "b", Importance: 5, TheoryMinutes: minutes(20), PracticeMinutes: minutes(20)},
 		{OutcomeID: "c", Importance: 4}, // defaults: 15 + 15
 	}
-	items, detail := BuildItems(learning_outcomes, 1)
+	items, detail := BuildItems(course_map_outcomes, 1)
 	// One hour: the most important outcomes first (b 40 min, c 30 min does not fit).
 	if !items[1].InPlan || items[0].InPlan || items[2].InPlan || detail != learning.DetailBrief {
 		t.Fatalf("1 hour: %+v %s", items, detail)
@@ -29,11 +29,11 @@ func TestBuildItemsFitsImportantOutcomesIntoHours(t *testing.T) {
 		t.Fatalf("defaults: %+v", items[2])
 	}
 	// Three hours (180 min) hold all 130 minutes.
-	items, detail = BuildItems(learning_outcomes, 3)
+	items, detail = BuildItems(course_map_outcomes, 3)
 	if !items[0].InPlan || !items[1].InPlan || !items[2].InPlan || detail != learning.DetailStandard {
 		t.Fatalf("3 hours: %+v %s", items, detail)
 	}
-	if _, detail = BuildItems(learning_outcomes, 10); detail != learning.DetailDeep {
+	if _, detail = BuildItems(course_map_outcomes, 10); detail != learning.DetailDeep {
 		t.Fatalf("10 hours: %s", detail)
 	}
 	// At least one outcome is planned even when it alone exceeds the hours.
@@ -44,13 +44,13 @@ func TestBuildItemsFitsImportantOutcomesIntoHours(t *testing.T) {
 }
 
 type memoryRepo struct {
-	plan              learning.Plan
-	messages          []learning.Message
-	learning_outcomes []learning.Outcome
+	plan                learning.Plan
+	messages            []learning.Message
+	course_map_outcomes []learning.Outcome
 }
 
 func (r *memoryRepo) Outcomes(context.Context, []string) ([]learning.Outcome, error) {
-	return r.learning_outcomes, nil
+	return r.course_map_outcomes, nil
 }
 func (r *memoryRepo) ByDiagnostic(context.Context, string, string) (learning.Plan, error) {
 	if r.plan.ID == "" {
@@ -139,14 +139,14 @@ func newService(t *testing.T, main int) (*Service, *memoryRepo, *voice, *teacher
 	session := diagnostic.Session{ID: "d", Status: diagnostic.StatusCompleted,
 		Variant: diagnostic.VariantSnapshot{SubjectID: "s", SubjectNameSnapshot: "ML", Competencies: []diagnostic.Competency{{ID: "c1", Name: "К1"}, {ID: "c2", Name: "К2"}}},
 		Answers: []diagnostic.Answer{
-			{CompetencyID: "c1", Role: "main", Score: main, GraderMaxScore: 3, Task: diagnostic.TaskSnapshot{OutcomeID: "o1"}},
+			{CompetencyID: "c1", Role: "main", Score: main, GraderMaxScore: 2, Task: diagnostic.TaskSnapshot{OutcomeID: "o1"}},
 			{CompetencyID: "c2", Role: "main", Score: 2, GraderMaxScore: 2},
 		},
 	}
 	if main < 2 {
 		session.Answers = append(session.Answers, diagnostic.Answer{CompetencyID: "c1", Role: "basic", Score: 0, GraderMaxScore: 1, Task: diagnostic.TaskSnapshot{OutcomeID: "o2"}})
 	}
-	repo := &memoryRepo{learning_outcomes: []learning.Outcome{
+	repo := &memoryRepo{course_map_outcomes: []learning.Outcome{
 		{CompetencyID: "c1", CompetencyName: "К1", OutcomeID: "o1", Importance: 3},
 		{CompetencyID: "c1", CompetencyName: "К1", OutcomeID: "o2", Importance: 5},
 	}}
@@ -164,7 +164,7 @@ func TestLearningPlanTeachesEachOutcomeUntilMastered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Only the competency with a mistake; its learning_outcomes in map order.
+	// Only the competency with a mistake; its course_map_outcomes in map order.
 	if len(plan.Items) != 2 || plan.Current != 0 || plan.Items[0].Status != learning.ItemCurrent || plan.Items[1].Status != learning.ItemPending {
 		t.Fatalf("plan: %+v", plan)
 	}

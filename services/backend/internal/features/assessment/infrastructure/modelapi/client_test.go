@@ -18,7 +18,7 @@ func testContext() application.GradingContext {
 	return application.GradingContext{
 		TaskID:           "variant-task-1",
 		Role:             "main",
-		MaxScore:         3,
+		MaxScore:         2,
 		Question:         "Вопрос",
 		Options:          []string{"Классификация"},
 		VoiceInstruction: "Назовите тип",
@@ -47,19 +47,19 @@ func TestGradeSendsTrustedScaleCriteriaMaterialsAndParsesStructuredResult(t *tes
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"score\":3,\"verdict\":\"correct\",\"criterion_results\":[{\"key\":\"task_type\",\"satisfied\":true,\"explanation\":\"Названа классификация.\"},{\"key\":\"justification\",\"satisfied\":true,\"explanation\":\"Указаны два класса.\"}],\"feedback\":\"Верно. Оба критерия выполнены. Закрепите различия типов задач.\"}"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"score\":2,\"verdict\":\"correct\",\"criterion_results\":[{\"key\":\"task_type\",\"satisfied\":true,\"explanation\":\"Названа классификация.\"},{\"key\":\"justification\",\"satisfied\":true,\"explanation\":\"Указаны два класса.\"}],\"feedback\":\"Верно. Оба критерия выполнены. Закрепите различия типов задач.\"}"},"finish_reason":"stop"}]}`))
 	}))
 	defer server.Close()
 
 	result, err := New(server.Client(), server.URL+"/v1", "gpt-oss-120b", time.Second).Grade(context.Background(), testContext(), "классификация, потому что два класса")
-	if err != nil || result.Score != 3 || result.Verdict != "correct" || len(result.CriterionResults) != 2 || result.Feedback == "" {
+	if err != nil || result.Score != 2 || result.Verdict != "correct" || len(result.CriterionResults) != 2 || result.Feedback == "" {
 		t.Fatalf("unexpected model result: %#v, %v", result, err)
 	}
 	if request.Model != "gpt-oss-120b" || request.Temperature == nil || *request.Temperature != 0 || request.ReasoningEffort != "medium" || request.MaxTokens != 4096 {
 		t.Fatalf("unexpected model configuration: %+v", request)
 	}
 	content := request.Messages[1].Content
-	for _, required := range []string{`"role":"main"`, `"max_score":3`, `"student_answer":"классификация, потому что два класса"`, `"criteria":[`, `"mandatory":true`, `"material_context":`, `"reference_answer":"Классификация: два класса."`} {
+	for _, required := range []string{`"role":"main"`, `"max_score":2`, `"student_answer":"классификация, потому что два класса"`, `"criteria":[`, `"mandatory":true`, `"material_context":`, `"reference_answer":"Классификация: два класса."`} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("model request omitted %s: %s", required, content)
 		}

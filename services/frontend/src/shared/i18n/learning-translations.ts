@@ -57,20 +57,49 @@ export const learningTranslations = {
     loadError: 'Не удалось загрузить текущую карту.',
     file: 'Файл карты компетенций',
     dropTitle: 'Загрузите карту компетенций',
-    dropHint: 'CSV или XLSX до 25 МиБ — нажмите или перетащите файл',
+    dropHint: 'Двухлистовая XLSX до 25 МиБ — нажмите или перетащите файл',
     dropReplace: 'нажмите, чтобы выбрать другой',
     fileSize: '{{size}} МиБ',
     submit: 'Подтвердить',
-    submitEdit: 'Подтвердить изменения',
+    submitUnified: 'Подготовить для обучения и Geek',
     cancelEdit: 'Отменить',
     uploading: 'Загружаем и проверяем карту…',
-    invalidType: 'Выберите файл CSV или XLSX.',
+    checkingWorkbook: 'Проверяем число листов…',
+    preparingUnified: 'Карта загружена. Подготавливаем граф Geek…',
+    pendingMap:
+      'Карта «{{filename}}» сохранена. Подготавливаем отдельную версию Geek.',
+    pendingMapHelp:
+      'Учебная часть уже активна. Geek станет доступен после подготовки графа.',
+    pendingMapPreviousActive:
+      'В Geek продолжает работать опубликованная версия до успешной подготовки новой.',
+    failedMap:
+      'Не удалось подготовить граф по карте «{{filename}}». {{message}}',
+    failedMapPreviousActive:
+      'Новая версия карты уже активна в обучении; опубликованный граф Geek не изменился.',
+    publishingMap: 'Обновляем данные обучения для версии {{revision}}…',
+    learningVersionReady: 'Обучение: версия {{revision}} доступна',
+    learningVersionUpdating: 'Обучение: загружаем версию {{revision}}…',
+    geekVersionReady: 'Geek: версия {{revision}} опубликована',
+    geekVersionPreparing: 'Geek: готовится версия {{revision}}',
+    geekVersionPreparingWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; готовится версия {{revision}}',
+    geekVersionFailed: 'Geek: версия {{revision}} не опубликована',
+    geekVersionFailedWithPrevious:
+      'Geek: версия {{publishedRevision}} работает; версия {{revision}} не опубликована',
+    unifiedBuildFailed:
+      'Не удалось подготовить граф. Откройте карту курса в разделе Geek, чтобы повторить подготовку.',
+    openGeekMap: 'Открыть подготовку в Geek',
+    invalidType: 'Выберите книгу XLSX.',
+    pairedRequired:
+      'Нужна книга с двумя листами: первый — для экзамена Geek, второй — для учебной диагностики.',
     tooLarge: 'Размер файла не должен превышать 25 МиБ.',
     emptyFile: 'Выбранный файл пуст.',
     revisionChanged: 'Карта изменилась. Подтвердите замену ещё раз.',
     confirmTitle: 'Перезаписать карту?',
     confirmHelp:
       'Текущая карта и задания предмета будут заменены. Это действие нельзя отменить.',
+    confirmHelpUnified:
+      'Новая карта сразу заменит учебную версию. Geek продолжит работать по прежнему графу, пока не будет готов новый.',
     cancel: 'Отмена',
     confirm: 'Перезаписать',
     stats: {

@@ -78,8 +78,10 @@ type Transcriptions interface {
 }
 
 type QuestionRequest struct {
-	PreferredName     string
-	Rubric            *exam.RubricResult
+	PreferredName string
+	// Reasons are the grader's grounds for the score observed so far; a
+	// followup asks only about what they leave missing.
+	Reasons           []string
 	AddressPreference exam.AddressPreference
 	Hint              bool          // requested context, not a ready-made answer
 	Kind              exam.TurnKind // question, followup or rephrase
@@ -98,6 +100,9 @@ type EvaluationRequest struct {
 	HintUsed             bool          // distinguish the student's reasoning from supplied context
 	Kind                 exam.TurnKind // the step that was answered
 	Node                 exam.Node
+	// MaxScore is the topic's scale: exam.RootMaxScore at the top level,
+	// exam.NestedMaxScore below it.
+	MaxScore int
 	// Prerequisites are the titles of the topic's direct and transitive
 	// prerequisites that are still unchecked. Geek may ask them later, so the
 	// explanation must not give them away.

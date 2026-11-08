@@ -7,11 +7,6 @@ export type CompetencyMapSummary = {
   taskCount: number
 }
 
-export type CompetencyMapImport = CompetencyMapSummary & {
-  unparsedTaskCellCount: number
-  warnings: { row: number; columnIndex: number; column: string; code: string }[]
-}
-
 export type CompetencyMapOutline = {
   competencies: {
     id: string

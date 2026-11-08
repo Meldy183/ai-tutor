@@ -21,7 +21,7 @@ function status(topic: TopicResult): ReportStatus {
   }
   // Without points only the status is known; an answer that is not a gap is
   // at least partial, whatever its points.
-  if (!topic.score || topic.maxScore === null) return 'partial'
+  if (!topic.score) return 'partial'
   return statusByPoints(topic.score, topic.maxScore)
 }
 
@@ -42,7 +42,13 @@ export function toResultReport(result: DiagnosticResult): ResultReportData {
       skipped: false,
       requires: topic.requires,
       main: topic.topLevel,
-      marks: topic.marks,
+      // The grounds of the score have no points of their own.
+      marks: topic.reasons.map((reason, index) => ({
+        id: `reason-${index}`,
+        title: '',
+        reason,
+        quote: '',
+      })),
       note: topic.reply,
     })),
   }

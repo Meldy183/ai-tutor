@@ -4,7 +4,7 @@ import "strings"
 
 // OutcomeFinding describes only an accepted answer. FullStudy is inferred only
 // from a main and two distinct basics in the same known constituent, all zero.
-// Mixed-constituent variants and legacy snapshots never broaden that inference.
+// This describes observed evidence; unasked outcomes can still enter learning.
 type OutcomeFinding struct {
 	Answer    Answer
 	Mastered  bool
@@ -16,6 +16,7 @@ func HasLearningGaps(answers []Answer) bool {
 }
 
 func OutcomeFindings(answers []Answer) []OutcomeFinding {
+	open := OpenConstituents(answers)
 	type evidence struct {
 		main    string
 		basics  map[string]bool
@@ -54,14 +55,9 @@ func OutcomeFindings(answers []Answer) []OutcomeFinding {
 			continue
 		}
 		seen[key] = true
-		// A full main answer scores 3 now and 2 in sessions graded before
-		// the 0/1/3 scale; 2 is no longer a valid new main score.
-		full := 2
-		if a.Role == "basic" {
-			full = 1
-		}
+		full := AnswerMaximum(a)
 		g := groups[a.CompetencyID+"\x00"+a.Task.ConstituentID]
-		findings = append(findings, OutcomeFinding{Answer: a, Mastered: a.Score >= full && !a.Skipped,
+		findings = append(findings, OutcomeFinding{Answer: a, Mastered: !open[ConstituentKey(a.CompetencyID, a.Task.ConstituentID)] || a.Score >= full && !a.Skipped,
 			FullStudy: a.Task.ConstituentID != "" && strings.TrimSpace(a.Task.ConstituentName) != "" && g.main != "" && !g.basics[g.main] && len(g.basics) == 2 && g.allZero})
 	}
 	return findings

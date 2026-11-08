@@ -87,12 +87,12 @@ func seedCurrentTaskAudio(t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 		args  []any
 	}{
 		{"INSERT INTO users(id,email,password_hash,created_at) VALUES ('audio-owner','audio-owner@example.test','test',1)", nil},
-		{"INSERT INTO learning_map_imports(revision,subject_id,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers) VALUES (1,'subject:test',1,'audio-owner',1,1,1,1,'paired','[]')", nil},
-		{"INSERT INTO learning_competencies(id,name,revision) VALUES ('audio-competency','Audio',1)", nil},
-		{"INSERT INTO learning_constituents(id,competency_id,name) VALUES ('audio-constituent','audio-competency','Audio')", nil},
-		{"INSERT INTO learning_outcomes(id,constituent_id,name) VALUES ('audio-outcome','audio-constituent','Audio')", nil},
+		{"INSERT INTO course_map_imports(revision,subject_id,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers) VALUES (1,'subject:test',1,'audio-owner',1,1,1,1,'paired','[]')", nil},
+		{"INSERT INTO course_map_competencies(id,name,revision) VALUES ('audio-competency','Audio',1)", nil},
+		{"INSERT INTO course_map_constituents(id,competency_id,name) VALUES ('audio-constituent','audio-competency','Audio')", nil},
+		{"INSERT INTO course_map_outcomes(id,constituent_id,name) VALUES ('audio-outcome','audio-constituent','Audio')", nil},
 		{"INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ($1,'Speak answer',$2)", []any{assetID, "task-audio/v1/" + assetID + ".wav"}},
-		{"INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ($1,'audio-outcome','Question','Speak answer',1,$2)", []any{taskID, assetID}},
+		{"INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ($1,'audio-outcome','Question','Speak answer',1,$2)", []any{taskID, assetID}},
 		{"INSERT INTO learning_subject_state(subject_id,active_revision) VALUES ('subject:test',1)", nil},
 	}
 	for _, statement := range statements {
@@ -141,7 +141,7 @@ func TestPriorityMovesAheadWithoutInterruptingClaimsAndSurvivesRestart(t *testin
 		if _, err := pool.Exec(ctx, "INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ($1,'Speak answer',$1)", "asset-"+id); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, "INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ($1,'audio-outcome','Q','Speak answer',1,$2)", "task-"+id, "asset-"+id); err != nil {
+		if _, err := pool.Exec(ctx, "INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ($1,'audio-outcome','Q','Speak answer',1,$2)", "task-"+id, "asset-"+id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -180,7 +180,7 @@ func TestPriorityMovesAheadWithoutInterruptingClaimsAndSurvivesRestart(t *testin
 func TestRequestedWaitingRecordingMovesAheadOfANewerPriority(t *testing.T) {
 	repository, pool, ctx := setupAudioRepository(t)
 	seedCurrentTaskAudio(t, pool, ctx, "asset-a", "task-a")
-	if _, err := pool.Exec(ctx, "INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ('asset-b','Speak answer','b'); INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ('task-b','audio-outcome','Q','Speak answer',1,'asset-b')"); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ('asset-b','Speak answer','b'); INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ('task-b','audio-outcome','Q','Speak answer',1,'asset-b')"); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"asset-a", "asset-b", "asset-a"} {
@@ -200,7 +200,7 @@ func TestRequestedWaitingRecordingMovesAheadOfANewerPriority(t *testing.T) {
 func TestPriorityDoesNotInterruptWhenWorkerHasFreeCapacity(t *testing.T) {
 	repository, pool, ctx := setupAudioRepository(t)
 	seedCurrentTaskAudio(t, pool, ctx, "asset-a", "task-a")
-	if _, err := pool.Exec(ctx, "INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ('asset-wanted','Speak answer','wanted'); INSERT INTO learning_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ('task-wanted','audio-outcome','Q','Speak answer',1,'asset-wanted')"); err != nil {
+	if _, err := pool.Exec(ctx, "INSERT INTO learning_audio_assets(id,instruction,object_key) VALUES ('asset-wanted','Speak answer','wanted'); INSERT INTO course_map_tasks(id,outcome_id,question,voice_instruction,created_at,audio_asset_id) VALUES ('task-wanted','audio-outcome','Q','Speak answer',1,'asset-wanted')"); err != nil {
 		t.Fatal(err)
 	}
 	first, ok, err := repository.Claim(ctx, "worker-a", time.Minute)
@@ -487,9 +487,9 @@ func TestAudioQueueUsesEachSubjectsActiveRevisionAcrossImportAndRepair(t *testin
 	assets := map[string][]string{}
 	taskByAsset := map[string]string{}
 	rows, err := pool.Query(ctx, `SELECT subject.id, task.id, task.audio_asset_id
-FROM learning_tasks task JOIN learning_outcomes outcome ON outcome.id=task.outcome_id
-JOIN learning_constituents constituent ON constituent.id=outcome.constituent_id
-JOIN learning_competencies competency ON competency.id=constituent.competency_id
+FROM course_map_tasks task JOIN course_map_outcomes outcome ON outcome.id=task.outcome_id
+JOIN course_map_constituents constituent ON constituent.id=outcome.constituent_id
+JOIN course_map_competencies competency ON competency.id=constituent.competency_id
 JOIN subjects subject ON true
 JOIN learning_subject_state state ON state.subject_id=subject.id AND state.active_revision=competency.revision
 ORDER BY subject.id, task.id`)
@@ -521,7 +521,7 @@ ORDER BY subject.id, task.id`)
 			t.Fatalf("claim across active subjects: ok=%v err=%v", ok, err)
 		}
 		var subjectID string
-		if err := pool.QueryRow(ctx, `SELECT subject.id FROM learning_tasks task JOIN learning_outcomes outcome ON outcome.id=task.outcome_id JOIN learning_constituents constituent ON constituent.id=outcome.constituent_id JOIN learning_competencies competency ON competency.id=constituent.competency_id JOIN subjects subject ON true
+		if err := pool.QueryRow(ctx, `SELECT subject.id FROM course_map_tasks task JOIN course_map_outcomes outcome ON outcome.id=task.outcome_id JOIN course_map_constituents constituent ON constituent.id=outcome.constituent_id JOIN course_map_competencies competency ON competency.id=constituent.competency_id JOIN subjects subject ON true
 JOIN learning_subject_state state ON state.subject_id=subject.id AND state.active_revision=competency.revision WHERE task.audio_asset_id=$1`, claim.Asset.ID).Scan(&subjectID); err != nil {
 			t.Fatal(err)
 		}
@@ -566,7 +566,7 @@ JOIN learning_subject_state state ON state.subject_id=subject.id AND state.activ
 		t.Fatalf("stale processing A asset cancel: cancelled=%v err=%v", cancelled, err)
 	}
 	// Ignore newly imported A work so the next claim proves expired B work is recovered.
-	if _, err := pool.Exec(ctx, `UPDATE learning_audio_assets asset SET status='cancelled' FROM learning_tasks task WHERE task.audio_asset_id=asset.id AND task.id IN (SELECT task.id FROM learning_tasks task JOIN learning_outcomes outcome ON outcome.id=task.outcome_id JOIN learning_constituents constituent ON constituent.id=outcome.constituent_id JOIN learning_competencies competency ON competency.id=constituent.competency_id JOIN subjects subject ON subject.id=$1 JOIN learning_subject_state state ON state.subject_id=subject.id AND state.active_revision=competency.revision)`, "subject:test"); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE learning_audio_assets asset SET status='cancelled' FROM course_map_tasks task WHERE task.audio_asset_id=asset.id AND task.id IN (SELECT task.id FROM course_map_tasks task JOIN course_map_outcomes outcome ON outcome.id=task.outcome_id JOIN course_map_constituents constituent ON constituent.id=outcome.constituent_id JOIN course_map_competencies competency ON competency.id=constituent.competency_id JOIN subjects subject ON subject.id=$1 JOIN learning_subject_state state ON state.subject_id=subject.id AND state.active_revision=competency.revision)`, "subject:test"); err != nil {
 		t.Fatal(err)
 	}
 	recoveredB, ok, err := repository.Claim(ctx, "recovered-b", time.Minute)

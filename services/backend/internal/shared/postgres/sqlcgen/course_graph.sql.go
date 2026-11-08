@@ -48,6 +48,53 @@ func (q *Queries) ClaimCourseGraph(ctx context.Context, arg ClaimCourseGraphPara
 	return i, err
 }
 
+const courseMapOutcomesOfRevision = `-- name: CourseMapOutcomesOfRevision :many
+SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent_id,
+       competency.name AS competency_name, constituent.name AS constituent_name, outcome.name AS outcome_name
+FROM course_map_outcomes outcome
+JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies competency ON competency.id = constituent.competency_id
+WHERE competency.revision = $1 AND competency.source_mode = 'exam'
+`
+
+type CourseMapOutcomesOfRevisionRow struct {
+	ID              string
+	CompetencyID    string
+	ConstituentID   string
+	CompetencyName  string
+	ConstituentName string
+	OutcomeName     string
+}
+
+// The outcomes of a map revision with their place in the structure, so the
+// Geek sheet's topics resolve to the same outcomes.
+func (q *Queries) CourseMapOutcomesOfRevision(ctx context.Context, revision int64) ([]CourseMapOutcomesOfRevisionRow, error) {
+	rows, err := q.db.Query(ctx, courseMapOutcomesOfRevision, revision)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CourseMapOutcomesOfRevisionRow{}
+	for rows.Next() {
+		var i CourseMapOutcomesOfRevisionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CompetencyID,
+			&i.ConstituentID,
+			&i.CompetencyName,
+			&i.ConstituentName,
+			&i.OutcomeName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const failCourseGraph = `-- name: FailCourseGraph :exec
 UPDATE course_graph_jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,
     available_at=$1::bigint+30*attempts, lease_until=0, error_message=$2,updated_at=$1
@@ -73,42 +120,94 @@ func (q *Queries) FailCourseGraph(ctx context.Context, arg FailCourseGraphParams
 
 const finishCourseGraph = `-- name: FinishCourseGraph :one
 WITH accepted AS (
-    UPDATE course_graph_jobs j SET status='ready', lease_until=0, error_message='', updated_at=$2
-    WHERE j.subject_id=$3 AND j.lease_token=$4 AND j.status='processing'
-      AND j.fingerprint=$5
-      AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=$3
-                 AND i.source=j.source AND i.fingerprint=$5)
+    UPDATE course_graph_jobs j SET status='ready', lease_until=0, error_message='', updated_at=$1
+    WHERE j.subject_id=$2 AND j.lease_token=$3 AND j.status='processing'
+      AND j.fingerprint=$4
+      AND EXISTS(SELECT 1 FROM course_graph_job_inputs i WHERE i.subject_id=$2
+                 AND i.source=j.source AND i.fingerprint=$4)
     RETURNING j.subject_id, j.source, j.fingerprint
-)
-INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at)
-SELECT accepted.subject_id,accepted.source,accepted.fingerprint,$1::jsonb,$2::bigint FROM accepted
-ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,updated_at=excluded.updated_at
+), published AS (
+INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at,map_revision)
+SELECT accepted.subject_id,accepted.source,accepted.fingerprint,$5::jsonb,$1::bigint,
+       CASE WHEN accepted.source='competency_map' THEN (SELECT m.map_revision FROM course_graph_maps m WHERE m.subject_id=accepted.subject_id) END
+FROM accepted
+ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,
+    updated_at=excluded.updated_at,map_revision=excluded.map_revision
 RETURNING subject_id
+)
+SELECT subject_id FROM published
 `
 
 type FinishCourseGraphParams struct {
-	Graph       []byte
 	Now         int64
 	SubjectID   string
 	Token       string
 	Fingerprint string
+	Graph       []byte
 }
 
+// A graph of a competency map keeps the revision of the map it was built from.
 func (q *Queries) FinishCourseGraph(ctx context.Context, arg FinishCourseGraphParams) (string, error) {
 	row := q.db.QueryRow(ctx, finishCourseGraph,
-		arg.Graph,
 		arg.Now,
 		arg.SubjectID,
 		arg.Token,
 		arg.Fingerprint,
+		arg.Graph,
 	)
 	var subject_id string
 	err := row.Scan(&subject_id)
 	return subject_id, err
 }
 
+const insertCourseMapExamCompetency = `-- name: InsertCourseMapExamCompetency :exec
+INSERT INTO course_map_competencies(id, name, revision, source_mode)
+VALUES ($1, $2, $3, 'exam')
+`
+
+type InsertCourseMapExamCompetencyParams struct {
+	ID       string
+	Name     string
+	Revision int64
+}
+
+func (q *Queries) InsertCourseMapExamCompetency(ctx context.Context, arg InsertCourseMapExamCompetencyParams) error {
+	_, err := q.db.Exec(ctx, insertCourseMapExamCompetency, arg.ID, arg.Name, arg.Revision)
+	return err
+}
+
+const insertCourseMapExamTask = `-- name: InsertCourseMapExamTask :exec
+INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, voice_instruction, reference_answer, criteria, created_at)
+VALUES ($1, $2, 'exam', $3, $4, $4,
+        $5, $6, $7)
+`
+
+type InsertCourseMapExamTaskParams struct {
+	ID              string
+	OutcomeID       string
+	Position        int32
+	Question        string
+	ReferenceAnswer *string
+	Criteria        *string
+	CreatedAt       int64
+}
+
+func (q *Queries) InsertCourseMapExamTask(ctx context.Context, arg InsertCourseMapExamTaskParams) error {
+	_, err := q.db.Exec(ctx, insertCourseMapExamTask,
+		arg.ID,
+		arg.OutcomeID,
+		arg.Position,
+		arg.Question,
+		arg.ReferenceAnswer,
+		arg.Criteria,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const listPublishedCourseGraphs = `-- name: ListPublishedCourseGraphs :many
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT g.graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id
 `
@@ -136,7 +235,8 @@ func (q *Queries) ListPublishedCourseGraphs(ctx context.Context) ([][]byte, erro
 }
 
 const listPublishedCourseGraphsForAudio = `-- name: ListPublishedCourseGraphsForAudio :many
-SELECT g.subject_id, g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT g.subject_id, g.graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id
 `
@@ -184,13 +284,16 @@ SELECT s.id, coalesce(j.status,'not_requested')::text AS status,
        coalesce(g.graph,'null'::jsonb)::jsonb AS graph,
        coalesce(g.updated_at,0)::bigint AS updated_at,
        coalesce(g.source,'')::text AS graph_source,
+       coalesce(g.fingerprint,'')::text AS graph_fingerprint,
+       g.map_revision AS graph_map_revision,
        -- Stale: the source the graph was built from changed since.
        (g.fingerprint IS NOT NULL AND g.fingerprint IS DISTINCT FROM
            CASE g.source WHEN 'competency_map' THEN m.fingerprint ELSE i.fingerprint END)::boolean AS stale,
        (i.subject_id IS NOT NULL)::boolean AS inputs_ready,
        coalesce(j.source,'')::text AS job_source,
        coalesce(m.fingerprint,'')::text AS map_fingerprint,
-       coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet
+       coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet,
+       m.map_revision AS map_revision
 FROM subjects s LEFT JOIN course_graph_jobs j ON j.subject_id=s.id
 LEFT JOIN course_graphs g ON g.subject_id=s.id
 LEFT JOIN course_graph_inputs i ON i.subject_id=s.id
@@ -198,19 +301,22 @@ LEFT JOIN course_graph_maps m ON m.subject_id=s.id WHERE s.id=$1
 `
 
 type ReadCourseGraphRow struct {
-	ID             string
-	Status         string
-	Attempts       int32
-	ErrorMessage   string
-	Graph          []byte
-	UpdatedAt      int64
-	GraphSource    string
-	Stale          bool
-	InputsReady    bool
-	JobSource      string
-	MapFingerprint string
-	MapFilename    string
-	MapSheet       string
+	ID               string
+	Status           string
+	Attempts         int32
+	ErrorMessage     string
+	Graph            []byte
+	UpdatedAt        int64
+	GraphSource      string
+	GraphFingerprint string
+	GraphMapRevision *int64
+	Stale            bool
+	InputsReady      bool
+	JobSource        string
+	MapFingerprint   string
+	MapFilename      string
+	MapSheet         string
+	MapRevision      *int64
 }
 
 func (q *Queries) ReadCourseGraph(ctx context.Context, id string) (ReadCourseGraphRow, error) {
@@ -224,12 +330,15 @@ func (q *Queries) ReadCourseGraph(ctx context.Context, id string) (ReadCourseGra
 		&i.Graph,
 		&i.UpdatedAt,
 		&i.GraphSource,
+		&i.GraphFingerprint,
+		&i.GraphMapRevision,
 		&i.Stale,
 		&i.InputsReady,
 		&i.JobSource,
 		&i.MapFingerprint,
 		&i.MapFilename,
 		&i.MapSheet,
+		&i.MapRevision,
 	)
 	return i, err
 }
@@ -246,7 +355,8 @@ func (q *Queries) ReadCourseGraphMap(ctx context.Context, subjectID string) ([]b
 }
 
 const readPublishedCourseGraph = `-- name: ReadPublishedCourseGraph :one
-SELECT g.graph FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
+SELECT g.graph
+FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.subject_id=$1 AND (g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id))
 `
 
@@ -409,11 +519,13 @@ func (q *Queries) RetryFailedCourseGraphMapBuild(ctx context.Context, arg RetryF
 }
 
 const saveCourseGraphMap = `-- name: SaveCourseGraphMap :exec
-INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at)
-SELECT $1, $2, $3, $4, $5::jsonb, $6::bigint
+INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at, map_revision)
+SELECT $1, $2, $3, $4, $5::jsonb, $6::bigint,
+       $7::bigint
 WHERE EXISTS (SELECT 1 FROM subjects s WHERE s.id=$1)
 ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded.sheet,
-    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at
+    fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at,
+    map_revision=excluded.map_revision
 `
 
 type SaveCourseGraphMapParams struct {
@@ -423,6 +535,7 @@ type SaveCourseGraphMapParams struct {
 	Fingerprint string
 	Graph       []byte
 	Now         int64
+	MapRevision *int64
 }
 
 func (q *Queries) SaveCourseGraphMap(ctx context.Context, arg SaveCourseGraphMapParams) error {
@@ -433,6 +546,25 @@ func (q *Queries) SaveCourseGraphMap(ctx context.Context, arg SaveCourseGraphMap
 		arg.Fingerprint,
 		arg.Graph,
 		arg.Now,
+		arg.MapRevision,
 	)
 	return err
+}
+
+const updateCourseMapExamTaskRephrase = `-- name: UpdateCourseMapExamTaskRephrase :execrows
+UPDATE course_map_tasks SET rephrase = $1
+WHERE id = $2 AND mode = 'exam'
+`
+
+type UpdateCourseMapExamTaskRephraseParams struct {
+	Rephrase string
+	ID       string
+}
+
+func (q *Queries) UpdateCourseMapExamTaskRephrase(ctx context.Context, arg UpdateCourseMapExamTaskRephraseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCourseMapExamTaskRephrase, arg.Rephrase, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
