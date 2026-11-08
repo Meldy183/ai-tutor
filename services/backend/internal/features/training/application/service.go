@@ -14,6 +14,7 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audio"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audioasset"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/diagnostic"
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/exam"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/training"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/transcription"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
@@ -113,11 +114,11 @@ func (s *Service) plan(ctx context.Context, owner, id string) (training.Session,
 	perfectMains := 0
 	for _, a := range d.Answers {
 		state.DiagnosticScore += a.Score
-		if a.Role == "main" && a.Score >= 2 {
+		state.MaximumScore += a.GraderMaxScore
+		if a.Role == "main" && a.Score >= exam.RootMaxScore {
 			perfectMains++
 		}
 	}
-	state.MaximumScore = 3 * d.Variant.IncludedCompetencyCount
 	if len(state.Targets) == 0 && d.Variant.IncludedCompetencyCount > 0 && perfectMains == d.Variant.IncludedCompetencyCount {
 		state.Mode = "free_practice"
 		revision, tasks, err := s.repo.Practice(ctx, state.SubjectID)

@@ -1,6 +1,8 @@
 // Package diagnostic contains process-local diagnostic session state.
 package diagnostic
 
+import "encoding/json"
+
 type LearningState struct {
 	SubjectID           string `json:"subject_id"`
 	SubjectName         string `json:"subject_name"`
@@ -17,13 +19,19 @@ const (
 )
 
 type Session struct {
-	ID                 string
-	OwnerID            string
-	VariantID          string
-	Status             string
-	CurrentCompetency  int
-	CurrentTask        int
-	Variant            VariantSnapshot
+	ID                string
+	OwnerID           string
+	VariantID         string
+	Status            string
+	CurrentCompetency int
+	CurrentTask       int
+	Variant           VariantSnapshot
+	// Traversal is the state of the shared exam traversal over the variant,
+	// owned by the diagnostic feature; CurrentCompetency and CurrentTask point
+	// at its current task, CurrentPosition is the 1-based position of the
+	// current constituent in the traversal order.
+	Traversal          json.RawMessage
+	CurrentPosition    int
 	Answers            []Answer
 	SkippedBasics      []TaskSnapshot
 	AcceptedRequests   map[string]AcceptedRequest
@@ -50,9 +58,13 @@ func (s Session) Progress() Progress {
 		CompetencyCount: len(s.Variant.Competencies),
 	}
 	// The number of questions depends on answers, the number of competencies
-	// does not, so clients show progress by competency.
+	// does not, so clients show progress by competency: the position of the
+	// current one in the order of the traversal.
 	if progress.Current != nil {
 		progress.CurrentCompetency = s.CurrentCompetency + 1
+		if s.CurrentPosition > 0 {
+			progress.CurrentCompetency = s.CurrentPosition
+		}
 		progress.CurrentStep = s.CurrentTask
 	}
 	return progress
@@ -149,6 +161,8 @@ type Transition struct {
 	CurrentTask       int
 	Status            string
 	SkippedBasics     []TaskSnapshot
+	Traversal         json.RawMessage
+	CurrentPosition   int
 }
 
 type Reservation struct {

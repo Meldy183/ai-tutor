@@ -1,6 +1,7 @@
 package exam
 
 import (
+	"encoding/json"
 	"math/rand/v2"
 	"slices"
 )
@@ -75,25 +76,21 @@ type Turn struct {
 	Reply string `json:"reply,omitempty"`
 }
 
-// NodeState is what the exam has concluded about one topic. Criteria and
-// evidence lines are kept for the teacher package.
+// NodeState is what the exam has concluded about one topic. Reasons and
+// evidence lines are kept for the result and the teacher package.
 type NodeState struct {
-	// Rubric is authoritative when present; Criteria is then a legacy
-	// compatibility field, not an additional set of failed skills.
-	Rubric   *RubricResult `json:"rubric,omitempty"`
-	HintUsed bool          `json:"hint_used,omitempty"`
+	HintUsed bool `json:"hint_used,omitempty"`
 	// DontKnow tells that the topic closed on "don't know": it has no answer to
-	// score, unlike an answer the model scored with zeros.
-	DontKnow bool `json:"dont_know,omitempty"`
-	// nil is a legacy session; new model evaluations always state completeness.
-	AnswerComplete *bool              `json:"answer_complete,omitempty"`
-	Unassessed     UnassessedCriteria `json:"unassessed,omitempty"`
-	Status         Status             `json:"status"`
-	Grade          *Grade             `json:"grade"`
-	Criteria       *Criteria          `json:"criteria"`
-	Evidence       []int              `json:"evidence"`
-	Assisted       bool               `json:"assisted"`
-	Asked          bool               `json:"asked"`
+	// score, unlike an answer the model scored with zero.
+	DontKnow bool   `json:"dont_know,omitempty"`
+	Status   Status `json:"status"`
+	// Score is the topic's points on its scale (Graph.MaxScore); nil until
+	// the topic is scored.
+	Score    *int     `json:"score"`
+	Reasons  []string `json:"reasons,omitempty"`
+	Evidence []int    `json:"evidence"`
+	Assisted bool     `json:"assisted"`
+	Asked    bool     `json:"asked"`
 }
 
 // Verdict is the model's reading of a student's answer.
@@ -113,14 +110,13 @@ func (v Verdict) Conversational() bool {
 	return v == VerdictAddressCorrection || v == VerdictClarifyQuestion || v == VerdictPause
 }
 
-// Evaluation is the model's assessment of the dialogue on the current topic.
+// Evaluation is the model's assessment of the dialogue on the current topic:
+// the points of the topic on its scale and the reasons for them.
 type Evaluation struct {
-	Rubric         *RubricResult
-	AnswerComplete *bool
-	Unassessed     UnassessedCriteria
-	Verdict        Verdict
-	Criteria       Criteria
-	Evidence       []int
+	Verdict  Verdict
+	Score    int
+	Reasons  []string
+	Evidence []int
 }
 
 // Step is what Geek asks next.
@@ -142,6 +138,9 @@ type Exam struct {
 	Asked int `json:"asked"`
 	// MaxQuestions stops the exam once reached; 0 means no limit.
 	MaxQuestions int `json:"max_questions"`
+	// SingleAnswer allows one answer per topic: no rephrase and no followup,
+	// as in the learning diagnostic.
+	SingleAnswer bool `json:"single_answer,omitempty"`
 }
 
 // NewExam starts the traversal from the top-level topics in coverage order and
@@ -246,15 +245,15 @@ func (e *Exam) finishTop() {
 
 // Apply records the evaluation of the answer to the current step and returns
 // the next step. A "don't know" on the main question or the rephrase makes the
-// topic a gap at once. A main answer on D or with insufficient data is
-// rephrased once; an answer after the rephrase is assisted. Without room in
-// the question limit for the rephrase, the main answer decides: D is a gap,
-// insufficient data stays insufficient. A non-D answer that fully demonstrates
-// the assessed criteria, or leaves no room in the limit, is graded at once.
-// Otherwise one followup clarifies the same concept; an unclear answer or
-// "don't know" keeps the skills already observed. Untested K3/K4 are excluded
-// from grading, not treated as failed. A gap leads to its prerequisites; a
-// mastered topic credits all of its unchecked prerequisites.
+// topic a gap at once. A main answer scored 0 or with insufficient data is
+// rephrased once; an answer after the rephrase or a hint is assisted, which
+// caps a top-level topic at AssistedRootCap. Without room in the question
+// limit for the rephrase, the main answer decides: 0 is a gap, insufficient
+// data stays insufficient. A full score, an assisted answer or no room in the
+// limit concludes the topic at once; otherwise one followup clarifies the same
+// concept. In SingleAnswer mode the first answer always concludes the topic.
+// A topic below its maximum leads to its prerequisites; a full score credits
+// all of its unchecked prerequisites.
 func (e *Exam) Apply(ev Evaluation) Step {
 	cur := *e.Current
 	if ev.Verdict.Conversational() {
@@ -264,7 +263,7 @@ func (e *Exam) Apply(ev Evaluation) Step {
 	state.Asked = true
 	state.Evidence = mergeLines(state.Evidence, ev.Evidence)
 	if ev.Verdict == VerdictHintRequested {
-		if !state.HintUsed && !e.limitReached() {
+		if !e.SingleAnswer && !state.HintUsed && !e.limitReached() {
 			state.HintUsed, state.Assisted = true, true
 			e.Asked++
 			kind := KindRephrase
@@ -281,92 +280,65 @@ func (e *Exam) Apply(ev Evaluation) Step {
 		// One hint per topic; repeated requests cannot keep the exam open.
 		ev.Verdict = VerdictInsufficient
 	}
+	maximum := e.Graph.MaxScore(cur.NodeID)
+	retry := !e.SingleAnswer && !e.limitReached()
 	switch cur.Kind {
 	case KindQuestion, KindRephrase:
 		assisted := cur.Kind == KindRephrase || state.HintUsed
+		state.Assisted = assisted
 		switch ev.Verdict {
 		case VerdictDontKnow:
-			// Keep any marks already observed before a rephrase. A first-turn
-			// "don't know" has no evidence and receives zero marks.
-			if state.Criteria != nil || state.Rubric != nil {
-				state.DontKnow = false
-				if state.Criteria != nil {
-					return e.gap(cur.NodeID, *state.Criteria, assisted)
-				}
-				return e.gap(cur.NodeID, Criteria{}, assisted)
-			}
-			state.DontKnow = true
-			return e.gap(cur.NodeID, Criteria{}, assisted)
+			state.DontKnow = state.Score == nil
+			return e.gap(cur.NodeID)
 		case VerdictInsufficient:
-			if !assisted && !e.limitReached() {
+			if !assisted && retry {
 				e.Asked++
 				return e.step(KindRephrase, cur.NodeID)
 			}
 			state.Status = StatusInsufficient
-			state.Assisted = assisted
 			return e.next()
 		}
-		c := ev.Criteria
-		state.Criteria = &c
-		state.Rubric = ev.Rubric
-		state.AnswerComplete = ev.AnswerComplete
-		state.Unassessed = ev.Unassessed
-		state.Assisted = assisted
-		if state.topicGrade() == GradeD {
-			if !assisted && !e.limitReached() {
+		score := capScore(ev.Score, maximum, assisted)
+		state.Score, state.Reasons = &score, ev.Reasons
+		if score == 0 {
+			if !assisted && retry {
 				e.Asked++
 				return e.step(KindRephrase, cur.NodeID)
 			}
-			return e.gap(cur.NodeID, c, assisted)
+			return e.gap(cur.NodeID)
 		}
-		// A good answer to the selected concept is enough; untested skills
-		// do not force another question. The question limit remains strict.
-		if state.skillsComplete(c) && state.complete() || e.limitReached() {
-			return e.conclude(cur.NodeID, c)
+		// A good answer to the selected concept is enough; help already
+		// caps the score, so a followup could not raise it.
+		if score == maximum || assisted || !retry {
+			return e.conclude(cur.NodeID)
 		}
 		e.Asked++
 		return e.step(KindFollowup, cur.NodeID)
 	case KindFollowup:
-		c := ev.Criteria
-		if ev.Verdict != VerdictAnswered {
-			c = *state.Criteria
-		} else {
-			state.Rubric = ev.Rubric
-			state.AnswerComplete = ev.AnswerComplete
-			// A skill observed earlier cannot become untested on a followup.
-			if ev.Unassessed.K3 && !state.Unassessed.K3 {
-				c.K3 = state.Criteria.K3
-			}
-			if ev.Unassessed.K4 && !state.Unassessed.K4 {
-				c.K4 = state.Criteria.K4
-			}
-			state.Unassessed = UnassessedCriteria{
-				K3: state.Unassessed.K3 && ev.Unassessed.K3,
-				K4: state.Unassessed.K4 && ev.Unassessed.K4,
-			}
+		// The followup only clarifies the main answer: the model sees the
+		// whole dialogue, and neither a weaker nor an unclear reply lowers the
+		// score already observed.
+		if score := capScore(ev.Score, maximum, state.Assisted); ev.Verdict == VerdictAnswered && score > *state.Score {
+			state.Score, state.Reasons = &score, ev.Reasons
 		}
-		return e.conclude(cur.NodeID, c)
+		return e.conclude(cur.NodeID)
 	}
 	return e.next()
 }
 
-// conclude grades a topic by its final criteria: D makes it a gap, any other
-// grade masters it. A and B credit its unchecked prerequisites; C, a partial
-// answer, keeps the grade but checks its prerequisites as a gap does
-// (decision of 19.10.2026, as main 0/1 led to the basic tasks in v0.0.2).
-func (e *Exam) conclude(id string, c Criteria) Step {
+// conclude closes a scored topic: 0 makes it a gap; a score below the maximum
+// keeps the score but checks its prerequisites as a gap does; the maximum
+// credits its unchecked prerequisites.
+func (e *Exam) conclude(id string) Step {
 	state := e.Nodes[id]
-	state.Criteria = &c
-	grade := state.topicGrade()
-	if grade == GradeD {
-		return e.gap(id, c, state.Assisted)
+	if state.Score == nil || *state.Score == 0 {
+		return e.gap(id)
 	}
-	state.Grade = &grade
 	state.Status = StatusIndependent
 	if state.Assisted {
 		state.Status = StatusAssisted
 	}
-	if grade == GradeC {
+	if *state.Score < e.Graph.MaxScore(id) {
 		e.descend(id)
 		return e.next()
 	}
@@ -378,39 +350,18 @@ func (e *Exam) conclude(id string, c Criteria) Step {
 	return e.next()
 }
 
-func (s NodeState) complete() bool {
-	return s.AnswerComplete == nil || *s.AnswerComplete
-}
-
-func (s NodeState) topicGrade() Grade {
-	if s.Rubric != nil {
-		return s.Rubric.Grade(s.Assisted, s.complete())
-	}
-	grade := TopicGrade(*s.Criteria, s.Assisted, s.Unassessed)
-	if grade == GradeA && !s.complete() {
-		return GradeB
-	}
-	return grade
-}
-
-func (s NodeState) skillsComplete(c Criteria) bool {
-	if s.Rubric != nil {
-		return s.Rubric.Complete()
-	}
-	return s.Unassessed.Complete(c)
-}
-
 func (e *Exam) step(kind TurnKind, id string) Step {
 	s := Step{Kind: kind, NodeID: id}
 	e.Current = &s
 	return s
 }
 
-// gap marks a topic as a gap and descends into its prerequisites first.
-func (e *Exam) gap(id string, c Criteria, assisted bool) Step {
+// gap marks a topic as a gap with zero points and descends into its
+// prerequisites first.
+func (e *Exam) gap(id string) Step {
 	state := e.Nodes[id]
-	d := GradeD
-	state.Status, state.Grade, state.Criteria, state.Assisted = StatusGap, &d, &c, assisted
+	zero := 0
+	state.Status, state.Score = StatusGap, &zero
 	e.descend(id)
 	return e.next()
 }
@@ -499,68 +450,32 @@ func (e *Exam) Gaps() []string {
 	return out
 }
 
-// WeakSpots are the topics passed on C: credited, but answered only in part,
-// so the student sees what to strengthen besides the gaps.
+// WeakSpots are the topics passed below their maximum: mastered, but answered
+// only in part, so the student sees what to strengthen besides the gaps.
 func (e *Exam) WeakSpots() []string {
 	out := []string{}
 	for _, n := range e.Graph.Nodes {
-		if g := e.Nodes[n.ID].Grade; g != nil && *g == GradeC {
+		state := e.Nodes[n.ID]
+		if state.Status.Mastered() && state.Score != nil && *state.Score < e.Graph.MaxScore(n.ID) {
 			out = append(out, n.ID)
 		}
 	}
 	return out
 }
 
-// TopicMark is the result of one criterion of a topic: a rubric item or one of
-// К1–К4, whose ID is k1…k4. Title and Reason are empty where none is known.
-type TopicMark struct {
-	ID      string
-	Title   string
-	Score   int
-	Maximum int
-	Reason  string
-	Quote   string
-}
-
-// TopicMarks are the criteria results of an asked topic. A topic that was
-// credited, unclear or never reached has none.
-func (e *Exam) TopicMarks(id string) []TopicMark {
-	state, ok := e.Nodes[id]
-	if !ok || (state.Status != StatusIndependent && state.Status != StatusAssisted && state.Status != StatusGap) {
+// Clone is a deep copy of the traversal state, so a caller can try a step
+// without changing the stored one.
+func (e *Exam) Clone() *Exam {
+	if e == nil {
 		return nil
 	}
-	// "Don't know" keeps no marks, even of an earlier attempt: the scale comes
-	// from the task, and K3 and K4 were never observed.
-	if state.DontKnow || (state.Rubric == nil && state.Criteria == nil) {
-		n, _ := e.Graph.Node(id)
-		if spec, err := ParseRubric(n.AssessmentGuidance); err == nil && len(spec) > 0 {
-			items := make([]RubricMark, len(spec))
-			for i, item := range spec {
-				items[i].RubricItem = item
-			}
-			return rubricMarks(items)
-		}
-		return []TopicMark{{ID: "k1", Maximum: 2}, {ID: "k2", Maximum: 2}}
+	data, err := json.Marshal(e)
+	if err != nil {
+		panic(err)
 	}
-	if state.Rubric != nil {
-		return rubricMarks(state.Rubric.Items)
+	var out Exam
+	if err := json.Unmarshal(data, &out); err != nil {
+		panic(err)
 	}
-	// Zeros are scored too: what was assessed stays in the maximum.
-	c := *state.Criteria
-	marks := []TopicMark{{ID: "k1", Score: c.K1, Maximum: 2}, {ID: "k2", Score: c.K2, Maximum: 2}}
-	if !state.Unassessed.K3 {
-		marks = append(marks, TopicMark{ID: "k3", Score: c.K3, Maximum: 2})
-	}
-	if !state.Unassessed.K4 {
-		marks = append(marks, TopicMark{ID: "k4", Score: c.K4, Maximum: 2})
-	}
-	return marks
-}
-
-func rubricMarks(items []RubricMark) []TopicMark {
-	out := make([]TopicMark, len(items))
-	for i, m := range items {
-		out[i] = TopicMark{ID: m.ID, Title: m.Title(), Score: m.Score, Maximum: m.Levels[len(m.Levels)-1], Reason: m.Reason, Quote: m.Quote}
-	}
-	return out
+	return &out
 }

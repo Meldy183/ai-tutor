@@ -164,9 +164,6 @@ func (s *Service) Start(ctx context.Context, ownerID, subjectID, key string) (ex
 	if !ok {
 		return exam.Session{}, false, fault.New(fault.Conflict, "GRAPH_NOT_READY", "Граф курса ещё не собран или готовится.")
 	}
-	if err := graph.ValidateRubrics(); err != nil {
-		return exam.Session{}, false, rubricError(err)
-	}
 	id, err := s.ids.New("diagnostic")
 	if err != nil {
 		return exam.Session{}, false, err
@@ -265,11 +262,6 @@ func (s *Service) Answer(ctx context.Context, ownerID, id, key string, a Answer)
 	}
 	step := *session.Exam.Current
 	node, _ := session.Exam.Graph.Node(step.NodeID)
-	// Invalid instructor scoring must fail before any answer is applied,
-	// including the "don't know" button, which deliberately skips the model.
-	if _, err := exam.ParseRubric(node.AssessmentGuidance); err != nil {
-		return exam.Session{}, rubricError(err)
-	}
 	text, source, err := s.answerText(ctx, ownerID, a)
 	if err != nil {
 		return exam.Session{}, err
@@ -278,7 +270,7 @@ func (s *Service) Answer(ctx context.Context, ownerID, id, key string, a Answer)
 	if err := s.append(&session, exam.SpeakerStudent, exam.KindAnswer, &step.NodeID, &source, text); err != nil {
 		return exam.Session{}, err
 	}
-	evaluate := EvaluationRequest{PreferredName: session.PreferredName, ClarificationPending: session.ClarificationPending, AddressPreference: exam.AddressNeutral, HintUsed: session.Exam.Nodes[node.ID].HintUsed, Kind: step.Kind, Node: node, Prerequisites: unaskedPrerequisites(session.Exam, node.ID), Dialogue: session.Dialogue(node.ID)}
+	evaluate := EvaluationRequest{PreferredName: session.PreferredName, ClarificationPending: session.ClarificationPending, AddressPreference: exam.AddressNeutral, HintUsed: session.Exam.Nodes[node.ID].HintUsed, Kind: step.Kind, Node: node, MaxScore: session.Exam.Graph.MaxScore(node.ID), Prerequisites: unaskedPrerequisites(session.Exam, node.ID), Dialogue: session.Dialogue(node.ID)}
 	assessment := Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictDontKnow}}
 	if source != exam.SourceDontKnow {
 		if assessment, err = s.examiner.Evaluate(ctx, evaluate); err != nil {
@@ -489,7 +481,7 @@ func (s *Service) say(ctx context.Context, session *exam.Session, step exam.Step
 		text = node.PreparedRephrase()
 	} else {
 		var err error
-		text, err = s.examiner.Question(ctx, QuestionRequest{PreferredName: session.PreferredName, Rubric: session.Exam.Nodes[node.ID].Rubric, AddressPreference: session.AddressPreference, Hint: step.Hint, Kind: step.Kind, Node: node, Dialogue: session.Dialogue(node.ID)})
+		text, err = s.examiner.Question(ctx, QuestionRequest{PreferredName: session.PreferredName, Reasons: session.Exam.Nodes[node.ID].Reasons, AddressPreference: session.AddressPreference, Hint: step.Hint, Kind: step.Kind, Node: node, Dialogue: session.Dialogue(node.ID)})
 		if err != nil {
 			return modelError(err)
 		}
@@ -576,30 +568,15 @@ func answerFingerprint(sessionID string, a Answer) (string, error) {
 }
 
 func checkEvaluation(e exam.Evaluation, session exam.Session) error {
-	if session.Exam.Current != nil {
-		node, _ := session.Exam.Graph.Node(session.Exam.Current.NodeID)
-		spec, err := exam.ParseRubric(node.AssessmentGuidance)
-		if err != nil {
-			return err
-		}
-		if e.Verdict == exam.VerdictAnswered && len(spec) > 0 {
-			if e.Rubric == nil {
-				return errors.New("missing rubric result")
-			}
-			if err := e.Rubric.Validate(spec, session.Dialogue(node.ID)); err != nil {
-				return err
-			}
-		} else if e.Rubric != nil {
-			return errors.New("unexpected rubric result")
-		}
-	}
 	switch e.Verdict {
 	case exam.VerdictAnswered, exam.VerdictDontKnow, exam.VerdictInsufficient, exam.VerdictHintRequested, exam.VerdictAddressCorrection, exam.VerdictClarifyQuestion, exam.VerdictPause:
 	default:
 		return fmt.Errorf("unknown verdict %q", e.Verdict)
 	}
-	if !e.Criteria.Valid() {
-		return fmt.Errorf("criteria out of range: %+v", e.Criteria)
+	if session.Exam.Current != nil && e.Verdict == exam.VerdictAnswered {
+		if maximum := session.Exam.Graph.MaxScore(session.Exam.Current.NodeID); e.Score < 0 || e.Score > maximum {
+			return fmt.Errorf("score %d out of 0..%d", e.Score, maximum)
+		}
 	}
 	for _, line := range e.Evidence {
 		if line < 1 || line > len(session.Turns) {
@@ -607,10 +584,6 @@ func checkEvaluation(e exam.Evaluation, session exam.Session) error {
 		}
 	}
 	return nil
-}
-
-func rubricError(err error) error {
-	return errors.Join(fault.New(fault.Conflict, "RUBRIC_INVALID", "В карте курса некорректная шкала оценивания. Преподавателю нужно исправить карту; попытка не потрачена."), err)
 }
 
 func modelError(err error) error {

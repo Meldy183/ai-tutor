@@ -214,13 +214,19 @@ func (e *examiner) Evaluate(_ context.Context, r EvaluationRequest) (Assessment,
 	case strings.Contains(last.Text, "не знаю"):
 		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictDontKnow}
 	case strings.Contains(last.Text, "сильно"):
-		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Criteria: exam.Criteria{K1: 2, K2: 2, K3: 2, K4: 2}, Evidence: []int{last.Line}}
-	case strings.Contains(last.Text, "на C"):
-		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Criteria: exam.Criteria{K1: 1, K2: 1, K3: 1, K4: 1}, Evidence: []int{last.Line}}
+		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: r.MaxScore, Evidence: []int{last.Line}}
+	case strings.Contains(last.Text, "на 1"):
+		// Partial and staying partial after the followup.
+		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: min(1, r.MaxScore), Evidence: []int{last.Line}}
 	case strings.Contains(last.Text, "частично"):
-		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Criteria: exam.Criteria{K1: 2, K2: 2, K3: 1, K4: 1}, Evidence: []int{last.Line}}
+		// Partial, completed by the followup.
+		score := min(1, r.MaxScore)
+		if r.Kind == exam.KindFollowup {
+			score = r.MaxScore
+		}
+		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: score, Evidence: []int{last.Line}}
 	default:
-		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Criteria: exam.Criteria{K2: 1}, Evidence: []int{last.Line}}
+		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: 0, Evidence: []int{last.Line}}
 	}
 	if strings.Contains(last.Text, "женский род") {
 		a.AddressPreference = exam.AddressFeminine
@@ -350,56 +356,6 @@ func code(err error) string {
 		return f.Code
 	}
 	return ""
-}
-
-func TestMalformedRubricRejectsEveryAnswerSourceWithoutSaving(t *testing.T) {
-	for _, a := range []Answer{{DontKnow: true}, {Text: "сильно"}, {TranscriptionID: "tr"}} {
-		t.Run(fmt.Sprintf("button=%t/voice=%t", a.DontKnow, a.TranscriptionID != ""), func(t *testing.T) {
-			f := newFixture(t)
-			ctx := context.Background()
-			s, _, err := f.service.Start(ctx, "student", "subject", "start")
-			if err != nil {
-				t.Fatal(err)
-			}
-			turn, _ := s.CurrentTurn()
-			a.TurnID = turn.ID
-			id := s.Exam.Current.NodeID
-			for i := range s.Exam.Graph.Nodes {
-				if s.Exam.Graph.Nodes[i].ID == id {
-					s.Exam.Graph.Nodes[i].AssessmentGuidance = "0 баллов — неверно; 1 балл — верно"
-				}
-			}
-			before, _ := json.Marshal(s)
-			f.store.sessions[s.ID] = before
-			requests := len(f.store.requests)
-			key := f.nextKey()
-			if _, err := f.service.Answer(ctx, "student", s.ID, key, a); code(err) != "RUBRIC_INVALID" {
-				t.Fatalf("malformed rubric accepted: %v", err)
-			}
-			if string(f.store.sessions[s.ID]) != string(before) || len(f.store.requests) != requests || f.examiner.evals != 0 || len(f.examiner.feedbacks) != 0 {
-				t.Fatal("invalid rubric consumed an attempt, called the model or changed persisted state")
-			}
-			// Once the configuration is repaired, the same request key remains usable.
-			for i := range s.Exam.Graph.Nodes {
-				if s.Exam.Graph.Nodes[i].ID == id {
-					s.Exam.Graph.Nodes[i].AssessmentGuidance = "Оцени по смыслу."
-				}
-			}
-			f.store.sessions[s.ID], _ = json.Marshal(s)
-			if _, err := f.service.Answer(ctx, "student", s.ID, key, a); err != nil {
-				t.Fatalf("retry after repairing rubric: %v", err)
-			}
-		})
-	}
-}
-
-func TestStartRejectsMalformedRubricBeforeCreatingSession(t *testing.T) {
-	f := newFixture(t)
-	f.graphs.graph.Nodes[0].AssessmentGuidance = "Балл (макс. 2): оценить по смыслу"
-	_, _, err := f.service.Start(context.Background(), "student", "subject", "start")
-	if code(err) != "RUBRIC_INVALID" || len(f.store.sessions) != 0 || len(f.store.requests) != 0 || len(f.examiner.questions) != 0 {
-		t.Fatalf("started exam with an unusable rubric: %v", err)
-	}
 }
 
 func TestStartIsIdempotentAndReturnsTheActiveSession(t *testing.T) {
@@ -628,12 +584,12 @@ func TestFeedbackReceivesTheEngineOutcome(t *testing.T) {
 		name, answer string
 		closed       bool
 		next         exam.TurnKind
-		grade        exam.Grade
+		score        *int
 	}{
-		{"complete", "сильно", true, exam.KindQuestion, exam.GradeA},
-		{"partial", "частично", false, exam.KindFollowup, ""},
-		{"weak", "слабо", false, exam.KindRephrase, ""},
-		{"give-up", "не знаю", true, exam.KindQuestion, exam.GradeD},
+		{"complete", "сильно", true, exam.KindQuestion, ptr(2)},
+		{"partial", "частично", false, exam.KindFollowup, nil},
+		{"weak", "слабо", false, exam.KindRephrase, nil},
+		{"give-up", "не знаю", true, exam.KindQuestion, ptr(0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
@@ -646,10 +602,10 @@ func TestFeedbackReceivesTheEngineOutcome(t *testing.T) {
 			if r.Closed != tc.closed || r.Next != tc.next {
 				t.Fatalf("feedback decision = %+v", r)
 			}
-			if tc.grade != "" && (r.Result.Grade == nil || *r.Result.Grade != tc.grade) {
-				t.Fatalf("feedback grade = %v, want %s", r.Result.Grade, tc.grade)
+			if tc.score != nil && (r.Result.Score == nil || *r.Result.Score != *tc.score) {
+				t.Fatalf("feedback score = %v, want %d", r.Result.Score, *tc.score)
 			}
-			if tc.grade == exam.GradeA && len(r.Prerequisites) != 0 {
+			if tc.score != nil && *tc.score == 2 && len(r.Prerequisites) != 0 {
 				t.Fatalf("already credited prerequisites still protected: %v", r.Prerequisites)
 			}
 		})
@@ -667,7 +623,7 @@ func TestFeedbackFailureDoesNotCommitTheEvaluation(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	stored, _ := f.service.Get(ctx, "student", s.ID)
-	if stored.Version != s.Version || len(stored.Turns) != 1 || stored.Exam.Nodes[*s.Turns[0].NodeID].Grade != nil {
+	if stored.Version != s.Version || len(stored.Turns) != 1 || stored.Exam.Nodes[*s.Turns[0].NodeID].Score != nil {
 		t.Fatal("feedback failure committed grading or dialogue")
 	}
 	f.examiner.feedbackFail = nil
@@ -677,7 +633,7 @@ func TestFeedbackFailureDoesNotCommitTheEvaluation(t *testing.T) {
 }
 
 func TestMapFeedbackUsesTheSelectedVariantAndPreservesCurrentTraversal(t *testing.T) {
-	for _, answer := range []string{"сильно", "частично", "на C"} {
+	for _, answer := range []string{"сильно", "частично", "на 1"} {
 		t.Run(answer, func(t *testing.T) {
 			f := newFixture(t)
 			variants := []exam.Variant{
@@ -718,21 +674,18 @@ func TestMapFeedbackUsesTheSelectedVariantAndPreservesCurrentTraversal(t *testin
 				f.examiner.evaluated[0].Node.MainQuestion() != variants[1].Question {
 				t.Fatalf("feedback lost selected variant: %+v", r)
 			}
-			if answer == "на C" {
-				if *r.Result.Grade != exam.GradeC || s.Exam.Current.NodeID != "basic" ||
+			if answer == "на 1" {
+				if *r.Result.Score != 1 || s.Exam.Current.NodeID != "basic" ||
 					!slices.Equal(r.Prerequisites, []string{"Базовая компетенция"}) {
-					t.Fatalf("C must descend and protect the basic task: %+v", r)
+					t.Fatalf("1 must descend and protect the basic task: %+v", r)
 				}
 				return
-			} else if answer == "частично" {
-				if *r.Result.Grade != exam.GradeB {
-					t.Fatalf("grade = %v", r.Result.Grade)
-				}
-			} else if *r.Result.Grade != exam.GradeA {
-				t.Fatalf("grade = %v", r.Result.Grade)
+			}
+			if *r.Result.Score != 2 {
+				t.Fatalf("score = %v", *r.Result.Score)
 			}
 			if s.Exam.Nodes["basic"].Status != exam.StatusCredited || len(r.Prerequisites) != 0 {
-				t.Fatal("A/B no longer credits prerequisites")
+				t.Fatal("the maximum no longer credits prerequisites")
 			}
 		})
 	}
@@ -903,7 +856,7 @@ func TestRequestedHintBypassesPreparedRephraseAndKeepsTopicOpen(t *testing.T) {
 		t.Fatal("context hint was not generated")
 	}
 	s = f.answer(t, s, Answer{Text: "сильно"})
-	if state := s.Exam.Nodes[id]; state.Grade == nil || *state.Grade != exam.GradeB || state.Status != exam.StatusAssisted {
+	if state := s.Exam.Nodes[id]; state.Score == nil || *state.Score != 1 || state.Status != exam.StatusAssisted {
 		t.Fatalf("hint result = %+v", state)
 	}
 	if !f.examiner.evaluated[len(f.examiner.evaluated)-1].HintUsed {
@@ -963,3 +916,5 @@ func TestRephraseIsGeneratedWhenItIsNotPrepared(t *testing.T) {
 		})
 	}
 }
+
+func ptr[T any](v T) *T { return &v }

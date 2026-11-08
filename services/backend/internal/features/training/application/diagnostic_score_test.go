@@ -23,29 +23,24 @@ func (scorePracticeRepo) Practice(context.Context, string) (int64, []training.Ta
 
 func TestPreviewUsesDiagnosticScoreAndStartsFreePracticeAfterPerfectMain(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		main, basic, want int
-		mode              string
+		name                       string
+		main, basic, want, maximum int
+		mode                       string
 	}{
-		{"perfect", 3, -1, 3, "free_practice"},
-		{"partial with correct basic", 1, 1, 2, "focused"},
-		{"legacy perfect", 2, -1, 2, "free_practice"},
+		{"perfect", 2, -1, 2, 2, "free_practice"},
+		{"partial with correct basic", 1, 1, 2, 3, "focused"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			maximum := max(tc.main, 3)
-			if tc.main == 2 {
-				maximum = 2
-			}
-			answers := []diagnostic.Answer{{Role: "main", CompetencyID: "c", OutcomeID: "main", Score: tc.main, GraderMaxScore: maximum, Task: diagnostic.TaskSnapshot{ID: "main", OutcomeID: "main"}}}
+			answers := []diagnostic.Answer{{Role: "main", CompetencyID: "c", OutcomeID: "main", Score: tc.main, GraderMaxScore: 2, Task: diagnostic.TaskSnapshot{ID: "main", OutcomeID: "main"}}}
 			if tc.basic >= 0 {
 				answers = append(answers, diagnostic.Answer{Role: "basic", CompetencyID: "c", OutcomeID: "basic", Score: tc.basic, GraderMaxScore: 1})
 			}
 			session := diagnostic.Session{Status: diagnostic.StatusCompleted, Answers: answers, Variant: diagnostic.VariantSnapshot{IncludedCompetencyCount: 1}}
 			got, err := New(scorePracticeRepo{}, scoreDiagnostics{session}, nil, nil, nil, nil, nil).Preview(context.Background(), "owner", "diagnostic")
-			if err != nil || got.DiagnosticScore != tc.want || got.MaximumScore != 3 || got.Mode != tc.mode || len(got.Topics) != 1 {
+			if err != nil || got.DiagnosticScore != tc.want || got.MaximumScore != tc.maximum || got.Mode != tc.mode || len(got.Topics) != 1 {
 				t.Fatalf("preview: %+v, %v", got, err)
 			}
-			if tc.main != 2 && (got.Topics[0].OriginalMaxScore == nil || *got.Topics[0].OriginalMaxScore != 3) {
+			if got.Topics[0].OriginalMaxScore == nil || *got.Topics[0].OriginalMaxScore != 2 {
 				t.Fatalf("original scale: %+v", got.Topics[0])
 			}
 		})

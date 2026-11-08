@@ -66,7 +66,7 @@ func TestEvaluateRejectsLegacyTaskIDAndFrontendRole(t *testing.T) {
 
 func (graderStub) Grade(_ context.Context, _ application.GradingContext, _ string) (application.Evaluation, error) {
 	return application.Evaluation{
-		Score:   3,
+		Score:   2,
 		Verdict: "correct",
 		CriterionResults: []application.CriterionResult{
 			{Key: "answer_correctness", Satisfied: true, Explanation: "Ответ соответствует эталону."},
@@ -98,7 +98,7 @@ func TestEvaluateRequiresAuthAndReturnsVariantGrade(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || transcriptions.owner != "student-1" || result.Score != 3 || result.MaxScore != 3 || result.Verdict != "correct" {
+	if response.Code != http.StatusOK || transcriptions.owner != "student-1" || result.Score != 2 || result.MaxScore != 2 || result.Verdict != "correct" {
 		t.Fatalf("response=%d %s, owner=%q", response.Code, response.Body.String(), transcriptions.owner)
 	}
 	if learning_tasks.ownerID != "student-1" || learning_tasks.variantID != "variant-1" || learning_tasks.variantTaskID != "variant-task-1" {

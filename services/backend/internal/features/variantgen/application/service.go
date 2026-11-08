@@ -10,11 +10,12 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/variant"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
 )
 
-const AlgorithmVersion = "constituent-map-v1"
+const AlgorithmVersion = "constituent-map-v2"
 
 var bloomRanks = map[string]int{"knowledge": 1, "understanding": 2, "application": 3, "analysis": 4}
 
@@ -130,64 +131,33 @@ func (s *Service) buildSelected(ownerID, subjectID, subjectName string, revision
 	})
 	result := variant.Variant{OwnerID: ownerID, SubjectID: subjectID, SubjectNameSnapshot: subjectName, MapRevision: revision, AlgorithmVersion: AlgorithmVersion,
 		SkippedCompetencies: []variant.SkippedCompetency{}, Competencies: []variant.CompetencySelection{}, CreatedAt: s.now().Unix()}
-	for _, comp := range ordered {
-		outcomes := make([]*taskPool, 0, len(comp.outcomes))
+	pools := make([]coursegraph.Pool, len(ordered))
+	byKey := map[string]*taskPool{}
+	for i, comp := range ordered {
+		pool := coursegraph.Pool{Key: comp.constituent.ID, Name: comp.profile.Name + " / " + comp.constituent.Name}
 		for _, outcome := range comp.outcomes {
-			outcomes = append(outcomes, outcome)
+			byKey[outcome.outcome.ID] = outcome
+			pool.Candidates = append(pool.Candidates, coursegraph.Candidate{Key: outcome.outcome.ID, Name: outcome.outcome.Name,
+				Rank: outcome.rank, Importance: outcome.importance, Order: int(outcome.order)})
 		}
-		sort.Slice(outcomes, func(i, j int) bool {
-			if outcomes[i].order != outcomes[j].order {
-				return outcomes[i].order < outcomes[j].order
-			}
-			if outcomes[i].outcome.Name != outcomes[j].outcome.Name {
-				return outcomes[i].outcome.Name < outcomes[j].outcome.Name
-			}
-			return outcomes[i].outcome.ID < outcomes[j].outcome.ID
-		})
-		if len(outcomes) == 0 {
-			result.SkippedCompetencies = append(result.SkippedCompetencies, variant.SkippedCompetency{CompetencyID: comp.profile.ID, CompetencyName: comp.profile.Name + " / " + comp.constituent.Name, Code: "NO_READY_OUTCOMES", EligibleOutcomes: len(outcomes)})
-			continue
+		pools[i] = pool
+	}
+	trees, skips := coursegraph.SelectTrees(pools)
+	for _, skip := range skips {
+		comp := ordered[skip.Pool]
+		code := "INSUFFICIENT_DISTINCT_OUTCOMES"
+		if skip.Eligible == 0 {
+			code = "NO_READY_OUTCOMES"
 		}
-		// A main always comes with two basics from other outcomes, so a
-		// constituent needs three of them.
-		if len(outcomes) < 3 {
-			result.SkippedCompetencies = append(result.SkippedCompetencies, variant.SkippedCompetency{CompetencyID: comp.profile.ID, CompetencyName: comp.profile.Name + " / " + comp.constituent.Name, Code: "INSUFFICIENT_DISTINCT_OUTCOMES", EligibleOutcomes: len(outcomes)})
-			continue
+		result.SkippedCompetencies = append(result.SkippedCompetencies, variant.SkippedCompetency{CompetencyID: comp.profile.ID, CompetencyName: skip.Name, Code: code, EligibleOutcomes: skip.Eligible})
+	}
+	for _, tree := range trees {
+		comp := ordered[tree.Pool]
+		picks := []*taskPool{byKey[tree.Root.Key]}
+		for _, child := range tree.Children {
+			picks = append(picks, byKey[child.Key])
 		}
-		main := outcomes[0]
-		for _, outcome := range outcomes[1:] {
-			if harder(outcome, main) {
-				main = outcome
-			}
-		}
-		// Basics are the simplest remaining outcomes; they may share the main's
-		// Bloom rank but never exceed it.
-		basics := make([]*taskPool, 0, len(outcomes)-1)
-		for _, outcome := range outcomes {
-			if outcome.outcome.ID != main.outcome.ID {
-				basics = append(basics, outcome)
-			}
-		}
-		sort.Slice(basics, func(i, j int) bool {
-			if basics[i].rank != basics[j].rank {
-				return basics[i].rank < basics[j].rank
-			}
-			if basics[i].importance != basics[j].importance {
-				return basics[i].importance > basics[j].importance
-			}
-			if basics[i].order != basics[j].order {
-				return basics[i].order < basics[j].order
-			}
-			if basics[i].outcome.Name != basics[j].outcome.Name {
-				return basics[i].outcome.Name < basics[j].outcome.Name
-			}
-			return basics[i].outcome.ID < basics[j].outcome.ID
-		})
-		if len(basics) > 2 {
-			basics = basics[:2]
-		}
-		picks := append([]*taskPool{main}, basics...)
-		selection := variant.CompetencySelection{Position: len(result.Competencies) + 1, Competency: comp.profile, Tasks: make([]variant.VariantTask, 0, 3)}
+		selection := variant.CompetencySelection{Position: len(result.Competencies) + 1, Competency: comp.profile, Tasks: make([]variant.VariantTask, 0, len(picks))}
 		for i, pick := range picks {
 			idx := 0
 			if !preview && len(pick.tasks) > 1 {
@@ -300,21 +270,4 @@ func (s *Service) List(ctx context.Context, ownerID, subjectID string, limit int
 		return items, "", nil
 	}
 	return items, EncodeCursor(*next), nil
-}
-
-// harder ranks main candidates: Bloom rank first, then importance.
-func harder(a, b *taskPool) bool {
-	if a.rank != b.rank {
-		return a.rank > b.rank
-	}
-	if a.importance != b.importance {
-		return a.importance > b.importance
-	}
-	if a.order != b.order {
-		return a.order < b.order
-	}
-	if a.outcome.Name != b.outcome.Name {
-		return a.outcome.Name < b.outcome.Name
-	}
-	return a.outcome.ID < b.outcome.ID
 }

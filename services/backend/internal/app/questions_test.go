@@ -93,9 +93,6 @@ func TestMapDefaultsAndWarningsSurviveQuestionPreparation(t *testing.T) {
 	if len(n.Variants) != 2 || n.Variants[0].Question != rows[1][6] || n.Variants[1].Question != rows[1][7] || n.Variants[1].AssessmentGuidance != coursegraph.DefaultAssessmentGuidance || n.Variants[0].AssessmentGuidance == coursegraph.DefaultAssessmentGuidance || !n.Prepared() {
 		t.Fatalf("preparation changed task criteria or questions: %+v", n)
 	}
-	if err := g.ValidateRubrics(); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestBuildReportsProgressAndRetryWithoutCountingFailedTopics(t *testing.T) {
@@ -165,15 +162,6 @@ func TestBuiltQuestionsKeepTheTraceOfTheJobInLogsAndCalls(t *testing.T) {
 		if entry.ContextMap()["trace_id"] != traceID {
 			t.Errorf("%q has no trace of the job: %v", entry.Message, entry.ContextMap())
 		}
-	}
-}
-
-func TestBuildRejectsInvalidRubricBeforePreparingQuestions(t *testing.T) {
-	examiner := &buildExaminer{}
-	data := json.RawMessage(`{"topics":[{"id":"a","title":"Тема","text":"Текст","question":"Вопрос?","rephrase":"Проще?","assessment_guidance":"Балл (макс. 2): оценить по смыслу"}]}`)
-	_, err := (builtQuestions{examiner: examiner, logger: zap.NewNop()}).Prepare(context.Background(), data)
-	if err == nil || !strings.Contains(err.Error(), "topic a") || examiner.asked.Load() != 0 {
-		t.Fatalf("bad rubric published or treated as a model failure: %v, calls=%d", err, examiner.asked.Load())
 	}
 }
 

@@ -135,12 +135,12 @@ func TestCompetencyMapStructureKeysIncludesFalseAndUntaskedOutcomes(t *testing.T
 	}
 }
 
-func TestMapGraphRenamesTheRubricOfTheMap(t *testing.T) {
+func TestMapGraphKeepsTheCriteriaOfTheMapForTheGrader(t *testing.T) {
 	reference, guidance := splitCriteria("Эталон: конфликт законов.\nДопустимо: «вред».\nАналитическая рубрика (макс. 2):\nК1 «Конфликт»: 1 — названы законы.\nК2 «Решение»: 1 — обосновано.")
 	if reference != "Эталон: конфликт законов.\nДопустимо: «вред»." {
 		t.Fatalf("reference = %q", reference)
 	}
-	if strings.Contains(guidance, "К1 «") || !strings.Contains(guidance, "Пункт рубрики 1 «Конфликт»") || !strings.Contains(guidance, "Пункт рубрики 2 «Решение»") {
+	if !strings.HasPrefix(guidance, "Критерии задания из карты компетенций") || !strings.Contains(guidance, "К1 «Конфликт»") || !strings.Contains(guidance, "К2 «Решение»") {
 		t.Fatalf("guidance = %q", guidance)
 	}
 }
@@ -208,7 +208,7 @@ func TestMapGraphReadsTheTasksOfEveryColumnAsVariants(t *testing.T) {
 	if oral.Question != "Устно: В?" || !strings.Contains(oral.Content, "Эталон: устный В.") || !strings.Contains(oral.Guidance, "Балл (макс. 1)") {
 		t.Fatalf("first variant = %+v", oral)
 	}
-	if academic.Question != "Академически: В." || !strings.Contains(academic.Content, "академический В") || !strings.Contains(academic.Guidance, "Пункт рубрики 1 «Полнота»") {
+	if academic.Question != "Академически: В." || !strings.Contains(academic.Content, "академический В") || !strings.Contains(academic.Guidance, "К1 «Полнота»") {
 		t.Fatalf("second variant = %+v", academic)
 	}
 	if main.Question != oral.Question || main.Text != oral.Content || main.Guidance != oral.Guidance {

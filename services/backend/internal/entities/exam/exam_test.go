@@ -28,84 +28,13 @@ func fixture(t *testing.T) Graph {
 }
 
 var (
-	strong  = Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 2, 2}}
-	partial = Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 1, 1}}
-	weak    = Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{0, 1, 0, 0}}
+	// strong is the maximum of any topic; the scale caps it for a prerequisite.
+	strong  = Evaluation{Verdict: VerdictAnswered, Score: 2, Reasons: []string{"верно"}}
+	partial = Evaluation{Verdict: VerdictAnswered, Score: 1}
+	weak    = Evaluation{Verdict: VerdictAnswered, Score: 0}
 	unknown = Evaluation{Verdict: VerdictDontKnow}
 	vague   = Evaluation{Verdict: VerdictInsufficient}
 )
-
-func TestRequestedHintLeavesTopicOpenAndCapsSuccessfulAnswer(t *testing.T) {
-	for _, followup := range []bool{false, true} {
-		e, first := NewExam(fixture(t), 0, nil)
-		if followup {
-			e.Apply(partial)
-		}
-		next := e.Apply(Evaluation{Verdict: VerdictHintRequested})
-		state := e.Nodes[first.NodeID]
-		wantKind := KindRephrase
-		if followup {
-			wantKind = KindFollowup
-		}
-		if next.NodeID != first.NodeID || next.Kind != wantKind || !next.Hint || state.Grade != nil || !state.HintUsed {
-			t.Fatalf("hint closed topic or lost context: %+v, %+v", next, state)
-		}
-		data, err := json.Marshal(e)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var restored Exam
-		if err := json.Unmarshal(data, &restored); err != nil {
-			t.Fatal(err)
-		}
-		if !restored.Current.Hint || !restored.Nodes[first.NodeID].HintUsed {
-			t.Fatal("hint did not survive persistence")
-		}
-		restored.Apply(strong)
-		state = restored.Nodes[first.NodeID]
-		if state.Grade == nil || *state.Grade != GradeB || state.Status != StatusAssisted {
-			t.Fatalf("answer after hint = %+v", state)
-		}
-	}
-}
-
-func TestHintOnFollowupRetainsPartialResultOnFailure(t *testing.T) {
-	for _, numeric := range []bool{false, true} {
-		for _, verdict := range []Verdict{VerdictDontKnow, VerdictInsufficient, VerdictHintRequested} {
-			t.Run(fmt.Sprintf("rubric=%t/%s", numeric, verdict), func(t *testing.T) {
-				e, _ := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "Тема", Questions: []string{"Вопрос?"}}}}, 0, nil)
-				no := false
-				answer := partial
-				answer.AnswerComplete = &no
-				want := GradeB
-				if numeric {
-					answer.Rubric = rubricResult(t, 1, 0)
-					want = GradeC
-				}
-				if step := e.Apply(answer); step.Kind != KindFollowup {
-					t.Fatalf("no followup: %+v", step)
-				}
-				if step := e.Apply(Evaluation{Verdict: VerdictHintRequested}); step.Kind != KindFollowup || !step.Hint {
-					t.Fatalf("hint lost followup semantics: %+v", step)
-				}
-				// The request after a restart must retain the same semantics too.
-				data, _ := json.Marshal(e)
-				var restored Exam
-				if err := json.Unmarshal(data, &restored); err != nil {
-					t.Fatal(err)
-				}
-				restored.Apply(Evaluation{Verdict: verdict})
-				state := restored.Nodes["a"]
-				if state.Grade == nil || *state.Grade != want || state.Status != StatusAssisted || *state.Criteria != answer.Criteria || state.complete() {
-					t.Fatalf("hint erased partial result: %+v", state)
-				}
-				if numeric && (state.Rubric == nil || !state.Rubric.HasScore()) {
-					t.Fatal("rubric points lost")
-				}
-			})
-		}
-	}
-}
 
 func TestRepeatedHintRequestCannotLoop(t *testing.T) {
 	e, first := NewExam(fixture(t), 0, nil)
@@ -164,31 +93,6 @@ func TestTopLevelAndClosure(t *testing.T) {
 	}
 }
 
-func TestStrongStudentIsAskedOnlyTopLevelTopics(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		if s.Kind == KindFollowup {
-			return strong
-		}
-		return partial
-	})
-	if got := asked(steps, KindQuestion); !slices.Equal(got, []string{"a-star", "simulated-annealing", "mcts", "agents-peas"}) {
-		t.Fatalf("questions = %v", got)
-	}
-	if got := asked(steps, KindFollowup); len(got) != 4 {
-		t.Fatalf("followups = %v", got)
-	}
-	for _, id := range []string{"heuristic", "search-space", "hill-climbing", "exploration-exploitation"} {
-		if e.Nodes[id].Status != StatusCredited {
-			t.Fatalf("%s status = %s", id, e.Nodes[id].Status)
-		}
-	}
-	grade, percent := courseGrade(e)
-	if *grade != GradeA || *percent != 100 || len(e.Gaps()) != 0 {
-		t.Fatalf("grade=%s percent=%d gaps=%v", *grade, *percent, e.Gaps())
-	}
-}
-
 func TestResultNodesCarryTheirPrerequisites(t *testing.T) {
 	g := fixture(t)
 	e, _ := NewExam(g, 0, nil)
@@ -212,181 +116,6 @@ func TestResultNodesCarryTheirPrerequisites(t *testing.T) {
 		if slices.Contains(n.Prerequisites, "changed") {
 			t.Fatal("result shares prerequisites with the graph")
 		}
-	}
-}
-
-func TestGapDescendsToTheDeepestUnmasteredTopic(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		switch s.NodeID {
-		case "a-star":
-			return weak
-		case "heuristic-admissibility":
-			return unknown
-		}
-		if s.Kind == KindFollowup {
-			return strong
-		}
-		return partial
-	})
-	// a-star is weak twice (with a rephrase), then its prerequisites are asked
-	// before the next top-level topic.
-	if got := asked(steps, KindQuestion); !slices.Equal(got[:4], []string{"a-star", "uninformed-search", "heuristic-admissibility", "heuristic"}) {
-		t.Fatalf("questions = %v", got)
-	}
-	if got := asked(steps, KindRephrase); !slices.Equal(got, []string{"a-star"}) {
-		t.Fatalf("rephrases = %v (don't know is never rephrased)", got)
-	}
-	if e.Nodes["a-star"].Status != StatusGap || !e.Nodes["a-star"].Assisted || e.Nodes["heuristic-admissibility"].Status != StatusGap {
-		t.Fatalf("a-star=%+v admissibility=%+v", e.Nodes["a-star"], e.Nodes["heuristic-admissibility"])
-	}
-	if e.Nodes["search-space"].Status != StatusCredited {
-		t.Fatalf("search-space = %s", e.Nodes["search-space"].Status)
-	}
-	if got := e.Gaps(); !slices.Equal(got, []string{"heuristic-admissibility"}) {
-		t.Fatalf("gaps = %v", got)
-	}
-	// The gaps on a-star and its prerequisite keep the mean at 88%.
-	grade, percent := courseGrade(e)
-	if *grade != GradeB || *percent != 88 {
-		t.Fatalf("grade=%s percent=%d", *grade, *percent)
-	}
-}
-
-func TestPartialAnswerKeepsCAndChecksPrerequisites(t *testing.T) {
-	fair := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{1, 1, 1, 1}}
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "a-star" {
-			return fair
-		}
-		if s.Kind == KindFollowup {
-			return strong
-		}
-		return partial
-	})
-	// a-star ends on C after its followup; its prerequisites are asked, as
-	// after a gap, instead of being credited.
-	if got := asked(steps, KindQuestion); !slices.Equal(got[:4], []string{"a-star", "uninformed-search", "heuristic-admissibility", "simulated-annealing"}) {
-		t.Fatalf("questions = %v", got)
-	}
-	state := e.Nodes["a-star"]
-	if *state.Grade != GradeC || state.Status != StatusIndependent {
-		t.Fatalf("a-star = %+v", state)
-	}
-	// The asked prerequisites answered on B credit theirs as usual.
-	if e.Nodes["uninformed-search"].Status != StatusIndependent || e.Nodes["heuristic"].Status != StatusCredited {
-		t.Fatalf("uninformed-search = %s, heuristic = %s", e.Nodes["uninformed-search"].Status, e.Nodes["heuristic"].Status)
-	}
-	if got := e.Gaps(); len(got) != 0 {
-		t.Fatalf("gaps = %v: C is not a gap", got)
-	}
-	// It is a weak spot instead, with the sources a gap would have.
-	if got := e.WeakSpots(); !slices.Equal(got, []string{"a-star"}) {
-		t.Fatalf("weak spots = %v", got)
-	}
-	if r := (Session{Exam: e}).Result(); len(r.WeakSpots) != 1 || r.WeakSpots[0].NodeID != "a-star" || r.WeakSpots[0].Title == "" {
-		t.Fatalf("result weak spots = %+v", r.WeakSpots)
-	}
-}
-
-func TestCreditedSharedPrerequisiteIsNotAskedAgain(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "simulated-annealing" {
-			return unknown
-		}
-		if s.Kind == KindFollowup {
-			return strong
-		}
-		return partial
-	})
-	// a-star credits heuristic; the gap on simulated-annealing then asks only
-	// hill-climbing and exploration-exploitation, not heuristic again.
-	questions := asked(steps, KindQuestion)
-	if slices.Contains(questions, "heuristic") {
-		t.Fatalf("credited prerequisite asked again: %v", questions)
-	}
-	if !slices.Equal(questions[:4], []string{"a-star", "simulated-annealing", "hill-climbing", "exploration-exploitation"}) {
-		t.Fatalf("questions = %v", questions)
-	}
-	if got := e.Gaps(); !slices.Equal(got, []string{"simulated-annealing"}) {
-		t.Fatalf("gaps = %v", got)
-	}
-}
-
-func TestAskedTopicKeepsItsOwnResult(t *testing.T) {
-	g := Graph{Nodes: []Node{
-		{ID: "base", Title: "База"},
-		{ID: "left", Title: "Левая", Prerequisites: []string{"base"}},
-		{ID: "right", Title: "Правая", Prerequisites: []string{"base"}},
-	}}
-	e, first := NewExam(g, 0, nil)
-	run(t, e, first, func(s Step) Evaluation {
-		switch {
-		case s.NodeID == "left", s.NodeID == "base":
-			return unknown
-		case s.Kind == KindFollowup:
-			return strong
-		}
-		return partial
-	})
-	// base was asked under left and stays a gap although right later passes.
-	if e.Nodes["base"].Status != StatusGap || e.Nodes["right"].Status != StatusIndependent {
-		t.Fatalf("base=%s right=%s", e.Nodes["base"].Status, e.Nodes["right"].Status)
-	}
-}
-
-func TestAnswerAfterRephraseIsAssistedAndCappedAtB(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "agents-peas" && s.Kind == KindQuestion {
-			return weak
-		}
-		return strong
-	})
-	state := e.Nodes["agents-peas"]
-	if state.Status != StatusAssisted || *state.Grade != GradeB {
-		t.Fatalf("agents-peas = %+v grade=%s", state, *state.Grade)
-	}
-}
-
-func TestInsufficientAfterRephraseIsExcludedFromTheGrade(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "mcts" && s.Kind != KindFollowup {
-			return vague
-		}
-		return strong
-	})
-	if got := asked(steps, KindRephrase); !slices.Equal(got, []string{"mcts"}) {
-		t.Fatalf("rephrases = %v", got)
-	}
-	if e.Nodes["mcts"].Status != StatusInsufficient || e.Nodes["mcts"].Grade != nil {
-		t.Fatalf("mcts = %+v", e.Nodes["mcts"])
-	}
-	if e.Nodes["exploration-exploitation"].Status != StatusCredited {
-		t.Fatalf("exploration credited by simulated-annealing: %s", e.Nodes["exploration-exploitation"].Status)
-	}
-	grade, percent := courseGrade(e)
-	if *grade != GradeA || *percent != 100 {
-		t.Fatalf("grade=%s percent=%d", *grade, *percent)
-	}
-}
-
-func TestMaxQuestionsEndsTheExam(t *testing.T) {
-	e, first := NewExam(fixture(t), 3, nil)
-	steps := run(t, e, first, func(s Step) Evaluation { return partial })
-	// a-star: question + followup; simulated-annealing: question, and its
-	// followup does not fit, so it is graded by the main answer.
-	if q := len(asked(steps, KindQuestion)) + len(asked(steps, KindFollowup)); q != 3 {
-		t.Fatalf("asked %d times with a limit of 3", q)
-	}
-	if s := e.Nodes["simulated-annealing"]; s.Status != StatusIndependent || *s.Grade != GradeB {
-		t.Fatalf("simulated-annealing = %+v", s)
-	}
-	if e.Nodes["agents-peas"].Status != StatusUnchecked {
-		t.Fatal("topics beyond the limit stay unchecked")
 	}
 }
 
@@ -417,42 +146,6 @@ func TestProgressStartsAtZeroAndCountsAnsweredQuestions(t *testing.T) {
 	}
 }
 
-func TestFollowupsAndRephrasesNeverExceedTheLimit(t *testing.T) {
-	// Every answer needs a followup; with "rephrased" the main answer is D
-	// and the rephrase is partial. Rephrases count in the limit (decision of
-	// 18.10.2026): a student saw 8 counted questions and 5 rephrases. A
-	// followup or rephrase due at the last slot does not fit: the topic is
-	// graded by the answer instead, and a D main answer is a gap.
-	for _, rephrased := range []bool{false, true} {
-		for _, limit := range []int{1, 3, 8} {
-			e, first := NewExam(independent(10), limit, nil)
-			steps := run(t, e, first, func(s Step) Evaluation {
-				if rephrased && s.Kind == KindQuestion {
-					return weak
-				}
-				return partial
-			})
-			if len(steps) != limit || e.Asked != limit {
-				t.Fatalf("rephrased=%v limit=%d: asked %d (Asked=%d)", rephrased, limit, len(steps), e.Asked)
-			}
-			if rephrased && limit > 1 && len(asked(steps, KindRephrase)) == 0 {
-				t.Fatalf("limit=%d: no rephrase", limit)
-			}
-			for _, id := range asked(steps, KindQuestion) {
-				s := e.Nodes[id]
-				switch {
-				case rephrased && !slices.Contains(asked(steps, KindRephrase), id):
-					if s.Status != StatusGap || s.Assisted {
-						t.Fatalf("limit=%d: %s without room for a rephrase = %+v", limit, id, s)
-					}
-				case s.Grade == nil || *s.Grade != GradeB || (s.Status == StatusAssisted) != rephrased:
-					t.Fatalf("rephrased=%v limit=%d: %s = %+v", rephrased, limit, id, s)
-				}
-			}
-		}
-	}
-}
-
 func TestUnclearAnswerWithoutRoomForARephraseIsInsufficient(t *testing.T) {
 	e, _ := NewExam(independent(3), 1, nil)
 	if next := e.Apply(vague); next.Kind != KindClosing {
@@ -478,41 +171,6 @@ func BenchmarkNewExam(b *testing.B) {
 				NewExam(g, 8, nil)
 			}
 		})
-	}
-}
-
-func TestAnswerShowingK3AndK4SkipsTheFollowup(t *testing.T) {
-	e, first := NewExam(fixture(t), 0, nil)
-	steps := run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "mcts" {
-			return partial
-		}
-		return strong
-	})
-	if got := asked(steps, KindFollowup); !slices.Equal(got, []string{"mcts"}) {
-		t.Fatalf("followups = %v: only an answer below 2 on K3 or K4 gets one", got)
-	}
-	if got := asked(steps, KindQuestion); !slices.Equal(got, []string{"a-star", "simulated-annealing", "mcts", "agents-peas"}) {
-		t.Fatalf("questions = %v", got)
-	}
-	if *e.Nodes["a-star"].Grade != GradeA || e.Nodes["heuristic"].Status != StatusCredited {
-		t.Fatalf("a-star=%+v heuristic=%s", e.Nodes["a-star"], e.Nodes["heuristic"].Status)
-	}
-
-	// After a rephrase the same answer is assisted and capped at B, still
-	// without a followup.
-	e, first = NewExam(pair(), 0, nil)
-	steps = run(t, e, first, func(s Step) Evaluation {
-		if s.Kind == KindQuestion {
-			return weak
-		}
-		return strong
-	})
-	if got := asked(steps, KindFollowup); len(got) != 0 {
-		t.Fatalf("followups = %v", got)
-	}
-	if top := e.Nodes["top"]; top.Status != StatusAssisted || *top.Grade != GradeB {
-		t.Fatalf("top = %+v", top)
 	}
 }
 
@@ -585,28 +243,6 @@ func TestValidateRejectsCyclesAndUnknownPrerequisites(t *testing.T) {
 	}
 }
 
-func TestTopicGradeTable(t *testing.T) {
-	for _, tc := range []struct {
-		c        Criteria
-		assisted bool
-		want     Grade
-	}{
-		{Criteria{2, 2, 2, 2}, false, GradeA},
-		{Criteria{2, 2, 2, 2}, true, GradeB},
-		{Criteria{2, 2, 1, 1}, false, GradeB},
-		{Criteria{1, 1, 1, 1}, true, GradeC},
-		{Criteria{1, 1, 1, 1}, false, GradeC},
-		{Criteria{1, 2, 0, 0}, false, GradeC},
-		{Criteria{2, 1, 0, 1}, true, GradeC},
-		{Criteria{0, 2, 2, 2}, false, GradeD},
-		{Criteria{1, 0, 0, 1}, true, GradeD},
-	} {
-		if got := TopicGrade(tc.c, tc.assisted, UnassessedCriteria{}); got != tc.want {
-			t.Errorf("TopicGrade(%v, %v) = %s, want %s", tc.c, tc.assisted, got, tc.want)
-		}
-	}
-}
-
 func TestCourseGradeThresholds(t *testing.T) {
 	for _, tc := range []struct {
 		percent int
@@ -620,220 +256,6 @@ func TestCourseGradeThresholds(t *testing.T) {
 	}
 	if CourseGrade(nil) != nil {
 		t.Fatal("nothing to grade gives no grade")
-	}
-}
-
-// The course grade is not stored: a completed diagnostic is graded by the
-// current rule when read, here the mean of 2/4 and 8/8 is 75%.
-func TestCompletedSessionIsGradedByTheCurrentRule(t *testing.T) {
-	e, _ := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "А"}, {ID: "b", Title: "Б"}}}, 0, nil)
-	for id, c := range map[string]Criteria{"a": {1, 1, 0, 0}, "b": {2, 2, 2, 2}} {
-		c := c
-		g := TopicGrade(c, false, UnassessedCriteria{K3: id == "a", K4: id == "a"})
-		e.Nodes[id].Status, e.Nodes[id].Grade, e.Nodes[id].Criteria = StatusIndependent, &g, &c
-		e.Nodes[id].Unassessed = UnassessedCriteria{K3: id == "a", K4: id == "a"}
-	}
-	completed := int64(1792400000)
-	stored, err := json.Marshal(Session{ID: "s", Status: SessionCompleted, CompletedAt: &completed, Exam: e})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var read Session
-	if err := json.Unmarshal(stored, &read); err != nil {
-		t.Fatal(err)
-	}
-	r := read.Result()
-	if r.Grade == nil || *r.Grade != GradeB || *r.ScorePercent != 75 || r.Score != 7.5 || r.Maximum != 10 {
-		t.Fatalf("result = %+v", r)
-	}
-}
-
-// A partly answered topic must not score below a failed one with the same
-// prerequisites, so the points of every asked topic count (decision of 01.11.2026).
-func TestCourseScoreNormalizesAConstituent(t *testing.T) {
-	graph := func() Graph {
-		return Graph{Nodes: []Node{
-			{ID: "b1", Title: "Б1"},
-			{ID: "b2", Title: "Б2"},
-			{ID: "main", Title: "Главная", Prerequisites: []string{"b1", "b2"}},
-		}}
-	}
-	strongK := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 0, 0}, Unassessed: UnassessedCriteria{K3: true, K4: true}, AnswerComplete: ptr(true)}
-	grade := func(main Evaluation) (*Grade, *int, float64, int) {
-		e, first := NewExam(graph(), 0, nil)
-		run(t, e, first, func(s Step) Evaluation {
-			if s.NodeID == "main" {
-				return main
-			}
-			return strongK
-		})
-		r := Session{Exam: e}.Result()
-		return r.Grade, r.ScorePercent, r.Score, r.Maximum
-	}
-	failed := Evaluation{Verdict: VerdictDontKnow}
-	g, p, score, maximum := grade(failed)
-	if *g != GradeC || *p != 66 || score != 3.3 || maximum != 5 {
-		t.Fatalf("failed main: %s %d%% %v/%d", *g, *p, score, maximum)
-	}
-	partly := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{1, 1, 0, 0}, Unassessed: UnassessedCriteria{K3: true, K4: true}, AnswerComplete: ptr(true)}
-	g, p, score, maximum = grade(partly)
-	if *g != GradeB || *p != 83 || score != 4.2 || maximum != 5 {
-		t.Fatalf("partial main: %s %d%% %v/%d", *g, *p, score, maximum)
-	}
-	// A full answer credits the prerequisites: the one asked task is the whole constituent.
-	g, p, score, maximum = grade(strongK)
-	if *g != GradeA || *p != 100 || score != 5 || maximum != 5 {
-		t.Fatalf("full main: %s %d%% %v/%d", *g, *p, score, maximum)
-	}
-}
-
-func TestTopicMarksFollowTheGradingScale(t *testing.T) {
-	const rubric = "Аналитическая рубрика (макс. 4):\nПункт рубрики 1 «Суть»: 2 — верно; 1 — частично; 0 — нет.\nК2: 2 — верно; 0 — нет."
-	e, _ := NewExam(Graph{Nodes: []Node{
-		{ID: "rubric", Title: "Р", AssessmentGuidance: rubric},
-		{ID: "dont-know", Title: "Н", AssessmentGuidance: rubric},
-		{ID: "k", Title: "К"},
-		{ID: "k-zero", Title: "Н2"},
-		{ID: "k-dont-know", Title: "Н3"},
-		{ID: "credited", Title: "З"},
-		{ID: "unclear", Title: "Д"},
-	}}, 0, nil)
-	spec, err := ParseRubric(rubric)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.Nodes["rubric"].Status = StatusIndependent
-	e.Nodes["rubric"].Rubric = &RubricResult{Items: []RubricMark{
-		{RubricItem: spec[0], Score: 1, Reason: "неполно", Quote: "цитата"},
-		{RubricItem: spec[1], Score: 2, Reason: "верно"},
-	}}
-	e.Nodes["dont-know"].Status = StatusGap
-	e.Nodes["k"].Status = StatusAssisted
-	e.Nodes["k"].Criteria = &Criteria{2, 1, 2, 0}
-	e.Nodes["k"].Unassessed = UnassessedCriteria{K4: true}
-	e.Nodes["k-zero"].Status, e.Nodes["k-zero"].Criteria = StatusGap, &Criteria{}
-	e.Nodes["k-dont-know"].Status, e.Nodes["k-dont-know"].Criteria, e.Nodes["k-dont-know"].DontKnow = StatusGap, &Criteria{}, true
-	e.Nodes["credited"].Status = StatusCredited
-	e.Nodes["unclear"].Status = StatusInsufficient
-
-	marks := e.TopicMarks("rubric")
-	if len(marks) != 2 || marks[0].Title != "Суть" || marks[0].Score != 1 || marks[0].Maximum != 2 || marks[0].Quote != "цитата" || marks[1].Title != "" {
-		t.Fatalf("rubric marks = %+v", marks)
-	}
-	result := Session{Exam: e}.Result()
-	for _, tc := range []struct {
-		id             string
-		score, maximum int
-		ok             bool
-	}{
-		{"rubric", 3, 4, true},
-		{"dont-know", 0, 4, true},
-		{"k", 5, 6, true},
-		{"k-zero", 0, 8, true},
-		{"k-dont-know", 0, 4, true},
-		{"credited", 0, 0, false},
-		{"unclear", 0, 0, false},
-	} {
-		score, maximum, ok := 0, 0, false
-		for _, n := range result.Nodes {
-			if n.NodeID == tc.id && n.Score != nil {
-				score, maximum, ok = *n.Score, *n.Maximum, true
-			}
-		}
-		if score != tc.score || maximum != tc.maximum || ok != tc.ok {
-			t.Errorf("%s = %d/%d %v, want %d/%d %v", tc.id, score, maximum, ok, tc.score, tc.maximum, tc.ok)
-		}
-	}
-}
-
-func TestDontKnowAndAssessedZerosWeighTheSame(t *testing.T) {
-	strong := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 0, 0}, Unassessed: UnassessedCriteria{K3: true, K4: true}, AnswerComplete: ptr(true)}
-	for name, last := range map[string]Evaluation{
-		"don't know":     {Verdict: VerdictDontKnow},
-		"assessed zeros": {Verdict: VerdictAnswered, AnswerComplete: ptr(false)},
-	} {
-		e, first := NewExam(Graph{Nodes: []Node{
-			{ID: "a", Title: "А"}, {ID: "b", Title: "Б"}, {ID: "c", Title: "В"}, {ID: "zero", Title: "Н"},
-		}}, 0, nil)
-		run(t, e, first, func(s Step) Evaluation {
-			if s.NodeID == "zero" {
-				return last
-			}
-			return strong
-		})
-		r := Session{Exam: e}.Result()
-		if r.Score != 15 || r.Maximum != 20 || *r.ScorePercent != 75 || *r.Grade != GradeB {
-			t.Errorf("%s: result = %v/%d %d%% %s", name, r.Score, r.Maximum, *r.ScorePercent, *r.Grade)
-		}
-	}
-}
-
-func TestAnUnaskedTopLevelTopicIsNoConstituent(t *testing.T) {
-	e, first := NewExam(Graph{Nodes: []Node{
-		{ID: "base", Title: "Основа"},
-		{ID: "a", Title: "А", Prerequisites: []string{"base"}},
-		{ID: "b", Title: "Б", Prerequisites: []string{"base"}},
-	}}, 2, nil)
-	strong := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 0, 0}, Unassessed: UnassessedCriteria{K3: true, K4: true}, AnswerComplete: ptr(true)}
-	var asked string
-	run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID != "base" {
-			asked = s.NodeID
-			return Evaluation{Verdict: VerdictDontKnow}
-		}
-		return strong
-	})
-	unasked := "a"
-	if asked == "a" {
-		unasked = "b"
-	}
-	if e.Nodes[unasked].Status != StatusUnchecked {
-		t.Fatalf("%s status = %s", unasked, e.Nodes[unasked].Status)
-	}
-	r := Session{Exam: e}.Result()
-	if r.Score != 2.5 || r.Maximum != 5 || *r.ScorePercent != 50 || *r.Grade != GradeD {
-		t.Fatalf("result = %v/%d %d%% %s", r.Score, r.Maximum, *r.ScorePercent, *r.Grade)
-	}
-}
-
-func TestACompetencyWeighsTheSameWithMoreConstituents(t *testing.T) {
-	e, first := NewExam(Graph{Nodes: []Node{
-		{ID: "a1", Title: "А1", Competency: "А"},
-		{ID: "a2", Title: "А2", Competency: "А"},
-		{ID: "a3", Title: "А3", Competency: "А"},
-		{ID: "b", Title: "Б", Competency: "Б"},
-	}}, 0, nil)
-	strong := Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 0, 0}, Unassessed: UnassessedCriteria{K3: true, K4: true}, AnswerComplete: ptr(true)}
-	run(t, e, first, func(s Step) Evaluation {
-		if s.NodeID == "b" {
-			return Evaluation{Verdict: VerdictDontKnow}
-		}
-		return strong
-	})
-	// Without competencies it would be 3 of 4, 75%.
-	r := Session{Exam: e}.Result()
-	if r.Score != 5 || r.Maximum != 10 || *r.ScorePercent != 50 || *r.Grade != GradeD {
-		t.Fatalf("result = %v/%d %d%% %s", r.Score, r.Maximum, *r.ScorePercent, *r.Grade)
-	}
-}
-
-func TestDontKnowPreservesTheMarksOfAnEarlierAttempt(t *testing.T) {
-	const rubric = "Аналитическая рубрика (макс. 4):\nПункт рубрики 1 «Суть»: 4 — верно; 2 — частично; 0 — нет."
-	spec, err := ParseRubric(rubric)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e, first := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "А", AssessmentGuidance: rubric}}}, 0, nil)
-	weak := Evaluation{Verdict: VerdictAnswered, AnswerComplete: ptr(false), Rubric: &RubricResult{Items: []RubricMark{{RubricItem: spec[0], Score: 0, Reason: "слабо"}}}}
-	run(t, e, first, func(s Step) Evaluation {
-		if s.Kind == KindRephrase {
-			return Evaluation{Verdict: VerdictDontKnow}
-		}
-		return weak
-	})
-	marks := e.TopicMarks("a")
-	if e.Nodes["a"].Status != StatusGap || len(marks) != 1 || marks[0].Score != 0 || marks[0].Maximum != 4 || marks[0].Reason != "слабо" {
-		t.Fatalf("status %s, marks = %+v", e.Nodes["a"].Status, marks)
 	}
 }
 
@@ -863,179 +285,6 @@ func pair() Graph {
 		{ID: "base", Title: "База"},
 		{ID: "top", Title: "Верх", Prerequisites: []string{"base"}},
 	}}
-}
-
-func TestUnclearFollowupKeepsPreviouslyObservedSkills(t *testing.T) {
-	for _, verdict := range []Verdict{VerdictDontKnow, VerdictInsufficient} {
-		e, first := NewExam(pair(), 0, nil)
-		steps := run(t, e, first, func(s Step) Evaluation {
-			if s.Kind == KindFollowup {
-				return Evaluation{Verdict: verdict}
-			}
-			return partial
-		})
-		state := e.Nodes["top"]
-		if state.Status != StatusIndependent || *state.Grade != GradeB || *state.Criteria != partial.Criteria {
-			t.Fatalf("%s: state = %+v", verdict, state)
-		}
-		if got := asked(steps, KindQuestion); !slices.Equal(got, []string{"top"}) {
-			t.Fatalf("questions = %v", got)
-		}
-		if e.Nodes["base"].Status != StatusCredited {
-			t.Fatal("base is not credited")
-		}
-	}
-}
-
-func TestGoodAnswerToOneConceptClosesTopic(t *testing.T) {
-	for _, assisted := range []bool{false, true} {
-		e, first := NewExam(pair(), 0, nil)
-		steps := run(t, e, first, func(s Step) Evaluation {
-			if assisted && s.Kind == KindQuestion {
-				return weak
-			}
-			return Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{K1: 2, K2: 2},
-				Unassessed: UnassessedCriteria{K3: true, K4: true}, Evidence: []int{2}}
-		})
-		want := GradeA
-		if assisted {
-			want = GradeB
-		}
-		state := e.Nodes["top"]
-		if *state.Grade != want || len(asked(steps, KindFollowup)) != 0 {
-			t.Fatalf("assisted=%v state=%+v steps=%v", assisted, state, steps)
-		}
-		if !state.Unassessed.K3 || !state.Unassessed.K4 || e.Nodes["base"].Status != StatusCredited {
-			t.Fatalf("scope or credit lost: %+v", state)
-		}
-		// Scope must survive saving and resuming a diagnostic.
-		data, err := json.Marshal(e)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var restored Exam
-		if err := json.Unmarshal(data, &restored); err != nil {
-			t.Fatal(err)
-		}
-		if restored.Nodes["top"].Unassessed != state.Unassessed {
-			t.Fatal("scope lost on round trip")
-		}
-	}
-}
-
-func TestFollowupCompletesPartialUnderstandingOfSameConcept(t *testing.T) {
-	e, _ := NewExam(pair(), 0, nil)
-	scope := UnassessedCriteria{K3: true, K4: true}
-	step := e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{K1: 1, K2: 1}, Unassessed: scope})
-	if step.Kind != KindFollowup {
-		t.Fatalf("partial answer got %+v", step)
-	}
-	step = e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{K1: 2, K2: 2}, Unassessed: scope})
-	if step.Kind != KindClosing || *e.Nodes["top"].Grade != GradeA {
-		t.Fatalf("result = %+v", e.Nodes["top"])
-	}
-}
-
-func TestUntestedSkillsDifferFromFailedSkills(t *testing.T) {
-	c := Criteria{K1: 2, K2: 2}
-	if TopicGrade(c, false, UnassessedCriteria{}) != GradeC {
-		t.Fatal("tested skills on 0 must count")
-	}
-	if TopicGrade(c, false, UnassessedCriteria{K3: true, K4: true}) != GradeA {
-		t.Fatal("untested skills must not lower the grade")
-	}
-	if TopicGrade(Criteria{2, 2, 0, 2}, false, UnassessedCriteria{K3: true}) != GradeA {
-		t.Fatal("one untested skill must be excluded")
-	}
-	// Help may cap a grade, but must never increase it for identical observations.
-	rank := map[Grade]int{GradeA: 4, GradeB: 3, GradeC: 2, GradeD: 1}
-	for k1 := range 3 {
-		for k2 := range 3 {
-			for k3 := range 3 {
-				for k4 := range 3 {
-					c := Criteria{k1, k2, k3, k4}
-					for _, scope := range []UnassessedCriteria{{}, {K3: true}, {K4: true}, {K3: true, K4: true}} {
-						if rank[TopicGrade(c, true, scope)] > rank[TopicGrade(c, false, scope)] {
-							t.Fatalf("help raised %v in %v", c, scope)
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func TestFollowupCannotErasePreviouslyAssessedCriteria(t *testing.T) {
-	e, _ := NewExam(pair(), 0, nil)
-	e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{2, 2, 0, 1}})
-	e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{K1: 2, K2: 2}, Unassessed: UnassessedCriteria{K3: true, K4: true}})
-	s := e.Nodes["top"]
-	if s.Unassessed != (UnassessedCriteria{}) || *s.Criteria != (Criteria{2, 2, 0, 1}) || *s.Grade != GradeC {
-		t.Fatalf("followup erased an observed skill: %+v", s)
-	}
-}
-
-func TestFollowupCanImprovePartlyDemonstratedApplication(t *testing.T) {
-	for _, complete := range []bool{false, true} {
-		e, _ := NewExam(pair(), 0, nil)
-		scope := UnassessedCriteria{K3: true}
-		main := Criteria{K1: 2, K2: 2, K4: 1}
-		if grade := TopicGrade(main, false, scope); grade != GradeB {
-			t.Fatalf("partly demonstrated application = %s", grade)
-		}
-		step := e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: main, Unassessed: scope})
-		if step.Kind != KindFollowup {
-			t.Fatalf("missing example got %v", step.Kind)
-		}
-		answer := Evaluation{Verdict: VerdictDontKnow}
-		want := GradeB
-		if complete {
-			answer = Evaluation{Verdict: VerdictAnswered, Criteria: Criteria{K1: 2, K2: 2, K4: 2}, Unassessed: scope}
-			want = GradeA
-		}
-		e.Apply(answer)
-		if !e.Completed() || *e.Nodes["top"].Grade != want || e.Nodes["top"].Assisted {
-			t.Fatalf("complete=%v: state=%+v", complete, e.Nodes["top"])
-		}
-	}
-}
-
-func TestIncompleteCoverageNeverGetsAEvenWithFullCriteria(t *testing.T) {
-	for _, limit := range []int{1, 3} {
-		for _, finish := range []bool{false, true} {
-			e, _ := NewExam(pair(), limit, nil)
-			incomplete := false
-			step := e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: strong.Criteria, AnswerComplete: &incomplete})
-			want := GradeB
-			if limit == 3 {
-				if step.Kind != KindFollowup {
-					t.Fatalf("incomplete answer got %v", step.Kind)
-				}
-				if finish {
-					complete := true
-					e.Apply(Evaluation{Verdict: VerdictAnswered, Criteria: strong.Criteria, AnswerComplete: &complete})
-					want = GradeA
-				} else {
-					e.Apply(unknown)
-				}
-			}
-			state := e.Nodes["top"]
-			if !e.Completed() || *state.Grade != want || state.Assisted {
-				t.Fatalf("limit=%d finish=%v: %+v", limit, finish, state)
-			}
-			data, err := json.Marshal(e)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var restored Exam
-			if err := json.Unmarshal(data, &restored); err != nil {
-				t.Fatal(err)
-			}
-			if restored.Nodes["top"].complete() != state.complete() {
-				t.Fatal("coverage lost after resume")
-			}
-		}
-	}
 }
 
 func TestGapOverAnUnknownPrerequisiteIsNotListed(t *testing.T) {
@@ -1129,52 +378,433 @@ func courseGrade(e *Exam) (*Grade, *int) {
 	return r.Grade, r.ScorePercent
 }
 
-func TestOverallScoreCapsAssistedAndIncompleteAnswersWithoutChangingMarks(t *testing.T) {
-	for _, tc := range []struct {
-		name               string
-		assisted, complete bool
-		want               float64
-	}{
-		{"independent complete", false, true, 5},
-		{"assisted complete", true, true, 4},
-		{"independent incomplete", false, false, 4},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e, _ := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "A"}}}, 0, nil)
-			state := e.Nodes["a"]
-			state.Status = StatusIndependent
-			state.Criteria = &Criteria{K1: 2, K2: 2}
-			state.Unassessed = UnassessedCriteria{K3: true, K4: true}
-			state.Assisted = tc.assisted
-			state.AnswerComplete = &tc.complete
-			result := (Session{Exam: e}).Result()
-			if result.Score != tc.want || result.Maximum != 5 {
-				t.Fatalf("score = %v/%d, want %v/5", result.Score, result.Maximum, tc.want)
-			}
-			if *result.Nodes[0].Score != 4 || *result.Nodes[0].Maximum != 4 {
-				t.Fatalf("raw marks changed: %+v", result.Nodes[0])
-			}
-		})
+func score(e *Exam, id string) int {
+	if s := e.Nodes[id].Score; s != nil {
+		return *s
+	}
+	return -1
+}
+
+func TestTopicScaleIsTwoAtTheTopAndOneBelow(t *testing.T) {
+	g := fixture(t)
+	if g.MaxScore("a-star") != RootMaxScore || g.MaxScore("heuristic") != NestedMaxScore || g.MaxScore("search-space") != NestedMaxScore {
+		t.Fatalf("max a-star=%d heuristic=%d search-space=%d", g.MaxScore("a-star"), g.MaxScore("heuristic"), g.MaxScore("search-space"))
+	}
+	// A score beyond the scale is clamped to the topic's maximum.
+	e, first := NewExam(pair(), 0, nil)
+	if first.NodeID != "top" {
+		t.Fatalf("first = %+v", first)
+	}
+	e.Apply(Evaluation{Verdict: VerdictAnswered, Score: 5})
+	if score(e, "top") != 2 || e.Nodes["base"].Status != StatusCredited {
+		t.Fatalf("top = %+v, base = %s", e.Nodes["top"], e.Nodes["base"].Status)
 	}
 }
 
-func TestDontKnowAfterRephrasePreservesNonzeroRubricMarks(t *testing.T) {
-	const rubric = "Аналитическая рубрика (макс. 4):\nПункт рубрики 1 «Суть»: 4 — верно; 2 — частично; 0 — нет."
-	spec, err := ParseRubric(rubric)
+func TestStrongStudentIsAskedOnlyTopLevelTopics(t *testing.T) {
+	e, first := NewExam(fixture(t), 0, nil)
+	steps := run(t, e, first, func(Step) Evaluation { return strong })
+	if got := asked(steps, KindQuestion); !slices.Equal(got, []string{"a-star", "simulated-annealing", "mcts", "agents-peas"}) {
+		t.Fatalf("questions = %v", got)
+	}
+	if got := asked(steps, KindFollowup); len(got) != 0 {
+		t.Fatalf("a full answer needs no followup: %v", got)
+	}
+	for _, id := range []string{"heuristic", "search-space", "hill-climbing", "exploration-exploitation"} {
+		if e.Nodes[id].Status != StatusCredited {
+			t.Fatalf("%s status = %s", id, e.Nodes[id].Status)
+		}
+	}
+	grade, percent := courseGrade(e)
+	if *grade != GradeA || *percent != 100 || len(e.Gaps()) != 0 || len(e.WeakSpots()) != 0 {
+		t.Fatalf("grade=%s percent=%d gaps=%v weak=%v", *grade, *percent, e.Gaps(), e.WeakSpots())
+	}
+}
+
+func TestFollowupCompletesAPartialTopLevelAnswer(t *testing.T) {
+	e, first := NewExam(pair(), 0, nil)
+	if next := e.Apply(partial); next.Kind != KindFollowup || next.NodeID != first.NodeID {
+		t.Fatalf("next = %+v", next)
+	}
+	if next := e.Apply(strong); next.Kind != KindClosing {
+		t.Fatalf("next = %+v", next)
+	}
+	if score(e, "top") != 2 || e.Nodes["top"].Status != StatusIndependent || e.Nodes["base"].Status != StatusCredited {
+		t.Fatalf("top = %+v base = %s", e.Nodes["top"], e.Nodes["base"].Status)
+	}
+}
+
+func TestPartialTopLevelAnswerChecksItsPrerequisites(t *testing.T) {
+	e, first := NewExam(fixture(t), 0, nil)
+	steps := run(t, e, first, func(s Step) Evaluation {
+		if s.NodeID == "a-star" {
+			return partial
+		}
+		return strong
+	})
+	if got := asked(steps, KindQuestion); !slices.Equal(got[:3], []string{"a-star", "uninformed-search", "heuristic-admissibility"}) {
+		t.Fatalf("questions = %v", got)
+	}
+	// A prerequisite has no partial score: 1 masters it and credits its own
+	// prerequisites, so search-space and heuristic are not asked.
+	for id, want := range map[string]Status{"a-star": StatusIndependent, "uninformed-search": StatusIndependent, "heuristic-admissibility": StatusIndependent, "search-space": StatusCredited, "heuristic": StatusCredited} {
+		if e.Nodes[id].Status != want {
+			t.Fatalf("%s = %s, want %s", id, e.Nodes[id].Status, want)
+		}
+	}
+	if score(e, "a-star") != 1 || score(e, "uninformed-search") != 1 {
+		t.Fatalf("a-star = %d uninformed-search = %d", score(e, "a-star"), score(e, "uninformed-search"))
+	}
+	if got := e.WeakSpots(); !slices.Equal(got, []string{"a-star"}) {
+		t.Fatalf("weak spots = %v", got)
+	}
+	if got := asked(steps, KindFollowup); !slices.Equal(got, []string{"a-star"}) {
+		t.Fatalf("followups = %v", got)
+	}
+}
+
+func TestAFollowupNeverLowersTheObservedScore(t *testing.T) {
+	for _, followup := range []Evaluation{weak, unknown, vague} {
+		e, _ := NewExam(pair(), 0, nil)
+		e.Apply(partial)
+		e.Apply(followup)
+		if score(e, "top") != 1 || e.Nodes["top"].Status != StatusIndependent {
+			t.Fatalf("followup %+v: top = %+v", followup, e.Nodes["top"])
+		}
+	}
+}
+
+func TestGapDescendsToTheDeepestUnmasteredTopic(t *testing.T) {
+	e, first := NewExam(fixture(t), 0, nil)
+	steps := run(t, e, first, func(s Step) Evaluation {
+		switch s.NodeID {
+		case "a-star":
+			return weak
+		case "heuristic-admissibility":
+			return unknown
+		}
+		return strong
+	})
+	// a-star scores 0 twice (with a rephrase), then its prerequisites are
+	// asked before the next top-level topic.
+	if got := asked(steps, KindQuestion); !slices.Equal(got[:4], []string{"a-star", "uninformed-search", "heuristic-admissibility", "heuristic"}) {
+		t.Fatalf("questions = %v", got)
+	}
+	if got := asked(steps, KindRephrase); !slices.Equal(got, []string{"a-star"}) {
+		t.Fatalf("rephrases = %v (don't know is never rephrased)", got)
+	}
+	if e.Nodes["a-star"].Status != StatusGap || !e.Nodes["a-star"].Assisted || e.Nodes["heuristic-admissibility"].Status != StatusGap || !e.Nodes["heuristic-admissibility"].DontKnow {
+		t.Fatalf("a-star=%+v admissibility=%+v", e.Nodes["a-star"], e.Nodes["heuristic-admissibility"])
+	}
+	if e.Nodes["search-space"].Status != StatusCredited {
+		t.Fatalf("search-space = %s", e.Nodes["search-space"].Status)
+	}
+	if got := e.Gaps(); !slices.Equal(got, []string{"heuristic-admissibility"}) {
+		t.Fatalf("gaps = %v", got)
+	}
+	// a-star's constituent is the mean of a-star 0/2, uninformed-search 1/1,
+	// heuristic-admissibility 0/1 and heuristic 1/1; the other three
+	// top-level topics are full: (1/2 + 3) / 4.
+	grade, percent := courseGrade(e)
+	if *grade != GradeB || *percent != 87 {
+		t.Fatalf("grade=%s percent=%d", *grade, *percent)
+	}
+}
+
+func TestHelpCapsATopLevelTopicAtOne(t *testing.T) {
+	// After a rephrase: a full answer is assisted, scores 1 and checks the
+	// prerequisites without a followup.
+	e, _ := NewExam(pair(), 0, nil)
+	if next := e.Apply(weak); next.Kind != KindRephrase {
+		t.Fatalf("next = %+v", next)
+	}
+	if next := e.Apply(strong); next.Kind != KindQuestion || next.NodeID != "base" {
+		t.Fatalf("next = %+v", next)
+	}
+	if s := e.Nodes["top"]; score(e, "top") != 1 || s.Status != StatusAssisted || !s.Assisted {
+		t.Fatalf("top = %+v", s)
+	}
+	// A hint on the main question keeps the topic open and caps it the same way.
+	e, first := NewExam(pair(), 0, nil)
+	next := e.Apply(Evaluation{Verdict: VerdictHintRequested})
+	if next.NodeID != first.NodeID || next.Kind != KindRephrase || !next.Hint || e.Nodes["top"].Score != nil || !e.Nodes["top"].HintUsed {
+		t.Fatalf("hint closed topic or lost context: %+v, %+v", next, e.Nodes["top"])
+	}
+	data, err := json.Marshal(e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, _ := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "A", AssessmentGuidance: rubric}}}, 0, nil)
-	e.Apply(Evaluation{Verdict: VerdictAnswered, AnswerComplete: ptr(false), Rubric: &RubricResult{Items: []RubricMark{{RubricItem: spec[0], Score: 2, Reason: "частично"}}}})
-	// Force a rephrase, as for a weak original answer.
-	e.Current.Kind = KindRephrase
-	e.Apply(Evaluation{Verdict: VerdictDontKnow})
-	marks := e.TopicMarks("a")
-	if len(marks) != 1 || marks[0].Score != 2 || marks[0].Reason != "частично" {
-		t.Fatalf("marks = %+v", marks)
+	var restored Exam
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
 	}
-	result := (Session{Exam: e}).Result()
-	if result.Score != 2.5 {
-		t.Fatalf("score = %v, want 2.5", result.Score)
+	restored.Apply(strong)
+	if score(&restored, "top") != 1 || restored.Nodes["top"].Status != StatusAssisted {
+		t.Fatalf("restored top = %+v", restored.Nodes["top"])
+	}
+	// A prerequisite has nothing to cap: help leaves its 1.
+	e, _ = NewExam(pair(), 0, nil)
+	e.Apply(weak)
+	e.Apply(weak)
+	e.Apply(weak)
+	e.Apply(strong)
+	if score(e, "base") != 1 || e.Nodes["base"].Status != StatusAssisted {
+		t.Fatalf("base = %+v", e.Nodes["base"])
+	}
+}
+
+func TestHintOnFollowupKeepsTheFollowup(t *testing.T) {
+	e, first := NewExam(pair(), 0, nil)
+	e.Apply(partial)
+	next := e.Apply(Evaluation{Verdict: VerdictHintRequested})
+	if next.NodeID != first.NodeID || next.Kind != KindFollowup || !next.Hint {
+		t.Fatalf("next = %+v", next)
+	}
+	e.Apply(weak)
+	if score(e, "top") != 1 || e.Nodes["top"].Status != StatusAssisted {
+		t.Fatalf("top = %+v", e.Nodes["top"])
+	}
+}
+
+func TestInsufficientAfterRephraseIsExcludedFromTheScore(t *testing.T) {
+	e, first := NewExam(pair(), 0, nil)
+	if next := e.Apply(vague); next.Kind != KindRephrase || next.NodeID != first.NodeID {
+		t.Fatalf("next = %+v", next)
+	}
+	e.Apply(vague)
+	if s := e.Nodes["top"]; s.Status != StatusInsufficient || !s.Assisted || s.Score != nil {
+		t.Fatalf("top = %+v", s)
+	}
+	// Insufficient data does not descend.
+	if !e.Completed() {
+		t.Fatalf("current = %+v", e.Current)
+	}
+	r := Session{Exam: e}.Result()
+	if r.ScorePercent != nil || r.Nodes[1].Score != nil {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestSingleAnswerConcludesEveryTopicAtOnce(t *testing.T) {
+	newExam := func() *Exam {
+		e, _ := NewExam(pair(), 0, nil)
+		e.SingleAnswer = true
+		return e
+	}
+	// 0: a gap without a rephrase.
+	e := newExam()
+	if next := e.Apply(weak); next.Kind != KindQuestion || next.NodeID != "base" {
+		t.Fatalf("next = %+v", next)
+	}
+	if e.Nodes["top"].Status != StatusGap || e.Nodes["top"].Assisted {
+		t.Fatalf("top = %+v", e.Nodes["top"])
+	}
+	// 1: concluded without a followup, the prerequisites are checked.
+	e = newExam()
+	if next := e.Apply(partial); next.Kind != KindQuestion || next.NodeID != "base" {
+		t.Fatalf("next = %+v", next)
+	}
+	// 2: the prerequisites are credited.
+	e = newExam()
+	if next := e.Apply(strong); next.Kind != KindClosing || e.Nodes["base"].Status != StatusCredited {
+		t.Fatalf("next = %+v, base = %s", next, e.Nodes["base"].Status)
+	}
+	// No hint and no rephrase: an unclear answer is insufficient.
+	e = newExam()
+	e.Apply(Evaluation{Verdict: VerdictHintRequested})
+	if e.Nodes["top"].Status != StatusInsufficient || e.Nodes["top"].HintUsed {
+		t.Fatalf("top = %+v", e.Nodes["top"])
+	}
+}
+
+func TestMaxQuestionsEndsTheExam(t *testing.T) {
+	e, first := NewExam(independent(10), 3, nil)
+	steps := run(t, e, first, func(Step) Evaluation { return partial })
+	// n00000: question + followup; n00001: question, and its followup does not
+	// fit, so the main answer decides.
+	if q := len(asked(steps, KindQuestion)) + len(asked(steps, KindFollowup)); q != 3 {
+		t.Fatalf("asked %d times with a limit of 3", q)
+	}
+	if s := e.Nodes["n00001"]; s.Status != StatusIndependent || score(e, "n00001") != 1 {
+		t.Fatalf("n00001 = %+v", s)
+	}
+	if e.Nodes["n00002"].Status != StatusUnchecked {
+		t.Fatal("topics beyond the limit stay unchecked")
+	}
+}
+
+func TestFollowupsAndRephrasesNeverExceedTheLimit(t *testing.T) {
+	// Every partial answer needs a followup; with "rephrased" the main answer
+	// is 0 and the rephrase is partial. Rephrases count in the limit (decision
+	// of 18.10.2026). A followup or rephrase due at the last slot does not
+	// fit: the answer decides instead, and a main answer of 0 is a gap.
+	for _, rephrased := range []bool{false, true} {
+		for _, limit := range []int{1, 3, 8} {
+			e, first := NewExam(independent(10), limit, nil)
+			steps := run(t, e, first, func(s Step) Evaluation {
+				if rephrased && s.Kind == KindQuestion {
+					return weak
+				}
+				return partial
+			})
+			if len(steps) != limit || e.Asked != limit {
+				t.Fatalf("rephrased=%v limit=%d: asked %d (Asked=%d)", rephrased, limit, len(steps), e.Asked)
+			}
+			if rephrased && limit > 1 && len(asked(steps, KindRephrase)) == 0 {
+				t.Fatalf("limit=%d: no rephrase", limit)
+			}
+			for _, id := range asked(steps, KindQuestion) {
+				s := e.Nodes[id]
+				switch {
+				case rephrased && !slices.Contains(asked(steps, KindRephrase), id):
+					if s.Status != StatusGap || s.Assisted {
+						t.Fatalf("limit=%d: %s without room for a rephrase = %+v", limit, id, s)
+					}
+				case score(e, id) != 1 || (s.Status == StatusAssisted) != rephrased:
+					t.Fatalf("rephrased=%v limit=%d: %s = %+v", rephrased, limit, id, s)
+				}
+			}
+		}
+	}
+}
+
+// The course grade is not stored: a completed diagnostic is graded by the
+// current rule when read, here the mean of 1/2 and 2/2 is 75%.
+func TestCompletedSessionIsGradedByTheCurrentRule(t *testing.T) {
+	e, _ := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "А"}, {ID: "b", Title: "Б"}}}, 0, nil)
+	for id, points := range map[string]int{"a": 1, "b": 2} {
+		points := points
+		e.Nodes[id].Status, e.Nodes[id].Score = StatusIndependent, &points
+	}
+	completed := int64(1792400000)
+	stored, err := json.Marshal(Session{ID: "s", Status: SessionCompleted, CompletedAt: &completed, Exam: e})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Session
+	if err := json.Unmarshal(stored, &read); err != nil {
+		t.Fatal(err)
+	}
+	r := read.Result()
+	if r.Grade == nil || *r.Grade != GradeB || *r.ScorePercent != 75 || r.Score != 7.5 || r.Maximum != 10 {
+		t.Fatalf("result = %+v", r)
+	}
+	if n := r.Nodes[0]; n.Score == nil || *n.Score != 1 || n.Maximum != 2 {
+		t.Fatalf("node = %+v", n)
+	}
+}
+
+// A partly answered topic must not score below a failed one with the same
+// prerequisites, so the points of every asked topic count (decision of 01.11.2026).
+func TestCourseScoreNormalizesAConstituent(t *testing.T) {
+	graph := Graph{Nodes: []Node{
+		{ID: "b1", Title: "Б1"},
+		{ID: "b2", Title: "Б2"},
+		{ID: "main", Title: "Главная", Prerequisites: []string{"b1", "b2"}},
+	}}
+	grade := func(main Evaluation) (*Grade, *int, float64, int) {
+		e, first := NewExam(graph, 0, nil)
+		run(t, e, first, func(s Step) Evaluation {
+			if s.NodeID == "main" {
+				return main
+			}
+			return strong
+		})
+		r := Session{Exam: e}.Result()
+		return r.Grade, r.ScorePercent, r.Score, r.Maximum
+	}
+	g, p, points, maximum := grade(unknown)
+	if *g != GradeC || *p != 66 || points != 3.3 || maximum != 5 {
+		t.Fatalf("failed main: %s %d%% %v/%d", *g, *p, points, maximum)
+	}
+	g, p, points, maximum = grade(partial)
+	if *g != GradeB || *p != 83 || points != 4.2 || maximum != 5 {
+		t.Fatalf("partial main: %s %d%% %v/%d", *g, *p, points, maximum)
+	}
+	// A full answer credits the prerequisites: the one asked task is the whole constituent.
+	g, p, points, maximum = grade(strong)
+	if *g != GradeA || *p != 100 || points != 5 || maximum != 5 {
+		t.Fatalf("full main: %s %d%% %v/%d", *g, *p, points, maximum)
+	}
+}
+
+func TestDontKnowAndScoredZeroWeighTheSame(t *testing.T) {
+	for _, answer := range []Evaluation{unknown, weak} {
+		e, first := NewExam(Graph{Nodes: []Node{{ID: "a", Title: "А"}, {ID: "b", Title: "Б"}}}, 0, nil)
+		run(t, e, first, func(s Step) Evaluation {
+			if s.NodeID == "a" {
+				return answer
+			}
+			return strong
+		})
+		r := Session{Exam: e}.Result()
+		if *r.ScorePercent != 50 || r.Nodes[0].Score == nil || *r.Nodes[0].Score != 0 {
+			t.Fatalf("%+v: result = %+v", answer, r)
+		}
+	}
+}
+
+func TestAnUnaskedTopLevelTopicIsNoConstituent(t *testing.T) {
+	e, first := NewExam(Graph{Nodes: []Node{
+		{ID: "base", Title: "Основа"},
+		{ID: "a", Title: "А", Prerequisites: []string{"base"}},
+		{ID: "b", Title: "Б", Prerequisites: []string{"base"}},
+	}}, 2, nil)
+	var top string
+	run(t, e, first, func(s Step) Evaluation {
+		if s.NodeID != "base" {
+			top = s.NodeID
+			return unknown
+		}
+		return strong
+	})
+	unasked := "a"
+	if top == "a" {
+		unasked = "b"
+	}
+	if e.Nodes[unasked].Status != StatusUnchecked {
+		t.Fatalf("%s status = %s", unasked, e.Nodes[unasked].Status)
+	}
+	r := Session{Exam: e}.Result()
+	if r.Score != 2.5 || r.Maximum != 5 || *r.ScorePercent != 50 || *r.Grade != GradeD {
+		t.Fatalf("result = %v/%d %d%% %s", r.Score, r.Maximum, *r.ScorePercent, *r.Grade)
+	}
+}
+
+func TestACompetencyWeighsTheSameWithMoreConstituents(t *testing.T) {
+	e, first := NewExam(Graph{Nodes: []Node{
+		{ID: "a1", Title: "А1", Competency: "А"},
+		{ID: "a2", Title: "А2", Competency: "А"},
+		{ID: "a3", Title: "А3", Competency: "А"},
+		{ID: "b", Title: "Б", Competency: "Б"},
+	}}, 0, nil)
+	run(t, e, first, func(s Step) Evaluation {
+		if s.NodeID == "b" {
+			return unknown
+		}
+		return strong
+	})
+	// Without competencies it would be 3 of 4, 75%.
+	r := Session{Exam: e}.Result()
+	if r.Score != 5 || r.Maximum != 10 || *r.ScorePercent != 50 || *r.Grade != GradeD {
+		t.Fatalf("result = %v/%d %d%% %s", r.Score, r.Maximum, *r.ScorePercent, *r.Grade)
+	}
+}
+
+func TestResultCarriesTheReasonsOfAScore(t *testing.T) {
+	e, first := NewExam(pair(), 0, nil)
+	run(t, e, first, func(Step) Evaluation { return strong })
+	r := Session{Exam: e}.Result()
+	for _, n := range r.Nodes {
+		switch n.NodeID {
+		case "top":
+			if n.Score == nil || *n.Score != 2 || n.Maximum != 2 || !slices.Equal(n.Reasons, []string{"верно"}) {
+				t.Fatalf("top = %+v", n)
+			}
+		case "base":
+			if n.Score != nil || n.Maximum != 1 || n.Status != StatusCredited {
+				t.Fatalf("base = %+v", n)
+			}
+		}
 	}
 }

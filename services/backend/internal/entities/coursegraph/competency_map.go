@@ -1,7 +1,6 @@
 package coursegraph
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -478,29 +477,36 @@ func mapGraph(order []mapGroup, outcomes []mapOutcome) (json.RawMessage, int, []
 	topics := []mapTopic{}
 	prerequisites, hierarchy := []mapEdge{}, []mapEdge{}
 	skipped := []SkippedCompetency{}
-	for _, group := range order {
-		name := group.constituent
-		pool := byConstituent[group]
-		if len(pool) < 3 {
-			skipped = append(skipped, SkippedCompetency{Name: name,
-				Reason: fmt.Sprintf("ОР с TRUE и заданием — %d, нужно не меньше трёх: основное и два базовых.", len(pool))})
-			continue
+	pools := make([]Pool, len(order))
+	byKey := map[string]mapOutcome{}
+	for i, group := range order {
+		pool := Pool{Key: strconv.Itoa(i), Name: group.constituent}
+		for _, o := range byConstituent[group] {
+			key := topicID(o)
+			byKey[key] = o
+			pool.Candidates = append(pool.Candidates, Candidate{Key: key, Name: o.outcome, Rank: o.bloom, Importance: o.importance, Order: o.order})
 		}
-		main := slices.MinFunc(pool, func(a, b mapOutcome) int {
-			return cmp.Or(cmp.Compare(b.bloom, a.bloom), cmp.Compare(b.importance, a.importance), cmp.Compare(a.order, b.order))
-		})
-		rest := slices.DeleteFunc(slices.Clone(pool), func(o mapOutcome) bool { return o.order == main.order })
-		slices.SortStableFunc(rest, func(a, b mapOutcome) int {
-			return cmp.Or(cmp.Compare(a.bloom, b.bloom), cmp.Compare(b.importance, a.importance), cmp.Compare(a.order, b.order))
-		})
+		pools[i] = pool
+	}
+	trees, skips := SelectTrees(pools)
+	for _, skip := range skips {
+		skipped = append(skipped, SkippedCompetency{Name: skip.Name,
+			Reason: fmt.Sprintf("ОР с TRUE и заданием — %d, нужно не меньше трёх: основное и два базовых.", skip.Eligible)})
+	}
+	for _, tree := range trees {
+		name := tree.Name
+		main := byKey[tree.Root.Key]
 		mainID := topicID(main)
 		// Study order: the basic tasks come before the main one.
-		for _, basic := range rest[:2] {
+		requires := make([]string, 0, len(tree.Children))
+		for _, child := range tree.Children {
+			basic := byKey[child.Key]
 			topics = append(topics, newMapTopic(basic, "basic", nil))
 			prerequisites = append(prerequisites, mapEdge{Source: topicID(basic), Target: mainID, Reason: "Базовое задание составляющей «" + name + "»."})
 			hierarchy = append(hierarchy, mapEdge{Source: mainID, Target: topicID(basic)})
+			requires = append(requires, topicID(basic))
 		}
-		topics = append(topics, newMapTopic(main, "main", []string{topicID(rest[0]), topicID(rest[1])}))
+		topics = append(topics, newMapTopic(main, "main", requires))
 	}
 	data, err := json.Marshal(struct {
 		Version       string     `json:"version"`
@@ -556,15 +562,13 @@ func newMapTopic(o mapOutcome, role string, requires []string) mapTopic {
 }
 
 // scoringLine starts the scoring part of the criteria: «Балл (макс. 1)» or an
-// analytic rubric with its own К1, К2…, which are not Geek's К1–К4.
+// analytic rubric with its own К1, К2….
 var scoringLine = regexp.MustCompile(`(?i)^(Балл|Аналитическая рубрика|[КK]\d+(?:\s|:)|[+−-]?\d+(?:[.,]\d+)?\s*(?:балл|[—–−-]))`)
 
-var rubricCriterion = regexp.MustCompile(`(?i)^[КK](\d+)(\s|:)`)
-
 // splitCriteria keeps the reference answer (Эталон, Допустимо) as the text of
-// the topic and turns the scoring of the map into the teacher's rule for the
-// grader, renaming the rubric's К1, К2… so the grader does not take them for
-// its own criteria.
+// the topic and turns the scoring of the map into the teacher's criteria for
+// the grader. The grader scores on the topic's scale; the criteria tell what a
+// full answer is (decision of 08.11.2026).
 func splitCriteria(criteria string) (string, string) {
 	var reference, scoring []string
 	for _, line := range strings.Split(strings.ReplaceAll(criteria, "\r\n", "\n"), "\n") {
@@ -572,14 +576,14 @@ func splitCriteria(criteria string) (string, string) {
 		switch {
 		case line == "":
 		case len(scoring) > 0 || scoringLine.MatchString(line):
-			scoring = append(scoring, rubricCriterion.ReplaceAllString(line, "Пункт рубрики $1$2"))
+			scoring = append(scoring, line)
 		default:
 			reference = append(reference, line)
 		}
 	}
 	guidance := ""
 	if len(scoring) > 0 {
-		guidance = "Рубрика задания из карты компетенций (её пункты не совпадают с критериями К1–К4; учитывай их как ориентир, что считать полным ответом):\n" + strings.Join(scoring, "\n")
+		guidance = "Критерии задания из карты компетенций (ориентир, что считать полным ответом):\n" + strings.Join(scoring, "\n")
 	}
 	return strings.Join(reference, "\n"), guidance
 }

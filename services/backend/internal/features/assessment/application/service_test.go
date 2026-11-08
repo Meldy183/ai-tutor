@@ -104,7 +104,7 @@ func TestEvaluateVariantUsesOwnedHistoricalSnapshot(t *testing.T) {
 	got, err := New(transcriptions, learning_tasks, grader).EvaluateVariant(
 		context.Background(), "student-1", "tr-1", "variant-1", "variant-task-1",
 	)
-	if err != nil || got.Score != 3 || got.MaxScore != 3 || got.Verdict != "correct" {
+	if err != nil || got.Score != 2 || got.MaxScore != 2 || got.Verdict != "correct" {
 		t.Fatalf("unexpected evaluation: %#v, %v", got, err)
 	}
 	if learning_tasks.ownerID != "student-1" || learning_tasks.variantID != "variant-1" || learning_tasks.variantTaskID != "variant-task-1" {
@@ -140,9 +140,9 @@ func TestSubjectKnowledgeIsNotReplacedByInstructionFollowing(t *testing.T) {
 	}{
 		{"wrong content with instruction", "main", 0, false, true, true},
 		{"partial content", "main", 1, false, true, true},
-		{"incomplete cannot receive full score", "main", 3, false, true, false},
-		{"complete content", "main", 3, true, true, true},
-		{"main never scores two", "main", 2, true, true, false},
+		{"incomplete cannot receive full score", "main", 2, false, true, false},
+		{"complete content", "main", 2, true, true, true},
+		{"main never scores three", "main", 3, true, true, false},
 		{"complete cannot receive partial score", "main", 1, true, true, false},
 		{"instruction remains mandatory", "main", 1, true, false, false},
 		{"wrong basic with instruction", "basic", 0, false, true, true},
@@ -242,7 +242,7 @@ func TestEvaluateVariantWorksWithoutCriteriaOrEducationalContent(t *testing.T) {
 		grader,
 	).EvaluateVariant(context.Background(), "student-1", "tr-1", "variant-1", "variant-task-1")
 
-	if err != nil || got.Score != 3 {
+	if err != nil || got.Score != 2 {
 		t.Fatalf("expected grading from sparse historical snapshot, got %#v, %v", got, err)
 	}
 	if grader.gradingContext.MaterialContext.Knowledge != "" {
@@ -393,7 +393,7 @@ func TestEvaluateVariantNormalizesFeedbackLineBreaks(t *testing.T) {
 	result := validMainEvaluation()
 	result.Feedback = " Верно.\r\nОба критерия выполнены. \n Причина.\rУточнение. "
 	got, err := New(&transcriptionStub{text: "ответ"}, &variantTaskStub{result: validVariantTask("main")}, &graderStub{result: result}).EvaluateVariant(context.Background(), "student-1", "tr-1", "variant-1", "variant-task-1")
-	if want := "Верно. Оба критерия выполнены. Причина. Уточнение."; err != nil || got.Feedback != want || got.Score != 3 {
+	if want := "Верно. Оба критерия выполнены. Причина. Уточнение."; err != nil || got.Feedback != want || got.Score != 2 {
 		t.Fatalf("expected normalized feedback and preserved grade, got %+v, %v", got, err)
 	}
 }
@@ -425,7 +425,7 @@ func TestEvaluateVariantRetriesInvalidModelResponse(t *testing.T) {
 				return result, nil
 			})
 			got, err := New(&transcriptionStub{text: "ответ"}, &variantTaskStub{result: validVariantTask("main")}, grader).EvaluateVariant(context.Background(), "owner", "tr", "variant", "task")
-			if err != nil || got.Score != 3 || got.MaxScore != 3 || got.Feedback == "" || calls != 2 {
+			if err != nil || got.Score != 2 || got.MaxScore != 2 || got.Feedback == "" || calls != 2 {
 				t.Fatalf("expected recovery after invalid %s, got %+v, %v (%d calls)", kind, got, err, calls)
 			}
 		})
@@ -479,7 +479,7 @@ func TestEvaluateVariantDoesNotRetryAfterCancellation(t *testing.T) {
 	}
 }
 
-func TestMainUsesThreePointsAndRejectsTwo(t *testing.T) {
+func TestMainUsesTwoPointsAndRejectsThree(t *testing.T) {
 	for _, score := range []int{0, 1, 2, 3} {
 		result := validEvaluation()
 		result.Score = score
@@ -493,18 +493,18 @@ func TestMainUsesThreePointsAndRejectsTwo(t *testing.T) {
 			result.CriterionResults[0].Satisfied = false
 		}
 		got, err := New(&transcriptionStub{text: "ответ"}, nil, &graderStub{result: result}).EvaluateTrusted(context.Background(), "owner", "tr", validVariantTask("main"))
-		if score == 2 {
+		if score == 3 {
 			if err == nil {
-				t.Fatal("main score 2 must be rejected")
+				t.Fatal("main score 3 must be rejected")
 			}
 			continue
 		}
-		if err != nil || got.Score != score || got.MaxScore != 3 {
+		if err != nil || got.Score != score || got.MaxScore != 2 {
 			t.Fatalf("score %d: %+v, %v", score, got, err)
 		}
 	}
 }
 
-func validMainEvaluation() Evaluation { result := validEvaluation(); result.Score = 3; return result }
+func validMainEvaluation() Evaluation { result := validEvaluation(); result.Score = 2; return result }
 
 type gradingFunc func(context.Context, GradingContext, string) (Evaluation, error)
