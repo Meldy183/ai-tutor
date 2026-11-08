@@ -251,13 +251,19 @@ func (g Graph) competencyShares(topics map[string]float64) []float64 {
 	return out
 }
 
-func (g Graph) TopLevel() []string {
-	required := map[string]bool{}
+// required indexes the topics that are a prerequisite of another topic.
+func (g Graph) required() map[string]bool {
+	required := make(map[string]bool, len(g.Nodes))
 	for _, n := range g.Nodes {
 		for _, p := range n.Prerequisites {
 			required[p] = true
 		}
 	}
+	return required
+}
+
+func (g Graph) TopLevel() []string {
+	required := g.required()
 	top := []string{}
 	for _, n := range g.Nodes {
 		if !required[n.ID] {

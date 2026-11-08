@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,23 @@ func pairedMapBookWithMissingGeekCriteria(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	defer book.Close()
+	rows, err := book.GetRows("Карта компетенций")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second constituent keeps a full tree when the first one loses a task.
+	for i, row := range rows[1:] {
+		copied := slices.Clone(row)
+		copied[0] = fmt.Sprint(i + len(rows))
+		if copied[1] != "" {
+			copied[1], copied[2] = "К2. Среда", "2.1 Описывает среду"
+		}
+		copied[3] = "Среда: " + copied[3]
+		copied[7] = "Среда: " + copied[7]
+		if err := book.SetSheetRow("Карта компетенций", fmt.Sprintf("A%d", i+len(rows)+1), &copied); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := book.SetCellValue("Карта компетенций", "I2", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +324,8 @@ func TestSkippingGeekTaskKeepsThePublishedGraphAndTheCourseStructure(t *testing.
 		t.Fatal("filtering changed the published Geek graph before its build")
 	}
 	oldGeek, ok, err := geekgraph.NewStored(f.pool).Current(context.Background(), "subject:test")
-	if err != nil || !ok || len(oldGeek.Nodes) != 3 {
-		t.Fatalf("published Geek must stay on its old three-topic version while preparing: nodes=%d ok=%v err=%v", len(oldGeek.Nodes), ok, err)
+	if err != nil || !ok || len(oldGeek.Nodes) != 6 {
+		t.Fatalf("published Geek must stay on its old six-topic version while preparing: nodes=%d ok=%v err=%v", len(oldGeek.Nodes), ok, err)
 	}
 	newProjection, err := repo.MapGraph(context.Background(), "subject:test")
 	if err != nil {
@@ -316,8 +334,8 @@ func TestSkippingGeekTaskKeepsThePublishedGraphAndTheCourseStructure(t *testing.
 	var shape struct {
 		Topics []json.RawMessage `json:"topics"`
 	}
-	if err := json.Unmarshal(newProjection, &shape); err != nil || len(shape.Topics) != 2 {
-		t.Fatalf("new Geek projection should omit one fallback-only topic: topics=%d err=%v", len(shape.Topics), err)
+	if err := json.Unmarshal(newProjection, &shape); err != nil || len(shape.Topics) != 3 {
+		t.Fatalf("new Geek projection should omit the constituent left without a full tree: topics=%d err=%v", len(shape.Topics), err)
 	}
 	var preparedGraph map[string]json.RawMessage
 	var topics []map[string]any

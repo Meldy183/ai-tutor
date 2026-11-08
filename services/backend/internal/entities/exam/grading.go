@@ -63,13 +63,15 @@ const (
 
 // MaxScore is the maximum of a topic: RootMaxScore at the top level,
 // NestedMaxScore below it.
-func (g Graph) MaxScore(id string) int {
-	for _, top := range g.TopLevel() {
-		if top == id {
-			return RootMaxScore
-		}
+func (g Graph) MaxScore(id string) int { return maxScore(g.required(), id) }
+
+// maxScore shares one index of required topics, so an operation over many
+// topics does not rebuild it for each of them.
+func maxScore(required map[string]bool, id string) int {
+	if required[id] {
+		return NestedMaxScore
 	}
-	return NestedMaxScore
+	return RootMaxScore
 }
 
 // capScore keeps a score within the topic's scale and applies the cap of help.

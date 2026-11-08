@@ -460,10 +460,11 @@ func (e *Exam) Gaps() []string {
 // WeakSpots are the topics passed below their maximum: mastered, but answered
 // only in part, so the student sees what to strengthen besides the gaps.
 func (e *Exam) WeakSpots() []string {
+	required := e.Graph.required()
 	out := []string{}
 	for _, n := range e.Graph.Nodes {
 		state := e.Nodes[n.ID]
-		if state.Status.Mastered() && state.Score != nil && *state.Score < e.Graph.MaxScore(n.ID) {
+		if state.Status.Mastered() && state.Score != nil && *state.Score < maxScore(required, n.ID) {
 			out = append(out, n.ID)
 		}
 	}

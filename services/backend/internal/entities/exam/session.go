@@ -164,14 +164,16 @@ type Result struct {
 
 func (s Session) Result() Result {
 	e := s.Exam
-	top := e.Graph.TopLevel()
+	required := e.Graph.required()
+	nodes := make(map[string]Node, len(e.Graph.Nodes))
 	r := Result{SessionID: s.ID, Nodes: []NodeResult{}, Gaps: []Gap{}, WeakSpots: []Gap{}}
 	replies := s.closingReplies()
 	shares := map[string]float64{}
 	for _, n := range e.Graph.Nodes {
+		nodes[n.ID] = n
 		state := e.Nodes[n.ID]
-		maximum := e.Graph.MaxScore(n.ID)
-		node := NodeResult{NodeID: n.ID, Title: n.Title, Status: state.Status, TopLevel: slices.Contains(top, n.ID),
+		maximum := maxScore(required, n.ID)
+		node := NodeResult{NodeID: n.ID, Title: n.Title, Status: state.Status, TopLevel: !required[n.ID],
 			Requires: append([]string{}, n.Prerequisites...), Assisted: state.Assisted, Maximum: maximum,
 			Reasons: append([]string{}, state.Reasons...), Reply: replies[n.ID]}
 		if scored(state) {
@@ -184,11 +186,11 @@ func (s Session) Result() Result {
 	r.Score, r.Maximum, r.ScorePercent = OverallScore(e.Graph.competencyShares(shares))
 	r.Grade = CourseGrade(r.ScorePercent)
 	for _, id := range e.Gaps() {
-		n, _ := e.Graph.Node(id)
+		n := nodes[id]
 		r.Gaps = append(r.Gaps, NewGap(id, n.Title, n.Sources))
 	}
 	for _, id := range e.WeakSpots() {
-		n, _ := e.Graph.Node(id)
+		n := nodes[id]
 		r.WeakSpots = append(r.WeakSpots, NewGap(id, n.Title, n.Sources))
 	}
 	return r

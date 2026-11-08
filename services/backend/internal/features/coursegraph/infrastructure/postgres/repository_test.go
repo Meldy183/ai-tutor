@@ -332,7 +332,7 @@ func TestFailedFilteredMapCanBePreparedAgainWithoutRestoringExcludedTasks(t *tes
 	repo := New(pool)
 	ctx := context.Background()
 	fallback, _ := json.Marshal(coursegraph.DefaultAssessmentGuidance)
-	graphA := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","title":"Тема","variants":[{"question":"skip","content":"","assessment_guidance":` + string(fallback) + `},{"question":"keep","content":"Эталон","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
+	graphA := json.RawMessage(`{"version":"competency-map-v1","topics":[{"id":"a","title":"Тема","variants":[{"question":"skip","content":"","assessment_guidance":` + string(fallback) + `},{"question":"keep","content":"Эталон","assessment_guidance":"author"}]},{"id":"b","title":"Тема Б","variants":[{"question":"b","content":"Эталон","assessment_guidance":"author"}]},{"id":"c","title":"Тема В","variants":[{"question":"c","content":"Эталон","assessment_guidance":"author"}]}],"prerequisites":[],"hierarchy":[]}`)
 	if ok, err := saveTestMap(ctx, repo, "s", "map.xlsx", "Карта", graphA, time.Now()); err != nil || !ok {
 		t.Fatalf("save A: %v %v", ok, err)
 	}
@@ -384,7 +384,7 @@ func TestFailedFilteredMapCanBePreparedAgainWithoutRestoringExcludedTasks(t *tes
 	if err := json.Unmarshal(published.Graph, &shape); err != nil {
 		t.Fatal(err)
 	}
-	if shape.Skipped != 1 || len(shape.Topics) != 1 || len(shape.Topics[0].Variants) != 1 || shape.Topics[0].Variants[0].Question != "keep" {
+	if shape.Skipped != 1 || len(shape.Topics) != 3 || len(shape.Topics[0].Variants) != 1 || shape.Topics[0].Variants[0].Question != "keep" {
 		t.Fatalf("excluded task restored: %s", published.Graph)
 	}
 	if ok, err := repo.RetryMap(ctx, "s", published.Map.Fingerprint, time.Now()); err != nil || ok {

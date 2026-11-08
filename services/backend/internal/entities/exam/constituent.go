@@ -26,6 +26,7 @@ func ConstituentMastered(tasks []TaskScore) bool {
 // MasteredConstituents exposes the same constituent result to consumers of
 // an exam snapshot. Material graphs without constituent IDs have no entries.
 func (e *Exam) MasteredConstituents() map[string]bool {
+	required := e.Graph.required()
 	groups := map[string][]TaskScore{}
 	for _, node := range e.Graph.Nodes {
 		if node.ConstituentID == "" {
@@ -35,7 +36,7 @@ func (e *Exam) MasteredConstituents() map[string]bool {
 		if state == nil || !scored(state) {
 			continue
 		}
-		maximum := e.Graph.MaxScore(node.ID)
+		maximum := maxScore(required, node.ID)
 		groups[node.ConstituentID] = append(groups[node.ConstituentID], TaskScore{Score: *state.Score, Maximum: maximum, Main: maximum == RootMaxScore})
 	}
 	out := map[string]bool{}
