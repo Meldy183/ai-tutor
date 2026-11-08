@@ -279,6 +279,34 @@ func pairedMapBookWithMissingGeekCriteria(t *testing.T) []byte {
 	return buffer.Bytes()
 }
 
+func TestImportIgnoresSheetsAfterTheTwoMapSheets(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	admin := f.admin(t)
+	book, err := excelize.OpenReader(bytes.NewReader(pairedMapBook(t, false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer book.Close()
+	if _, err := book.NewSheet("Справочные данные"); err != nil {
+		t.Fatal(err)
+	}
+	// Column 702 is far past the column limit of a map sheet.
+	if err := book.SetCellValue("Справочные данные", "ZZ1", "справка"); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := book.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer.Bytes(), admin,
+		"X-Expected-Learning-Revision", "0")
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("import with a reference sheet: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestSkippingGeekTaskKeepsThePublishedGraphAndTheCourseStructure(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
