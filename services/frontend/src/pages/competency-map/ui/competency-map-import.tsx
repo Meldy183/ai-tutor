@@ -176,9 +176,10 @@ export function CompetencyMapImport({
     setFile(selected)
   }
 
-  // The import changes the learning side too: its map, catalog and state.
+  // The import changes both modes, even when its committed response is lost.
   // The server may have committed before a timeout or a conflict answer.
-  function refreshLearning() {
+  function refreshImportedState() {
+    void graphBuild.refetch()
     void learningMap.refetch()
     void cache.invalidateQueries({
       queryKey: learningSubjectQueryKeys.subjects(userId),
@@ -195,7 +196,7 @@ export function CompetencyMapImport({
     importCourseMap.mutate(
       { file, expectedLearningRevision },
       {
-        onSettled: refreshLearning,
+        onSettled: refreshImportedState,
         onSuccess: (build) => {
           setPairedFingerprint(build.map?.fingerprint ?? null)
           setBuildObserved(
@@ -205,7 +206,6 @@ export function CompetencyMapImport({
           if (build.status === 'succeeded') {
             setPairedFingerprint(null)
           }
-          void graphBuild.refetch()
         },
         onError: (error) => {
           if (

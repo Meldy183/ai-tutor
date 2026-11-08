@@ -48,6 +48,7 @@ function setup({
   competencyMap,
   materials,
   uploadGate,
+  loseImportResponse = false,
   buildGate,
   learningMapImported: initiallyLearningMapImported = false,
   learningWarnings = [],
@@ -85,6 +86,7 @@ function setup({
   // built from its first sheet and the build publishes the graph of the map.
   competencyMap?: 'valid' | 'invalid'
   uploadGate?: Promise<void>
+  loseImportResponse?: boolean
   assessmentWarnings?: { row: number; column: string; message: string }[]
   buildProgress?: {
     stage: string
@@ -340,6 +342,7 @@ function setup({
         activeLearningRevision =
           mapState.learningRevision ?? activeLearningRevision + 1
       }
+      if (loseImportResponse) throw new TypeError('Failed to fetch')
       return Response.json(
         {
           status: 'pending',
@@ -1545,4 +1548,43 @@ it('shows a retry conflict if the saved map changes in another tab', async () =>
       'Карта изменилась. Обновите страницу и повторите подготовку.',
     ),
   ).toBeVisible()
+})
+
+it('refreshes both modes when an import commits but its response is lost', async () => {
+  const mapState = {
+    fingerprint: 'old-map',
+    stale: false,
+    failed: false,
+    publishedRevision: 1,
+    learningRevision: 1,
+  }
+  const calls = setup({
+    graphReady: true,
+    learningMapImported: true,
+    mapState,
+    loseImportResponse: true,
+  })
+  open()
+  const state = await screen.findByRole('region', {
+    name: 'Текущее состояние карты',
+  })
+  expect(
+    await within(state).findByText('Geek: версия 1 опубликована'),
+  ).toBeVisible()
+  const initialReads = calls.mock.calls.filter(([url]) =>
+    url.endsWith('/graph'),
+  ).length
+  mapState.learningRevision = 2
+  await chooseMap()
+  await submitMap()
+  fireEvent.click(await screen.findByRole('button', { name: 'Перезаписать' }))
+  expect(
+    await within(state).findByText('Обучение: версия 2 доступна'),
+  ).toBeVisible()
+  expect(
+    await within(state).findByText('Geek: версия 2 опубликована'),
+  ).toBeVisible()
+  expect(
+    calls.mock.calls.filter(([url]) => url.endsWith('/graph')).length,
+  ).toBeGreaterThan(initialReads)
 })
