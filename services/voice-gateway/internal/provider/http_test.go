@@ -99,40 +99,45 @@ func TestHTTPFailureUsesOptionalExecutionState(t *testing.T) {
 
 func TestRedirectsNeverForwardReceiverCredentialsOrPayload(t *testing.T) {
 	for _, status := range []int{307, 308} {
-		for _, op := range []string{"stt", "tts"} {
-			t.Run(fmt.Sprintf("%s/%d", op, status), func(t *testing.T) {
-				var forwarded atomic.Int32
-				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1) }))
-				defer target.Close()
-				source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.Header.Get("Authorization") != "Bearer private-test-token" {
-						t.Error("source did not receive token")
+		for _, state := range []string{"", "not-started", "finished", "uncertain"} {
+			for _, op := range []string{"stt", "tts"} {
+				t.Run(fmt.Sprintf("%s/%d/state=%s", op, status, state), func(t *testing.T) {
+					var forwarded atomic.Int32
+					target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1) }))
+					defer target.Close()
+					source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Header.Get("Authorization") != "Bearer private-test-token" {
+							t.Error("source did not receive token")
+						}
+						if state != "" {
+							w.Header().Set("X-Voice-Execution-State", state)
+						}
+						w.Header().Set("Location", target.URL)
+						w.WriteHeader(status)
+					}))
+					defer source.Close()
+					client := source.Client()
+					var policyCalls atomic.Int32
+					client.CheckRedirect = func(*http.Request, []*http.Request) error { policyCalls.Add(1); return nil }
+					p := testProvider(client, source.URL)
+					stt, tts := p.STT["stt"], p.TTS["tts"]
+					stt.Token, tts.Token = "private-test-token", "private-test-token"
+					p.STT["stt"], p.TTS["tts"] = stt, tts
+					err := invokeProvider(p, op, context.Background())
+					if info := diagnostic.Info(err); err == nil || !info.Uncertain || info.HTTPStatus != status {
+						t.Fatalf("redirect: %+v", info)
 					}
-					w.Header().Set("Location", target.URL)
-					w.WriteHeader(status)
-				}))
-				defer source.Close()
-				client := source.Client()
-				var policyCalls atomic.Int32
-				client.CheckRedirect = func(*http.Request, []*http.Request) error { policyCalls.Add(1); return nil }
-				p := testProvider(client, source.URL)
-				stt, tts := p.STT["stt"], p.TTS["tts"]
-				stt.Token, tts.Token = "private-test-token", "private-test-token"
-				p.STT["stt"], p.TTS["tts"] = stt, tts
-				err := invokeProvider(p, op, context.Background())
-				if info := diagnostic.Info(err); err == nil || !info.Uncertain || info.HTTPStatus != status {
-					t.Fatalf("redirect: %+v", info)
-				}
-				if forwarded.Load() != 0 || policyCalls.Load() != 0 {
-					t.Fatal("provider followed redirect")
-				}
-				if client.CheckRedirect == nil {
-					t.Fatal("shared client policy was mutated")
-				}
-				if err := client.CheckRedirect(nil, nil); err != nil || policyCalls.Load() != 1 {
-					t.Fatal("shared policy changed")
-				}
-			})
+					if forwarded.Load() != 0 || policyCalls.Load() != 0 {
+						t.Fatal("provider followed redirect")
+					}
+					if client.CheckRedirect == nil {
+						t.Fatal("shared client policy was mutated")
+					}
+					if err := client.CheckRedirect(nil, nil); err != nil || policyCalls.Load() != 1 {
+						t.Fatal("shared policy changed")
+					}
+				})
+			}
 		}
 	}
 }
