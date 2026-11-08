@@ -37,6 +37,7 @@ type Job struct {
 	HTTPStatus int       `json:"http_status,omitempty"`
 	Code       int32     `json:"code,omitempty"`
 	Submitted  time.Time `json:"submitted"`
+	Started    time.Time `json:"started,omitempty"`
 	Finished   time.Time `json:"finished,omitempty"`
 }
 type Engine struct {
@@ -252,6 +253,7 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 		j.State = "running"
 		j.Instance = instance
 		j.Held = true
+		j.Started = time.Now()
 		if err := e.save(j); err != nil {
 			e.mu.Unlock()
 			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "journal", "running_write"), HoldSlot: true}
@@ -307,6 +309,9 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	}
 	if errors.Is(result.Err, scheduler.ErrNoCompatibleInstance) {
 		result.Err = diagnostic.New(codes.Unavailable, "queue", "no_compatible_model")
+	}
+	if errors.Is(result.Err, scheduler.ErrInsufficientBudget) {
+		result.Err = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
 	}
 	e.mu.Lock()
 	if j.State == "queued" {
@@ -382,15 +387,25 @@ func (e *Engine) cleanLocked(parent context.Context, now time.Time) error {
 	return nil
 }
 
-// expireHeldLocked frees reservations of finished calls once holdFor has passed
-// since the call ended, so a lost upstream response cannot block a model forever.
-// The release is committed before the slot is offered to new calls.
+// holdStart is when the hold timeout begins. A TTS job is one HTTP call. An STT
+// job sends fragments in turn, each under its own timeout, and the journal does
+// not record when the last one left, so its hold counts from the end of the job.
+func holdStart(j *Job) time.Time {
+	if j.Operation == "tts" {
+		return j.Started
+	}
+	return j.Finished
+}
+
+// expireHeldLocked frees reservations of finished calls once holdFor has passed,
+// so a lost upstream response cannot block a model forever. The release is
+// committed before the slot is offered to new calls.
 func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor func(string) time.Duration) error {
 	if !e.ready {
 		return nil
 	}
 	for _, j := range e.jobs {
-		if !j.Held || j.State == "running" || now.Sub(j.Finished) < holdFor(j.Instance) {
+		if !j.Held || j.State == "running" || now.Sub(holdStart(j)) < holdFor(j.Instance) {
 			continue
 		}
 		released := *j
@@ -402,7 +417,7 @@ func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor
 		if err := e.queues[j.Operation].ReleaseHeld(j.Instance, 1); err != nil {
 			return err
 		}
-		e.logger.LogAttrs(parent, slog.LevelWarn, "voice held slot expired", slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.Duration("held_for", now.Sub(j.Finished)))
+		e.logger.LogAttrs(parent, slog.LevelWarn, "voice held slot expired", slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.Duration("held_for", now.Sub(holdStart(j))))
 	}
 	return nil
 }

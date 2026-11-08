@@ -6,10 +6,14 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"time"
 )
 
 var ErrQueueFull = errors.New("voice queue is full")
 var ErrNoCompatibleInstance = errors.New("no compatible voice instance")
+
+// ErrInsufficientBudget reports a job refused before its call was sent.
+var ErrInsufficientBudget = errors.New("not enough time left for a voice call")
 
 type Instance struct {
 	ID       string
@@ -44,6 +48,15 @@ type Queue struct {
 	waiting   []*job
 	limit     int
 	next      int
+	minBudget time.Duration
+}
+
+// RequireBudget refuses jobs with less than d left before their deadline. A
+// call cut off by its deadline after sending would hold the slot.
+func (q *Queue) RequireBudget(d time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.minBudget = d
 }
 
 func New(instances []Instance, maxWaiting int) (*Queue, error) {
@@ -127,6 +140,11 @@ func (q *Queue) dispatchLocked() {
 		pending := q.waiting[j]
 		if pending.ctx.Err() != nil {
 			q.waiting = slices.Delete(q.waiting, j, j+1)
+			continue
+		}
+		if deadline, ok := pending.ctx.Deadline(); ok && time.Until(deadline) < q.minBudget {
+			q.waiting = slices.Delete(q.waiting, j, j+1)
+			pending.result <- Result{Err: ErrInsufficientBudget}
 			continue
 		}
 		chosen := -1

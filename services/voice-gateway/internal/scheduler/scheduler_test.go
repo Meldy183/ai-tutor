@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func TestRequireBudgetRefusesOnlyJobsWithoutEnoughTime(t *testing.T) {
+	q, err := New([]Instance{{ID: "one", Slots: 1}}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.RequireBudget(time.Minute)
+	short, cancelShort := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelShort()
+	ran := false
+	refused := q.Submit(short, "", func(context.Context, string) Result { ran = true; return Result{} })
+	if !errors.Is(refused.Err, ErrInsufficientBudget) || ran {
+		t.Fatalf("short job was sent: %+v", refused)
+	}
+	if busy := q.Stats().Instances[0].Busy; busy != 0 {
+		t.Fatalf("refused job took a slot: %d", busy)
+	}
+	long, cancelLong := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLong()
+	for name, ctx := range map[string]context.Context{"deadline": long, "none": context.Background()} {
+		if r := q.Submit(ctx, "", func(context.Context, string) Result { return Result{Value: "ok"} }); r.Err != nil {
+			t.Fatalf("%s: %v", name, r.Err)
+		}
+	}
+}
+
 func TestSeparateQueuesAndCompatibleInstances(t *testing.T) {
 	stt, err := New([]Instance{{ID: "stt", Slots: 1}}, 2)
 	if err != nil {

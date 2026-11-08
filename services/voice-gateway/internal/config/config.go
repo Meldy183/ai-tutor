@@ -47,8 +47,9 @@ type Instance struct {
 	Profiles          []string `yaml:"profiles"`
 }
 type Pool struct {
-	MaxWaiting int        `yaml:"max_waiting"`
-	Instances  []Instance `yaml:"instances"`
+	MaxWaiting    int        `yaml:"max_waiting"`
+	MinCallBudget Duration   `yaml:"min_call_budget"`
+	Instances     []Instance `yaml:"instances"`
 }
 type Voice struct {
 	// Identity identifies the reference voice installed on all compatible servers.
@@ -237,6 +238,9 @@ func (c Config) Validate() error {
 		if pool.MaxWaiting < 1 || len(pool.Instances) == 0 {
 			return fmt.Errorf("%s requires instances and positive max_waiting", op)
 		}
+		if pool.MinCallBudget.Duration <= 0 || pool.MinCallBudget.Duration >= c.RequestTimeout.Duration {
+			return fmt.Errorf("%s min_call_budget must be positive and below request_timeout", op)
+		}
 		for _, in := range pool.Instances {
 			if !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(in.ID) || ids[in.ID] || in.Slots < 1 || in.Timeout.Duration <= 0 {
 				return fmt.Errorf("invalid or duplicate instance")
@@ -290,6 +294,7 @@ func (c Config) Queues() (map[string]*scheduler.Queue, error) {
 		if err != nil {
 			return nil, err
 		}
+		q.RequireBudget(pool.MinCallBudget.Duration)
 		queues[op] = q
 	}
 	return queues, nil
@@ -309,8 +314,8 @@ func (c Config) Provider() *provider.HTTP {
 	return p
 }
 
-// HoldTimeout limits how long an uncertain call keeps the instance's slot. The
-// HTTP timeout already covers the model's own queue and execution budgets.
+// HoldTimeout limits how long an uncertain call keeps the instance's slot. It is
+// an estimate: nothing confirms that the model has stopped when it runs out.
 func (c Config) HoldTimeout(instance string) time.Duration {
 	for _, pool := range []Pool{c.STT, c.TTS} {
 		for _, in := range pool.Instances {

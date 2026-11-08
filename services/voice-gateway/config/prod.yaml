@@ -11,6 +11,7 @@ stt_topic: "voice.stt.v1"
 tts_topic: "voice.tts.v1"
 stt:
   max_waiting: 32
+  min_call_budget: 10s # Меньше этого остатка срока запрос в модель не отправляется.
   instances:
     - id: gigaam-1
       api: gigaam
@@ -23,6 +24,7 @@ stt:
       abort_on_disconnect: false
 tts:
   max_waiting: 32
+  min_call_budget: 60s # Выше p95 синтеза (52 с в локальных логах).
   instances:
     - id: voxcpm-1
       api: voxcpm
