@@ -308,6 +308,19 @@ func (c Config) Provider() *provider.HTTP {
 	}
 	return p
 }
+
+// HoldTimeout limits how long an uncertain call keeps the instance's slot. The
+// HTTP timeout already covers the model's own queue and execution budgets.
+func (c Config) HoldTimeout(instance string) time.Duration {
+	for _, pool := range []Pool{c.STT, c.TTS} {
+		for _, in := range pool.Instances {
+			if in.ID == instance {
+				return in.Timeout.Duration
+			}
+		}
+	}
+	return 0
+}
 func (c Config) AbortOnDisconnect(instance string) bool {
 	for _, pool := range []Pool{c.STT, c.TTS} {
 		for _, in := range pool.Instances {

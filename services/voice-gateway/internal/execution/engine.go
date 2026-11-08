@@ -20,6 +20,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// heldCheckInterval is how often held slots are compared with their hold timeout.
+const heldCheckInterval = 5 * time.Second
+
 type Job struct {
 	ID         string    `json:"id"`
 	Operation  string    `json:"operation"`
@@ -378,19 +381,55 @@ func (e *Engine) cleanLocked(parent context.Context, now time.Time) error {
 	}
 	return nil
 }
-func (e *Engine) Maintain(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+
+// expireHeldLocked frees reservations of finished calls once holdFor has passed
+// since the call ended, so a lost upstream response cannot block a model forever.
+// The release is committed before the slot is offered to new calls.
+func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor func(string) time.Duration) error {
+	if !e.ready {
+		return nil
+	}
+	for _, j := range e.jobs {
+		if !j.Held || j.State == "running" || now.Sub(j.Finished) < holdFor(j.Instance) {
+			continue
+		}
+		released := *j
+		released.Held = false
+		if err := e.saveContext(parent, &released); err != nil {
+			return err
+		}
+		*j = released
+		if err := e.queues[j.Operation].ReleaseHeld(j.Instance, 1); err != nil {
+			return err
+		}
+		e.logger.LogAttrs(parent, slog.LevelWarn, "voice held slot expired", slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.Duration("held_for", now.Sub(j.Finished)))
+	}
+	return nil
+}
+
+// Maintain removes expired results and frees held slots after holdFor(instance).
+func (e *Engine) Maintain(ctx context.Context, holdFor func(string) time.Duration) {
+	cleanup := time.NewTicker(time.Minute)
+	defer cleanup.Stop()
+	held := time.NewTicker(heldCheckInterval)
+	defer held.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
+		case now := <-cleanup.C:
 			e.mu.Lock()
 			err := e.cleanLocked(ctx, now)
 			e.mu.Unlock()
 			if err != nil {
 				e.logger.Error("voice cleanup failed", slog.String("reason", "storage unavailable"))
+			}
+		case now := <-held.C:
+			e.mu.Lock()
+			err := e.expireHeldLocked(ctx, now, holdFor)
+			e.mu.Unlock()
+			if err != nil {
+				e.logger.Error("voice held slot expiry failed", slog.String("reason", "storage unavailable"))
 			}
 		}
 	}

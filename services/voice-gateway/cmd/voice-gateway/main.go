@@ -180,7 +180,7 @@ func run() error {
 	httpServer := &http.Server{Addr: cfg.HTTPAddress, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	go engine.Maintain(ctx)
+	go engine.Maintain(ctx, cfg.HoldTimeout)
 	failures := make(chan error, 3)
 	go func() { failures <- rpc.Serve(listener) }()
 	go func() { failures <- httpServer.ListenAndServe() }()

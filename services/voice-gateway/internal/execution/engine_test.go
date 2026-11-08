@@ -192,6 +192,136 @@ func TestOperatorReleaseIsDurable(t *testing.T) {
 	}
 }
 
+func holdOneMinute(string) time.Duration { return time.Minute }
+
+func submitHeld(t *testing.T, e *Engine) time.Time {
+	t.Helper()
+	_, id := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+	})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.jobs[id].Finished
+}
+
+func expire(e *Engine, now time.Time) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.expireHeldLocked(context.Background(), now, holdOneMinute)
+}
+
+func busy(e *Engine) int { return e.queues["stt"].Stats().Instances[0].Busy }
+
+func TestHeldSlotExpiresDurablyAndAdmitsNextCall(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	finished := submitHeld(t, e)
+	if err := expire(e, finished.Add(time.Minute-time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 1 {
+		t.Fatal("slot released before hold timeout")
+	}
+	if err := expire(e, finished.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 0 {
+		t.Fatal("slot still held after hold timeout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r, _ := e.Submit(ctx, "stt", "", "", []byte("next"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Value: []byte("ok")}
+	})
+	if r.Err != nil {
+		t.Fatalf("next call stayed blocked: %v", r.Err)
+	}
+	e.blobs.Close()
+	if restored := setup(t, store, dir); busy(restored) != 0 {
+		t.Fatal("expiry was not committed")
+	}
+}
+
+func TestRestartKeepsHoldDeadline(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	finished := submitHeld(t, e)
+	e.blobs.Close()
+	restored := setup(t, store, dir)
+	if err := expire(restored, finished.Add(59*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(restored) != 1 {
+		t.Fatal("restart shortened the hold")
+	}
+	if err := expire(restored, finished.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(restored) != 0 {
+		t.Fatal("restart extended the hold")
+	}
+}
+
+func TestExpiryDoesNotReleaseRunningCall(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	started, finish := make(chan struct{}), make(chan struct{})
+	done := make(chan scheduler.Result, 1)
+	go func() {
+		r, _ := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+			close(started)
+			<-finish
+			return scheduler.Result{Value: []byte("ok")}
+		})
+		done <- r
+	}()
+	<-started
+	if err := expire(e, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 1 {
+		t.Fatal("running call lost its slot")
+	}
+	close(finish)
+	if r := <-done; r.Err != nil {
+		t.Fatal(r.Err)
+	}
+	if busy(e) != 0 {
+		t.Fatal("finished call kept its slot")
+	}
+}
+
+func TestHeldSlotStaysReservedWhenExpiryIsNotSaved(t *testing.T) {
+	store := &testutil.Memory{}
+	e := setup(t, store, t.TempDir())
+	finished := submitHeld(t, e)
+	store.Mu.Lock()
+	store.Fail = true
+	store.Mu.Unlock()
+	if err := expire(e, finished.Add(time.Minute)); err == nil {
+		t.Fatal("journal failure ignored")
+	}
+	if busy(e) != 1 {
+		t.Fatal("slot released without a committed record")
+	}
+}
+
+func TestMaintainExpiresHeldSlots(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	submitHeld(t, e)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Maintain(ctx, func(string) time.Duration { return 0 })
+	deadline := time.Now().Add(2 * heldCheckInterval)
+	for busy(e) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("maintenance did not release the held slot")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 type countingStore struct {
 	*testutil.Memory
 	writes int

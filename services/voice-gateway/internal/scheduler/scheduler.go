@@ -198,7 +198,8 @@ func (q *Queue) Stats() Stats {
 	return s
 }
 
-// ReleaseHeld is called only after an operator confirms upstream execution has stopped.
+// ReleaseHeld is called after an operator confirms upstream execution has
+// stopped or after the reservation's hold timeout has passed.
 func (q *Queue) ReleaseHeld(id string, count int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

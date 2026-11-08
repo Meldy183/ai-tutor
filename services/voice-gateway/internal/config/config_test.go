@@ -5,12 +5,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCommittedConfigAndVoiceRevision(t *testing.T) {
 	c, err := Load("../../config/dev.yaml")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := c.HoldTimeout("voxcpm-1"); got != 340*time.Second {
+		t.Fatalf("tts hold timeout: %s", got)
+	}
+	if got := c.HoldTimeout("gigaam-1"); got != 40*time.Second {
+		t.Fatalf("stt hold timeout: %s", got)
 	}
 	v := c.Voices["geek-default"]
 	first := v.Revision()
