@@ -335,6 +335,34 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 12,
+      "title": "Снятия удержанных слотов за час",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation, model_instance, reason) (increase(voice_held_slots_released_total[1h]))",
+          "legendFormat": "{{operation}} / {{model_instance}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
     }
   ]
 }

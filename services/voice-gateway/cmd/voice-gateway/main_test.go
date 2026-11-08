@@ -1,6 +1,18 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+func TestDrainWindowWaitsForCallsOnlyOnPlannedStop(t *testing.T) {
+	if got := drainWindow(nil); got != plannedStopDrain {
+		t.Fatalf("planned stop drain: %s", got)
+	}
+	if got := drainWindow(errors.New("voice durable state unavailable")); got != failureDrain {
+		t.Fatalf("failure drain: %s", got)
+	}
+}
 
 func TestConfigArgumentAndCommands(t *testing.T) {
 	t.Setenv("VOICE_GATEWAY_CONFIG", "ignored.yaml")

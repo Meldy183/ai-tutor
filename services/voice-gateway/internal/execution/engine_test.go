@@ -401,6 +401,112 @@ func TestMaintainExpiresHeldSlots(t *testing.T) {
 	}
 }
 
+// logLines receives each JSON log entry, so tests can wait for entries written
+// by the maintenance goroutine.
+type logLines chan map[string]any
+
+func (l logLines) Write(line []byte) (int, error) {
+	entry := map[string]any{}
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return 0, err
+	}
+	l <- entry
+	return len(line), nil
+}
+
+func captureLogs(e *Engine) logLines {
+	logs := make(logLines, 8)
+	e.logger = slog.New(slog.NewJSONHandler(logs, nil))
+	return logs
+}
+
+func nextLog(t *testing.T, logs logLines) map[string]any {
+	t.Helper()
+	select {
+	case entry := <-logs:
+		return entry
+	case <-time.After(2 * heldCheckInterval):
+		t.Fatal("log entry was not written")
+		return nil
+	}
+}
+
+func metricsText(e *Engine) string {
+	w := httptest.NewRecorder()
+	e.Metrics(w, httptest.NewRequest("GET", "/metrics", nil))
+	return w.Body.String()
+}
+
+func TestHeldSlotExpiryReportsCauseAndTimeSinceCallEnd(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	_, id := e.Submit(context.Background(), "tts", "voice", "", []byte("text"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Err: diagnostic.New(codes.DeadlineExceeded, "upstream", "timeout"), HoldSlot: true}
+	})
+	logs := captureLogs(e)
+	e.mu.Lock()
+	started := e.jobs[id].Started
+	e.jobs[id].Finished = started.Add(20 * time.Second)
+	e.mu.Unlock()
+	if err := expire(e, started.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	entry := nextLog(t, logs)
+	for key, want := range map[string]any{
+		"msg":                "voice held slot released",
+		"gateway_request_id": id,
+		"operation":          "tts",
+		"instance":           "tts",
+		"release_reason":     "expired",
+		"duration":           float64(40 * time.Second),
+		"error_code":         "DeadlineExceeded",
+		"error":              "timeout",
+		"stage":              "upstream",
+	} {
+		if entry[key] != want {
+			t.Fatalf("log field %s = %v, want %v: %v", key, entry[key], want, entry)
+		}
+	}
+	if metrics := metricsText(e); !strings.Contains(metrics, `voice_held_slots_released_total{operation="tts",model_instance="tts",reason="expired"} 1`) {
+		t.Fatalf("expiry not counted: %s", metrics)
+	}
+}
+
+func TestOperatorReleaseReportsEachJob(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	submitHeld(t, e)
+	logs := captureLogs(e)
+	if err := e.ReleaseHeld("one"); err != nil {
+		t.Fatal(err)
+	}
+	entry := nextLog(t, logs)
+	if entry["msg"] != "voice held slot released" || entry["release_reason"] != "operator" || entry["error_code"] != "DeadlineExceeded" {
+		t.Fatalf("operator release log: %v", entry)
+	}
+	if metrics := metricsText(e); !strings.Contains(metrics, `voice_held_slots_released_total{operation="stt",model_instance="one",reason="operator"} 1`) {
+		t.Fatalf("operator release not counted: %s", metrics)
+	}
+}
+
+func TestMaintainLogsActualExpiryError(t *testing.T) {
+	store := &testutil.Memory{}
+	e := setup(t, store, t.TempDir())
+	submitHeld(t, e)
+	logs := captureLogs(e)
+	store.Mu.Lock()
+	store.Fail = true
+	store.Mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Maintain(ctx, func(string) time.Duration { return 0 })
+	entry := nextLog(t, logs)
+	if entry["msg"] != "voice held slot expiry failed" || entry["error"] != "test journal unavailable" {
+		t.Fatalf("expiry failure log: %v", entry)
+	}
+	if _, found := entry["reason"]; found {
+		t.Fatalf("expiry failure kept a fixed reason: %v", entry)
+	}
+}
+
 type countingStore struct {
 	*testutil.Memory
 	writes int

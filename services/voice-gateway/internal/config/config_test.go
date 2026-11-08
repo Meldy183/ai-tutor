@@ -19,6 +19,13 @@ func TestCommittedConfigAndVoiceRevision(t *testing.T) {
 	if got := c.HoldTimeout("gigaam-1"); got != 40*time.Second {
 		t.Fatalf("stt hold timeout: %s", got)
 	}
+	if got := c.HoldTimeout("missing"); got != 0 {
+		t.Fatalf("unknown instance hold timeout: %s", got)
+	}
+	abortable := Config{TTS: Pool{Instances: []Instance{{ID: "tts", AbortOnDisconnect: true}}}}
+	if !abortable.AbortOnDisconnect("tts") || abortable.AbortOnDisconnect("missing") {
+		t.Fatal("abort setting looked up the wrong instance")
+	}
 	v := c.Voices["geek-default"]
 	first := v.Revision()
 	v.Seed++

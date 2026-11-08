@@ -317,22 +317,20 @@ func (c Config) Provider() *provider.HTTP {
 // HoldTimeout limits how long an uncertain call keeps the instance's slot. It is
 // an estimate: nothing confirms that the model has stopped when it runs out.
 func (c Config) HoldTimeout(instance string) time.Duration {
-	for _, pool := range []Pool{c.STT, c.TTS} {
-		for _, in := range pool.Instances {
-			if in.ID == instance {
-				return in.Timeout.Duration
-			}
-		}
-	}
-	return 0
+	return c.instance(instance).Timeout.Duration
 }
 func (c Config) AbortOnDisconnect(instance string) bool {
+	return c.instance(instance).AbortOnDisconnect
+}
+
+// instance returns the configured instance, or the zero value for an unknown id.
+func (c Config) instance(id string) Instance {
 	for _, pool := range []Pool{c.STT, c.TTS} {
 		for _, in := range pool.Instances {
-			if in.ID == instance {
-				return in.AbortOnDisconnect
+			if in.ID == id {
+				return in
 			}
 		}
 	}
-	return false
+	return Instance{}
 }

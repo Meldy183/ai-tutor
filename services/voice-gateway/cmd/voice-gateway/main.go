@@ -23,6 +23,23 @@ import (
 	"google.golang.org/grpc"
 )
 
+// How long active RPCs may finish after the gateway stops admitting work. An
+// interrupted call keeps its slot held, so a planned stop waits past the slowest
+// TTS synthesis seen locally (p95 52 s, maximum 67 s). stop_grace_period in
+// docker-compose.yaml must exceed plannedStopDrain. After a failure results can
+// no longer be committed, so waiting for calls gains nothing.
+const (
+	plannedStopDrain = 75 * time.Second
+	failureDrain     = 10 * time.Second
+)
+
+func drainWindow(failure error) time.Duration {
+	if failure != nil {
+		return failureDrain
+	}
+	return plannedStopDrain
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "voice-gateway"))
 	if err := run(); err != nil {
@@ -161,7 +178,6 @@ func run() error {
 			w.WriteHeader(409)
 			return
 		}
-		logger.Warn("voice held slots released by operator", slog.String("instance", input.Instance))
 		w.WriteHeader(204)
 	})
 	socket := filepath.Join(cfg.DataDir, "admin.sock")
@@ -199,7 +215,7 @@ func run() error {
 	go func() { rpc.GracefulStop(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(drainWindow(err)):
 		rpc.Stop()
 		<-done
 	}

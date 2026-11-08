@@ -23,6 +23,12 @@ import (
 // heldCheckInterval is how often held slots are compared with their hold timeout.
 const heldCheckInterval = 5 * time.Second
 
+// Reasons a held slot was freed, as reported in logs and metrics.
+const (
+	releaseExpired  = "expired"
+	releaseOperator = "operator"
+)
+
 type Job struct {
 	ID         string    `json:"id"`
 	Operation  string    `json:"operation"`
@@ -59,11 +65,12 @@ type Engine struct {
 	logger    *slog.Logger
 	selected  map[string]uint64
 	completed map[string]uint64
+	released  map[string]uint64
 	durations map[string]*histogram
 }
 
 func New(store journal.Store, blobs *journal.Blobs, queues map[string]*scheduler.Queue, retention time.Duration, abort func(string) bool, logger *slog.Logger) *Engine {
-	return &Engine{requests: map[string]uint64{}, failed: make(chan struct{}), store: store, blobs: blobs, queues: queues, retention: retention, abort: abort, logger: logger, jobs: map[string]*Job{}, keys: map[string]string{}, done: map[string]chan struct{}{}, selected: map[string]uint64{}, completed: map[string]uint64{}, durations: map[string]*histogram{}}
+	return &Engine{requests: map[string]uint64{}, failed: make(chan struct{}), store: store, blobs: blobs, queues: queues, retention: retention, abort: abort, logger: logger, jobs: map[string]*Job{}, keys: map[string]string{}, done: map[string]chan struct{}{}, selected: map[string]uint64{}, completed: map[string]uint64{}, released: map[string]uint64{}, durations: map[string]*histogram{}}
 }
 func (e *Engine) save(j *Job) error {
 	return e.saveContext(context.Background(), j)
@@ -397,9 +404,27 @@ func holdStart(j *Job) time.Time {
 	return j.Finished
 }
 
+// releaseHeldLocked commits the removal of a finished call's reservation before
+// the slot is offered to new calls.
+func (e *Engine) releaseHeldLocked(ctx context.Context, j *Job, now time.Time, reason string) error {
+	released := *j
+	released.Held = false
+	if err := e.saveContext(ctx, &released); err != nil {
+		return err
+	}
+	*j = released
+	if err := e.queues[j.Operation].ReleaseHeld(j.Instance, 1); err != nil {
+		return err
+	}
+	e.released[j.Operation+"/"+reason+"/"+j.Instance]++
+	attrs := []slog.Attr{slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.String("release_reason", reason), slog.Duration("duration", now.Sub(j.Finished))}
+	attrs = append(attrs, diagnostic.Fields(&diagnostic.Error{Code: codes.Code(j.Code), Stage: j.Stage, Reason: j.Reason, HTTPStatus: j.HTTPStatus})...)
+	e.logger.LogAttrs(ctx, slog.LevelWarn, "voice held slot released", attrs...)
+	return nil
+}
+
 // expireHeldLocked frees reservations of finished calls once holdFor has passed,
-// so a lost upstream response cannot block a model forever. The release is
-// committed before the slot is offered to new calls.
+// so a lost upstream response cannot block a model forever.
 func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor func(string) time.Duration) error {
 	if !e.ready {
 		return nil
@@ -408,16 +433,9 @@ func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor
 		if !j.Held || j.State == "running" || now.Sub(holdStart(j)) < holdFor(j.Instance) {
 			continue
 		}
-		released := *j
-		released.Held = false
-		if err := e.saveContext(parent, &released); err != nil {
+		if err := e.releaseHeldLocked(parent, j, now, releaseExpired); err != nil {
 			return err
 		}
-		*j = released
-		if err := e.queues[j.Operation].ReleaseHeld(j.Instance, 1); err != nil {
-			return err
-		}
-		e.logger.LogAttrs(parent, slog.LevelWarn, "voice held slot expired", slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.Duration("held_for", now.Sub(holdStart(j))))
 	}
 	return nil
 }
@@ -444,7 +462,7 @@ func (e *Engine) Maintain(ctx context.Context, holdFor func(string) time.Duratio
 			err := e.expireHeldLocked(ctx, now, holdFor)
 			e.mu.Unlock()
 			if err != nil {
-				e.logger.Error("voice held slot expiry failed", slog.String("reason", "storage unavailable"))
+				e.logger.Error("voice held slot expiry failed", slog.String("error", err.Error()))
 			}
 		}
 	}
@@ -461,23 +479,19 @@ func (e *Engine) ReleaseHeld(instance string) error {
 		return errors.New("gateway not ready")
 	}
 	count := 0
-	op := ""
+	now := time.Now()
 	for _, j := range e.jobs {
 		if j.Instance == instance && j.Held && j.State != "running" {
-			copy := *j
-			copy.Held = false
-			if err := e.save(&copy); err != nil {
+			if err := e.releaseHeldLocked(context.Background(), j, now, releaseOperator); err != nil {
 				return err
 			}
-			*j = copy
 			count++
-			op = j.Operation
 		}
 	}
 	if count == 0 {
 		return errors.New("no held slots for instance")
 	}
-	return e.queues[op].ReleaseHeld(instance, count)
+	return nil
 }
 
 func (e *Engine) failLocked()             { e.ready = false; e.failOnce.Do(func() { close(e.failed) }) }
