@@ -80,7 +80,7 @@ func TestAudioPersistGeneratedTaskAndReimportMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	var outcomeID string
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_outcomes WHERE name='ОР один'`).Scan(&outcomeID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_outcomes WHERE name='ОР один'`).Scan(&outcomeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.ImportMaterial(ctx, "subject:test", "notes", []string{outcomeID}, []string{"Материал по теме ОР один"}, 12); err != nil {
@@ -114,7 +114,7 @@ func TestAudioPersistGeneratedTaskAndReimportMaterial(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id,instruction,status FROM learning_audio_assets`).Scan(&assetID, &instruction, &status); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT audio_asset_id FROM learning_tasks WHERE id=$1`, task.ID).Scan(&taskAssetID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT audio_asset_id FROM course_map_tasks WHERE id=$1`, task.ID).Scan(&taskAssetID); err != nil {
 		t.Fatal(err)
 	}
 	if assetID != "taskaudio_"+task.ID || taskAssetID == nil || *taskAssetID != assetID || instruction != "Объясните ответ" || status != "pending" {
@@ -182,7 +182,7 @@ func TestTaskAndGenerationCurriculumProfilesRemainConsistent(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var outcomeID string
-			if err := pool.QueryRow(ctx, "SELECT id FROM learning_outcomes WHERE name=$1", tc.name).Scan(&outcomeID); err != nil {
+			if err := pool.QueryRow(ctx, "SELECT id FROM course_map_outcomes WHERE name=$1", tc.name).Scan(&outcomeID); err != nil {
 				t.Fatal(err)
 			}
 			snapshot, err := repository.Context(ctx, "subject:test", outcomeID)
@@ -233,30 +233,30 @@ func TestSubjectMaterialsWithSameNameAndGenerationContextStayIsolated(t *testing
 		t.Fatal(err)
 	}
 	var outcomeA, outcomeB string
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_outcomes WHERE name='ОР A'`).Scan(&outcomeA); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_outcomes WHERE name='ОР A'`).Scan(&outcomeA); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_outcomes WHERE name='ОР B'`).Scan(&outcomeB); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_outcomes WHERE name='ОР B'`).Scan(&outcomeB); err != nil {
 		t.Fatal(err)
 	}
 	var taskA, taskB string
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_tasks WHERE outcome_id=$1 LIMIT 1`, outcomeA).Scan(&taskA); err == nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_tasks WHERE outcome_id=$1 LIMIT 1`, outcomeA).Scan(&taskA); err == nil {
 		t.Fatal("test map unexpectedly contains authored task")
 	}
 	for _, item := range []struct{ outcome, task string }{{outcomeA, "task-a"}, {outcomeB, "task-b"}} {
-		if _, err := pool.Exec(ctx, `INSERT INTO learning_tasks(id,outcome_id,question,options,created_at) VALUES ($1,$2,$3,'[]',1)`, item.task, item.outcome, item.task+" question"); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO course_map_tasks(id,outcome_id,question,options,created_at) VALUES ($1,$2,$3,'[]',1)`, item.task, item.outcome, item.task+" question"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	taskA, taskB = "task-a", "task-b"
-	learning_tasks := taskbankpostgres.New(pool)
+	course_map_tasks := taskbankpostgres.New(pool)
 	for _, tc := range []struct{ subject, want string }{{"subject:test", taskA}, {"subject:b", taskB}} {
-		items, err := learning_tasks.Search(ctx, taskbankapp.SearchFilter{SubjectID: tc.subject, Limit: 10})
+		items, err := course_map_tasks.Search(ctx, taskbankapp.SearchFilter{SubjectID: tc.subject, Limit: 10})
 		if err != nil || len(items) != 1 || items[0].ID != tc.want {
 			t.Fatalf("task search subject %s = %#v, err=%v", tc.subject, items, err)
 		}
 	}
-	if _, err := learning_tasks.Profile(ctx, "subject:b", taskA); err == nil {
+	if _, err := course_map_tasks.Profile(ctx, "subject:b", taskA); err == nil {
 		t.Fatal("task profile accepted task from another subject")
 	}
 	if err := repository.ImportMaterial(ctx, "subject:test", "shared-name", []string{outcomeA}, []string{"Альфа уникальный материал для ОР A"}, 12); err != nil {
@@ -306,7 +306,7 @@ func TestAudioPersistRejectsChangedMapWithoutAddingGeneratedAudio(t *testing.T) 
 		t.Fatal(err)
 	}
 	var outcomeID string
-	if err := pool.QueryRow(ctx, `SELECT id FROM learning_outcomes WHERE name='ОР до'`).Scan(&outcomeID); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT id FROM course_map_outcomes WHERE name='ОР до'`).Scan(&outcomeID); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := repository.Context(ctx, "subject:test", outcomeID)
@@ -330,10 +330,10 @@ func TestAudioPersistRejectsChangedMapWithoutAddingGeneratedAudio(t *testing.T) 
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_audio_assets`).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM learning_tasks WHERE origin='ai_generated'`).Scan(&generated); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM course_map_tasks WHERE origin='ai_generated'`).Scan(&generated); err != nil {
 		t.Fatal(err)
 	}
 	if after != before || generated != 0 {
-		t.Fatalf("stale persist added generated data: assets %d->%d learning_tasks=%d", before, after, generated)
+		t.Fatalf("stale persist added generated data: assets %d->%d course_map_tasks=%d", before, after, generated)
 	}
 }

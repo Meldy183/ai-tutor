@@ -38,7 +38,7 @@ func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
 				session.Answers = append(session.Answers, diagnostic.Answer{CompetencyID: "c1", Role: role, Score: tc.scores[i], GraderMaxScore: map[string]int{"main": 3, "basic": 1}[role], Skipped: tc.skipped && i == 2,
 					Task: diagnostic.TaskSnapshot{OutcomeID: id, OutcomeName: "snapshot " + id, ConstituentID: part, ConstituentName: part}})
 			}
-			repo.learning_outcomes = nil
+			repo.course_map_outcomes = nil
 			revision := int64(7)
 			if tc.reimport {
 				revision = 8
@@ -48,7 +48,7 @@ func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
 				if id == "unrelated" || tc.mixed && id == "b2" {
 					part = "other"
 				}
-				repo.learning_outcomes = append(repo.learning_outcomes, learning.Outcome{CompetencyID: "c1", ConstituentID: part, MapRevision: revision, OutcomeID: id, OutcomeName: "map " + id})
+				repo.course_map_outcomes = append(repo.course_map_outcomes, learning.Outcome{CompetencyID: "c1", ConstituentID: part, MapRevision: revision, OutcomeID: id, OutcomeName: "map " + id})
 			}
 			outcomes, err := s.outcomes(t.Context(), session)
 			if err != nil {
@@ -70,7 +70,7 @@ func TestPlanUsesCheckedGapsAndOnlyFullyUnstudiedConstituent(t *testing.T) {
 
 func TestPlanLeavesOutACompetencyClosedAtNinetyPercent(t *testing.T) {
 	s, repo, _, _ := newService(t, 1)
-	repo.learning_outcomes = nil
+	repo.course_map_outcomes = nil
 	answer := func(competency, constituent, role string, score, maximum int) diagnostic.Answer {
 		return diagnostic.Answer{CompetencyID: competency, Role: role, Score: score, GraderMaxScore: maximum,
 			Task: diagnostic.TaskSnapshot{OutcomeID: competency + constituent + role, ConstituentID: constituent}}

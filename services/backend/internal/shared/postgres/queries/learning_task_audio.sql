@@ -14,10 +14,10 @@ SELECT COALESCE(state.active_revision, 0)::bigint AS revision,
        asset.status, asset.attempts, asset.next_attempt_at, asset.lease_until
 FROM subjects subject
 LEFT JOIN learning_subject_state state ON state.subject_id = subject.id
-LEFT JOIN learning_competencies competency ON competency.revision = state.active_revision
-LEFT JOIN learning_constituents constituent ON constituent.competency_id = competency.id
-LEFT JOIN learning_outcomes outcome ON outcome.constituent_id = constituent.id
-LEFT JOIN learning_tasks task ON task.outcome_id = outcome.id
+LEFT JOIN course_map_competencies competency ON competency.revision = state.active_revision
+LEFT JOIN course_map_constituents constituent ON constituent.competency_id = competency.id
+LEFT JOIN course_map_outcomes outcome ON outcome.constituent_id = constituent.id
+LEFT JOIN course_map_tasks task ON task.outcome_id = outcome.id AND task.mode = 'diagnostic'
 LEFT JOIN learning_audio_assets asset ON asset.id = task.audio_asset_id
 WHERE subject.id = sqlc.arg(subject_id)::text
 ORDER BY task.id;
@@ -27,7 +27,7 @@ SELECT asset.id, asset.instruction, asset.object_key, asset.bucket, asset.storag
        asset.audio_url, asset.status, asset.attempts
 FROM learning_audio_assets asset
 WHERE asset.id = $2 AND (
-    EXISTS (SELECT 1 FROM learning_tasks task WHERE task.audio_asset_id = asset.id)
+    EXISTS (SELECT 1 FROM course_map_tasks task WHERE task.audio_asset_id = asset.id)
     OR EXISTS (
         SELECT 1 FROM learning_variant_tasks variant_task
         JOIN learning_variants variant ON variant.id = variant_task.variant_id
@@ -46,10 +46,10 @@ UPDATE learning_audio_assets
 SET status = CASE
         WHEN NOT EXISTS (
             SELECT 1
-            FROM learning_tasks task
-            JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-            JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-            JOIN learning_competencies competency ON competency.id = constituent.competency_id
+            FROM course_map_tasks task
+            JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+            JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+            JOIN course_map_competencies competency ON competency.id = constituent.competency_id
             JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
             WHERE task.audio_asset_id = learning_audio_assets.id
@@ -63,10 +63,10 @@ SET status = CASE
     last_error_code = CASE
         WHEN NOT EXISTS (
             SELECT 1
-            FROM learning_tasks task
-            JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-            JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-            JOIN learning_competencies competency ON competency.id = constituent.competency_id
+            FROM course_map_tasks task
+            JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+            JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+            JOIN course_map_competencies competency ON competency.id = constituent.competency_id
             JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
             WHERE task.audio_asset_id = learning_audio_assets.id
@@ -82,10 +82,10 @@ SET status = 'cancelled', last_error_code = 'task_no_longer_current', updated_at
 WHERE asset.status = 'pending'
   AND EXISTS (
       SELECT 1
-      FROM learning_tasks task
-      JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-      JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-      JOIN learning_competencies competency ON competency.id = constituent.competency_id
+      FROM course_map_tasks task
+      JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+      JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+      JOIN course_map_competencies competency ON competency.id = constituent.competency_id
       JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
       WHERE task.audio_asset_id = asset.id AND subject.id = $1
@@ -97,10 +97,10 @@ WITH candidate AS (
     WHERE status = 'pending' AND next_attempt_at <= now() AND attempts < 5
       AND EXISTS (
           SELECT 1
-          FROM learning_tasks task
-          JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-          JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-          JOIN learning_competencies competency ON competency.id = constituent.competency_id
+          FROM course_map_tasks task
+          JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+          JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+          JOIN course_map_competencies competency ON competency.id = constituent.competency_id
           JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
           WHERE task.audio_asset_id = learning_audio_assets.id
@@ -141,10 +141,10 @@ WITH candidate AS MATERIALIZED (
       AND asset.status IN ('ready', 'failed')
       AND EXISTS (
       SELECT 1
-      FROM learning_tasks task
-      JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-      JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-      JOIN learning_competencies competency ON competency.id = constituent.competency_id
+      FROM course_map_tasks task
+      JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+      JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+      JOIN course_map_competencies competency ON competency.id = constituent.competency_id
       JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
       WHERE task.audio_asset_id = asset.id
@@ -171,10 +171,10 @@ SELECT * FROM claimed;
 SELECT EXISTS (
     SELECT 1
     FROM learning_audio_assets asset
-    JOIN learning_tasks task ON task.audio_asset_id = asset.id
-    JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-    JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-    JOIN learning_competencies competency ON competency.id = constituent.competency_id
+    JOIN course_map_tasks task ON task.audio_asset_id = asset.id
+    JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+    JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+    JOIN course_map_competencies competency ON competency.id = constituent.competency_id
     JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
     WHERE asset.id = sqlc.arg(id)
@@ -190,10 +190,10 @@ SET status = 'cancelled', lease_until = NULL, claim_token = NULL,
 WHERE learning_audio_assets.id = sqlc.arg(id) AND status = 'processing' AND claim_token = sqlc.arg(claim_token)
   AND NOT EXISTS (
       SELECT 1
-      FROM learning_tasks task
-      JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-      JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-      JOIN learning_competencies competency ON competency.id = constituent.competency_id
+      FROM course_map_tasks task
+      JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+      JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+      JOIN course_map_competencies competency ON competency.id = constituent.competency_id
       JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
       WHERE task.audio_asset_id = learning_audio_assets.id
@@ -210,10 +210,10 @@ UPDATE learning_audio_assets
 SET status = CASE
         WHEN NOT EXISTS (
             SELECT 1
-            FROM learning_tasks task
-            JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-            JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-            JOIN learning_competencies competency ON competency.id = constituent.competency_id
+            FROM course_map_tasks task
+            JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+            JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+            JOIN course_map_competencies competency ON competency.id = constituent.competency_id
             JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
             WHERE task.audio_asset_id = learning_audio_assets.id
@@ -224,10 +224,10 @@ SET status = CASE
     next_attempt_at = CASE
         WHEN attempts >= 5 OR NOT EXISTS (
             SELECT 1
-            FROM learning_tasks task
-            JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-            JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-            JOIN learning_competencies competency ON competency.id = constituent.competency_id
+            FROM course_map_tasks task
+            JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+            JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+            JOIN course_map_competencies competency ON competency.id = constituent.competency_id
             JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
             WHERE task.audio_asset_id = learning_audio_assets.id
@@ -238,10 +238,10 @@ SET status = CASE
     last_error_code = CASE
         WHEN NOT EXISTS (
             SELECT 1
-            FROM learning_tasks task
-            JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-            JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-            JOIN learning_competencies competency ON competency.id = constituent.competency_id
+            FROM course_map_tasks task
+            JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+            JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+            JOIN course_map_competencies competency ON competency.id = constituent.competency_id
             JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
             WHERE task.audio_asset_id = learning_audio_assets.id
@@ -264,10 +264,10 @@ LIMIT 1;
 WITH current_task AS (
     SELECT EXISTS (
         SELECT 1
-        FROM learning_tasks task
-        JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-        JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-        JOIN learning_competencies competency ON competency.id = constituent.competency_id
+        FROM course_map_tasks task
+        JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+        JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+        JOIN course_map_competencies competency ON competency.id = constituent.competency_id
         JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
         WHERE task.audio_asset_id = sqlc.arg(id)
@@ -291,10 +291,10 @@ WHERE asset.id = $1 AND asset.status = 'pending'
       WHERE other.status = 'pending' AND other.priority_requested_at > asset.priority_requested_at
   ))
   AND EXISTS (
-      SELECT 1 FROM learning_tasks task
-      JOIN learning_outcomes outcome ON outcome.id = task.outcome_id
-      JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-      JOIN learning_competencies competency ON competency.id = constituent.competency_id
+      SELECT 1 FROM course_map_tasks task
+      JOIN course_map_outcomes outcome ON outcome.id = task.outcome_id
+      JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+      JOIN course_map_competencies competency ON competency.id = constituent.competency_id
       JOIN learning_subject_state subject_state ON subject_state.active_revision = competency.revision
       JOIN subjects subject ON subject.id = subject_state.subject_id
       WHERE task.audio_asset_id = asset.id
@@ -307,4 +307,4 @@ ON CONFLICT (id) DO UPDATE SET instruction = learning_audio_assets.instruction
 RETURNING instruction;
 
 -- name: LearningLinkTaskAudioAsset :execrows
-UPDATE learning_tasks SET audio_asset_id = $2 WHERE id = $1;
+UPDATE course_map_tasks SET audio_asset_id = $2 WHERE id = $1;

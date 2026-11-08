@@ -39,6 +39,9 @@ type Node struct {
 
 // Variant is one task of a topic with what grading it needs.
 type Variant struct {
+	// TaskID is the exam task of the course map the variant comes from;
+	// empty for a graph of materials.
+	TaskID   string `json:"task_id,omitempty"`
 	Question string `json:"question"`
 	// Rephrase is the prepared rephrase of Question; empty until prepared.
 	Rephrase           string `json:"rephrase,omitempty"`

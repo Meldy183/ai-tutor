@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -30,51 +29,11 @@ import (
 // mapBook is a competency map book of one sheet in the course template:
 // one competency with three outcomes for the test, so its graph has a main
 // task and two basic ones.
+// mapBook is a course map as it is imported: the Geek sheet and the
+// learning sheet with the same structure.
 func mapBook(t *testing.T) []byte {
 	t.Helper()
-	rows := [][]string{
-		{"№", "Субкомпетенция (Proficiency)", "Составляющая (Observe)", "Образовательный результат (Observe Behaviour)",
-			"Уровень по Блуму", "Важность (1–5)", "Что должно войти в тест", "Задание (устная инструкция)", "Критерии оценивания"},
-		{"1", "К1. Агент", "1.1 Описывает агента", "Называет части агента", "Помнить", "4", "TRUE", "Назовите части агента.", "Эталон: сенсоры и исполнительные механизмы."},
-		{"2", "", "", "Объясняет рациональность", "Понимать", "3", "TRUE", "Объясните, что такое рациональный агент.", "Эталон: максимизирует меру эффективности."},
-		{"3", "", "", "Выбирает тип агента", "Анализировать", "5", "TRUE", "Какой агент нужен роботу-уборщику и почему?", "Эталон: агент с моделью мира.\nБалл (макс. 1): 1 — тип и причина."},
-	}
-	var sheet strings.Builder
-	sheet.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
-	for i, row := range rows {
-		fmt.Fprintf(&sheet, `<row r="%d">`, i+1)
-		for j, value := range row {
-			var text bytes.Buffer
-			if err := xml.EscapeText(&text, []byte(value)); err != nil {
-				t.Fatal(err)
-			}
-			fmt.Fprintf(&sheet, `<c r="%c%d" t="inlineStr"><is><t>%s</t></is></c>`, 'A'+j, i+1, text.String())
-		}
-		sheet.WriteString(`</row>`)
-	}
-	sheet.WriteString(`</sheetData></worksheet>`)
-	parts := map[string]string{
-		"xl/workbook.xml": `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-			`<sheets><sheet name="Карта компетенций" sheetId="1" r:id="rId1"/></sheets></workbook>`,
-		"xl/_rels/workbook.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
-			`<Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`,
-		"xl/worksheets/sheet1.xml": sheet.String(),
-	}
-	var buf bytes.Buffer
-	w := zip.NewWriter(&buf)
-	for name, body := range parts {
-		f, err := w.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.Write([]byte(body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
+	return pairedMapBook(t, false)
 }
 
 func newPairedGraphRepository(pool *pgxpool.Pool) *pairedCourseGraphRepository {
@@ -320,7 +279,7 @@ func pairedMapBookWithMissingGeekCriteria(t *testing.T) []byte {
 	return buffer.Bytes()
 }
 
-func TestSkippingGeekTaskCreatesNewProjectionWithoutChangingPublishedVersionOrCanonicalGraph(t *testing.T) {
+func TestSkippingGeekTaskKeepsThePublishedGraphAndTheCourseStructure(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	admin := f.admin(t)
@@ -352,17 +311,15 @@ func TestSkippingGeekTaskCreatesNewProjectionWithoutChangingPublishedVersionOrCa
 	if adminSnapshot.Code != http.StatusOK || json.Unmarshal(adminSnapshot.Body.Bytes(), &before) != nil || before.Map.Fingerprint == "" {
 		t.Fatalf("read published graph and fingerprint: %d %s", adminSnapshot.Code, adminSnapshot.Body.String())
 	}
-	var oldPointer struct {
-		ExamRevision int64 `json:"exam_revision"`
-	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT graph FROM course_graphs WHERE subject_id='subject:test'`).Scan(&before.Graph); err != nil {
+	var publishedRevision *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph, map_revision FROM course_graphs WHERE subject_id='subject:test'`).Scan(&before.Graph, &publishedRevision); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(before.Graph, &oldPointer); err != nil || oldPointer.ExamRevision <= 0 {
-		t.Fatalf("published Geek pointer has no version: %+v err=%v", oldPointer, err)
+	if publishedRevision == nil || *publishedRevision != 1 {
+		t.Fatalf("published Geek graph has no map revision: %v", publishedRevision)
 	}
 	var originalOutcomes int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&originalOutcomes); err != nil || originalOutcomes != 3 {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_outcomes o JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&originalOutcomes); err != nil || originalOutcomes != 3 {
 		t.Fatalf("canonical learning outcomes before filtering: %d err=%v", originalOutcomes, err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://api.example"+examTestPath("/admin/subjects/subject:test/graph/competency-map/skip-missing-criteria"), nil)
@@ -383,14 +340,14 @@ func TestSkippingGeekTaskCreatesNewProjectionWithoutChangingPublishedVersionOrCa
 		t.Fatal(err)
 	}
 	if current.Status != "pending" || current.Map.LearningRevision == nil {
-		t.Fatalf("filtered map should be preparing as a new Geek projection while learning stays active: %+v", current)
+		t.Fatalf("filtered map should be preparing while learning stays active: %+v", current)
 	}
-	var currentExamRevision int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT (graph->>'exam_revision')::bigint FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&currentExamRevision); err != nil {
+	var published json.RawMessage
+	if err := f.pool.QueryRow(context.Background(), `SELECT graph FROM course_graphs WHERE subject_id='subject:test'`).Scan(&published); err != nil {
 		t.Fatal(err)
 	}
-	if currentExamRevision == oldPointer.ExamRevision {
-		t.Fatalf("filtering mutated published Geek version %d", oldPointer.ExamRevision)
+	if string(published) != string(before.Graph) {
+		t.Fatal("filtering changed the published Geek graph before its build")
 	}
 	oldGeek, ok, err := geekgraph.NewStored(f.pool).Current(context.Background(), "subject:test")
 	if err != nil || !ok || len(oldGeek.Nodes) != 3 {
@@ -407,7 +364,7 @@ func TestSkippingGeekTaskCreatesNewProjectionWithoutChangingPublishedVersionOrCa
 		t.Fatalf("new Geek projection should omit one fallback-only topic: topics=%d err=%v", len(shape.Topics), err)
 	}
 	var afterOutcomes int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&afterOutcomes); err != nil || afterOutcomes != originalOutcomes {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_outcomes o JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id WHERE c.revision=1`).Scan(&afterOutcomes); err != nil || afterOutcomes != originalOutcomes {
 		t.Fatalf("Geek filtering changed the canonical full structure: before=%d after=%d err=%v", originalOutcomes, afterOutcomes, err)
 	}
 }
@@ -438,7 +395,7 @@ func TestImportMapStartsForSharedCourseWithoutMaterials(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM subject_materials WHERE subject_id=$1`, course.ID).Scan(&materialCount); err != nil || materialCount != 0 {
 		t.Fatalf("expected a new shared course without materials: count=%d err=%v", materialCount, err)
 	}
-	response := upload(f, "/admin/subjects/"+course.ID+"/graph/competency-map", "file", "map.xlsx", "application/octet-stream", mapBook(t), admin)
+	response := uploadWithHeader(f, "/admin/subjects/"+course.ID+"/graph/competency-map", "file", "map.xlsx", "application/octet-stream", mapBook(t), admin, "X-Expected-Learning-Revision", "0")
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("map import for material-free course: %d %s", response.Code, response.Body.String())
 	}
@@ -480,16 +437,22 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
 	}
-	var active, pending *int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision,pending_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active, &pending); err != nil {
+	var active *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
-	if active == nil || pending != nil {
-		t.Fatalf("learning map should activate after the paired version is saved: active=%v pending=%v", active, pending)
+	if active == nil {
+		t.Fatal("learning map should activate after the paired version is saved")
 	}
 	var mapRevision *int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT learning_revision FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != *active {
-		t.Fatalf("paired revisions differ: map=%v active=%v pending=%v err=%v", mapRevision, active, pending, err)
+	if err := f.pool.QueryRow(context.Background(), `SELECT map_revision FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != *active {
+		t.Fatalf("paired revisions differ: map=%v active=%v err=%v", mapRevision, active, err)
+	}
+	var examTasks int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_tasks task JOIN course_map_outcomes o ON o.id=task.outcome_id
+JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id
+WHERE task.mode='exam' AND c.revision=$1`, *mapRevision).Scan(&examTasks); err != nil || examTasks != 3 {
+		t.Fatalf("exam tasks of the revision = %d err=%v", examTasks, err)
 	}
 	subjectsResponse := f.request(http.MethodGet, "/subjects", "", admin)
 	var subjects []struct {
@@ -516,15 +479,6 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var projection map[string]json.RawMessage
-	if err := json.Unmarshal(graphWithRevision, &projection); err != nil {
-		t.Fatal(err)
-	}
-	projection["learning_revision"], _ = json.Marshal(*mapRevision)
-	graphWithRevision, err = json.Marshal(projection)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var graphShape struct {
 		Topics []struct {
 			ID            string   `json:"id"`
@@ -544,7 +498,7 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	canonicalParents := map[string][2]string{}
 	for _, topic := range graphShape.Topics {
 		var competencyID, constituentID string
-		if err := f.pool.QueryRow(context.Background(), `SELECT c.id, s.id FROM learning_outcomes o JOIN learning_constituents s ON s.id=o.constituent_id JOIN learning_competencies c ON c.id=s.competency_id WHERE o.id=$1 AND c.revision=$2`, topic.ID, *mapRevision).Scan(&competencyID, &constituentID); err != nil {
+		if err := f.pool.QueryRow(context.Background(), `SELECT c.id, s.id FROM course_map_outcomes o JOIN course_map_constituents s ON s.id=o.constituent_id JOIN course_map_competencies c ON c.id=s.competency_id WHERE o.id=$1 AND c.revision=$2`, topic.ID, *mapRevision).Scan(&competencyID, &constituentID); err != nil {
 			t.Fatalf("Geek projection vertex %q must be a canonical learning outcome: %v", topic.ID, err)
 		}
 		if topic.CompetencyID != competencyID || topic.ConstituentID != constituentID {
@@ -568,11 +522,11 @@ func TestPairedMapActivatesLearningBeforeGeekPreparation(t *testing.T) {
 	if ok, err := graphRepo.Finish(context.Background(), job, graphWithRevision, time.Now()); err != nil || !ok {
 		t.Fatalf("publish paired map: ok=%v err=%v", ok, err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision,pending_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active, &pending); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
-	if active == nil || *active != *mapRevision || pending != nil {
-		t.Fatalf("learning version did not activate with Geek graph: active=%v pending=%v map=%v", active, pending, mapRevision)
+	if active == nil || *active != *mapRevision {
+		t.Fatalf("learning version changed with the Geek graph: active=%v map=%v", active, mapRevision)
 	}
 	learningSnapshot, err := competencypg.New(f.pool).Read(context.Background(), "subject:test")
 	if err != nil || len(learningSnapshot.Competencies) != 1 || len(learningSnapshot.Competencies[0].Constituents) != 1 || len(learningSnapshot.Competencies[0].Constituents[0].Outcomes) != 3 {
@@ -622,7 +576,7 @@ CREATE TRIGGER fail_course_graph_job BEFORE INSERT ON course_graph_jobs FOR EACH
 		t.Fatal("forced Geek queue failure was reported as a successful paired import")
 	}
 	var stateRows, imports, maps, jobs int
-	if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM learning_subject_state WHERE subject_id='subject:test'), (SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_maps WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_jobs WHERE subject_id='subject:test')`).Scan(&stateRows, &imports, &maps, &jobs); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM learning_subject_state WHERE subject_id='subject:test'), (SELECT count(*) FROM course_map_imports WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_maps WHERE subject_id='subject:test'), (SELECT count(*) FROM course_graph_jobs WHERE subject_id='subject:test')`).Scan(&stateRows, &imports, &maps, &jobs); err != nil {
 		t.Fatal(err)
 	}
 	if stateRows != 0 || imports != 0 || maps != 0 || jobs != 0 {
@@ -646,47 +600,6 @@ CREATE TRIGGER fail_course_graph_job BEFORE INSERT ON course_graph_jobs FOR EACH
 	var afterStale *int64
 	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&afterStale); err != nil || afterStale == nil || *afterStale != *active {
 		t.Fatalf("stale CAS changed active learning revision: before=%v after=%v err=%v", *active, afterStale, err)
-	}
-}
-
-func TestGeekBuildFinishesAfterIndependentLearningMapImport(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	admin := f.admin(t)
-	response := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin, "X-Expected-Learning-Revision", "0")
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("paired map import: %d %s", response.Code, response.Body.String())
-	}
-	var revision int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT active_revision FROM learning_subject_state WHERE subject_id='subject:test'`).Scan(&revision); err != nil {
-		t.Fatal(err)
-	}
-	var actorID string
-	if err := f.pool.QueryRow(context.Background(), `SELECT id FROM users WHERE email='admin@example.edu'`).Scan(&actorID); err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := csvparser.ParseXLSXSheet(pairedMapBook(t, false), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := competencypg.New(f.pool).Replace(context.Background(), "subject:test", actorID, parsed, time.Now().Unix(), &revision); err != nil {
-		t.Fatalf("independent learning import: %v", err)
-	}
-	graphRepo := newPairedGraphRepository(f.pool)
-	job, err := graphRepo.Claim(context.Background(), "paired-after-learning-import", time.Now())
-	if err != nil || job.SubjectID != "subject:test" {
-		t.Fatalf("claim paired Geek build: %+v %v", job, err)
-	}
-	graph, err := graphRepo.MapGraph(context.Background(), "subject:test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := graphRepo.Finish(context.Background(), job, graph, time.Now()); err != nil || !ok {
-		t.Fatalf("Geek build after separate learning import was rejected: ok=%v err=%v", ok, err)
-	}
-	var mapRevision *int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT graph_map_revision FROM (SELECT map_revision AS graph_map_revision FROM course_graphs WHERE subject_id='subject:test') published`).Scan(&mapRevision); err != nil || mapRevision == nil || *mapRevision != revision {
-		t.Fatalf("Geek must retain its source canonical revision after an independent learning import: map_revision=%v expected=%d err=%v", mapRevision, revision, err)
 	}
 }
 
@@ -734,7 +647,7 @@ func TestPairedMapReplacementActivatesLearningButKeepsOldGeekOnFailure(t *testin
 	claimAndPublish("old-version", *firstRevision)
 	secondRevision := importMap()
 	var preservedOldImport int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE revision=$1 AND subject_id='subject:test'`, *firstRevision).Scan(&preservedOldImport); err != nil || preservedOldImport != 1 {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_imports WHERE revision=$1 AND subject_id='subject:test'`, *firstRevision).Scan(&preservedOldImport); err != nil || preservedOldImport != 1 {
 		t.Fatalf("paired replacement deleted old learning revision %d: count=%d err=%v", *firstRevision, preservedOldImport, err)
 	}
 	if *secondRevision == *firstRevision {
@@ -782,53 +695,11 @@ func TestPairedMapStructureMismatchStoresNeitherSide(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&maps); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'`).Scan(&imports); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_map_imports WHERE subject_id='subject:test'`).Scan(&imports); err != nil {
 		t.Fatal(err)
 	}
 	if maps != 0 || imports != 0 {
 		t.Fatalf("mismatched import partially persisted: graph maps=%d learning imports=%d", maps, imports)
-	}
-}
-
-func TestLearningImportRejectsPairedWorkbookToPreventIndependentPublication(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	admin := f.admin(t)
-	response := upload(f, "/learn/admin/subjects/subject:test/competency-map/import", "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pairedMapBook(t, false), admin)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "UNIFIED_COMPETENCY_MAP_REQUIRED") {
-		t.Fatalf("paired learning import should require unified upload: %d %s", response.Code, response.Body.String())
-	}
-	var imports, maps int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'`).Scan(&imports); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM course_graph_maps WHERE subject_id='subject:test'`).Scan(&maps); err != nil {
-		t.Fatal(err)
-	}
-	if imports != 0 || maps != 0 {
-		t.Fatalf("rejected independent import stored data: learning=%d graph=%d", imports, maps)
-	}
-}
-
-func TestLearningImportRejectsPairedWorkbookRegardlessOfMime(t *testing.T) {
-	t.Parallel()
-	for _, media := range []string{"application/vnd.ms-excel", "application/csv", "text/csv"} {
-		t.Run(media, func(t *testing.T) {
-			t.Parallel()
-			f := newFixture(t)
-			admin := f.admin(t)
-			response := upload(f, "/learn/admin/subjects/subject:test/competency-map/import", "file", "map.xlsx", media, pairedMapBook(t, false), admin)
-			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "UNIFIED_COMPETENCY_MAP_REQUIRED") {
-				t.Fatalf("mislabeled paired workbook should require unified upload: %d %s", response.Code, response.Body.String())
-			}
-			var imports int
-			if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM learning_map_imports WHERE subject_id='subject:test'`).Scan(&imports); err != nil {
-				t.Fatal(err)
-			}
-			if imports != 0 {
-				t.Fatalf("rejected paired workbook persisted %d learning maps", imports)
-			}
-		})
 	}
 }
 
@@ -921,7 +792,7 @@ func TestImportMapAcceptsABookLargerThanAJSONBody(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	res := upload(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/octet-stream", buf.Bytes(), admin)
+	res := uploadWithHeader(f, "/admin/subjects/subject:test/graph/competency-map", "file", "map.xlsx", "application/octet-stream", buf.Bytes(), admin, "X-Expected-Learning-Revision", "0")
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("1 MiB map: %d %s", res.Code, res.Body.String())
 	}

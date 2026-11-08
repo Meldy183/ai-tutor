@@ -338,55 +338,6 @@ components:
         - curriculum_competencies
         - title
       type: object
-    competencyhttp.ImportResult:
-      additionalProperties: false
-      properties:
-        competency_count:
-          type: integer
-        constituent_count:
-          type: integer
-        imported_at:
-          type: integer
-        outcome_count:
-          type: integer
-        revision:
-          type: integer
-        task_count:
-          type: integer
-        unparsed_task_cell_count:
-          type: integer
-        warnings:
-          items:
-            $ref: '#/components/schemas/competencyhttp.ImportWarning'
-          type: array
-          uniqueItems: false
-      required:
-        - competency_count
-        - constituent_count
-        - imported_at
-        - outcome_count
-        - revision
-        - task_count
-        - unparsed_task_cell_count
-        - warnings
-      type: object
-    competencyhttp.ImportWarning:
-      additionalProperties: false
-      properties:
-        code:
-          type: string
-        column:
-          type: string
-        column_index:
-          type: integer
-        row:
-          type: integer
-      required:
-        - code
-        - column
-        - column_index
-        - row
-      type: object
     competencyhttp.MapSnapshot:
       additionalProperties: false
       properties:
@@ -1334,30 +1285,19 @@ components:
         assisted:
           description: Ответ дан после переформулировки или подсказки
           type: boolean
-        grade:
-          description: Оценка A–D; null — оценки нет (тема не проверялась или недостаточно данных)
-          enum:
-            - A
-            - B
-            - C
-            - D
-            - null
-          type:
-            - string
-            - "null"
-        marks:
-          description: Результаты по пунктам рубрики или критериям К1–К4
-          items:
-            $ref: '#/components/schemas/geek.TopicMark'
-          type: array
-          uniqueItems: false
         max_score:
+          description: 'Максимум темы: 2 у вершины верхнего уровня, 1 у пререквизита'
+          maximum: 2
           minimum: 1
-          type:
-            - integer
-            - "null"
+          type: integer
         node_id:
           type: string
+        reasons:
+          description: Основания балла от модели
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         reply:
           description: Реплика Geek при закрытии темы; пустая, если её нет
           type: string
@@ -1368,7 +1308,8 @@ components:
           type: array
           uniqueItems: false
         score:
-          description: Баллы темы; null — тема не спрашивалась, засчитана или данных недостаточно
+          description: 'Балл темы: у вершины верхнего уровня 0–2, у пререквизита 0–1; null — тема не спрашивалась, засчитана или данных недостаточно'
+          maximum: 2
           minimum: 0
           type:
             - integer
@@ -1390,10 +1331,9 @@ components:
           type: boolean
       required:
         - assisted
-        - grade
-        - marks
         - max_score
         - node_id
+        - reasons
         - reply
         - requires
         - score
@@ -1506,7 +1446,7 @@ components:
         session_id:
           type: string
         weak_spots:
-          description: 'Слабые места — темы на C: засчитаны, но ответ неполный; источники и материалы — как у пробела'
+          description: 'Слабые места — темы с баллом ниже максимума: засчитаны, но ответ неполный; источники и материалы — как у пробела'
           items:
             $ref: '#/components/schemas/geek.Gap'
           type: array
@@ -1695,34 +1635,6 @@ components:
       required:
         - display_name
         - id
-      type: object
-    geek.TopicMark:
-      additionalProperties: false
-      properties:
-        id:
-          type: string
-        max_score:
-          minimum: 1
-          type: integer
-        quote:
-          description: Дословная цитата из ответа студента; пустая, если её нет
-          type: string
-        reason:
-          description: Основание балла; пустое, если модель его не сохранила
-          type: string
-        score:
-          minimum: 0
-          type: integer
-        title:
-          description: Короткое название пункта из карты; пустое у К1–К4 и пунктов без названия
-          type: string
-      required:
-        - id
-        - max_score
-        - quote
-        - reason
-        - score
-        - title
       type: object
     geek.Turn:
       additionalProperties: false
@@ -4196,7 +4108,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
+          description: GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED
         "422":
           content:
             application/json:
@@ -4217,7 +4129,7 @@ paths:
       x-implementation: implemented
   /exam/admin/subjects/{subject_id}/graph/competency-map:
     post:
-      description: Доступно только admin. Одна загрузка двухлистовой карты проверяет структуру обоих листов по компетенции, составляющей и ОР. Первый лист ставит сборку графа Geek в очередь, второй сохраняется как активная учебная карта; задания и критерии остаются при своих ОР и не подменяют друг друга. Учебная карта активируется при успешном сохранении импорта, до фоновой сборки Geek. Если сборка завершается ошибкой, учебная карта остаётся активной, а последняя опубликованная версия графа сохраняется. Для графа Geek на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; все колонки «Задание N» становятся вариантами темы с критериями из колонки того же номера по порядку. CSV и однолистовые импорты обучения сохраняют прежний маршрут.
+      description: 'Доступно только admin. Карта компетенций загружается одной двухлистовой книгой: первый лист — экзамена Geek, второй — учебной диагностики; другой формат отклоняется (UNIFIED_COMPETENCY_MAP_REQUIRED). Листы сопоставляются по компетенции, составляющей и ОР; структура курса сохраняется один раз в новой ревизии карты, а задания каждого листа — как задания своего режима при тех же ОР. Учебная ревизия становится активной в той же транзакции, сборка графа Geek ставится в очередь; до её успешного завершения Geek работает по прежнему опубликованному графу, ошибка сборки не отключает обучение. Граф обоих режимов строится одним правилом: на каждую составляющую с тремя и более ОР с TRUE и заданием основное ОР (наивысший Блум, затем важность) — тема верхнего уровня, два самых простых — её пререквизиты; все колонки «Задание N» листа Geek — варианты темы с критериями той же колонки.'
       operationId: importCourseGraphCompetencyMap
       parameters:
         - description: ID предмета
@@ -4226,9 +4138,10 @@ paths:
           required: true
           schema:
             type: string
-        - description: Активная версия учебной карты из GET /learn/subjects/{subject_id}/competency-map; обязательна для двухлистовой книги
+        - description: 'Активная ревизия карты из GET /learn/subjects/{subject_id}/competency-map (0 — карты ещё нет): подтверждает замену'
           in: header
           name: X-Expected-Learning-Revision
+          required: true
           schema:
             type: integer
       requestBody:
@@ -4282,7 +4195,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: GRAPH_BUILD_IN_PROGRESS или UNIFIED_COMPETENCY_MAP_REQUIRED
+          description: GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED
         "413":
           content:
             application/json:
@@ -4294,7 +4207,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/fault.Error'
-          description: COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH
+          description: UNIFIED_COMPETENCY_MAP_REQUIRED, COMPETENCY_MAP_INVALID, COMPETENCY_MAP_EMPTY или COMPETENCY_MAP_STRUCTURE_MISMATCH
         "503":
           content:
             application/json:
@@ -5421,98 +5334,6 @@ paths:
       summary: Создать общий предмет
       tags:
         - Предметы обучения
-      x-implementation: implemented
-  /learn/admin/subjects/{subject_id}/competency-map/import:
-    post:
-      description: Доступно только admin. Совместимый импорт CSV и однолистовой XLSX атомарно заменяет учебную карту. Двухлистовую XLSX-карту нужно загрузить через единый импорт графа курса; независимая публикация её учебного листа отклоняется.
-      operationId: importSubjectCompetencyMap
-      parameters:
-        - description: ID предмета
-          in: path
-          name: subject_id
-          required: true
-          schema:
-            type: string
-        - description: Ожидаемая ревизия карты
-          in: header
-          name: X-Expected-Map-Revision
-          schema:
-            type: integer
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              additionalProperties: false
-              properties:
-                file:
-                  description: Карта компетенций CSV или XLSX, до 25 МиБ
-                  format: binary
-                  type: string
-              required:
-                - file
-              type: object
-        description: Карта компетенций CSV или XLSX, до 25 МиБ
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/competencyhttp.ImportResult'
-          description: OK
-        "401":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unauthorized
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Not Found
-        "409":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: COMPETENCY_MAP_CHANGED или UNIFIED_COMPETENCY_MAP_REQUIRED
-        "413":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Request Entity Too Large
-        "415":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unsupported Media Type
-        "422":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Unprocessable Entity
-        "503":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/fault.Error'
-          description: Service Unavailable
-      security:
-        - accessCookie: []
-      summary: Заменить карту предмета
-      tags:
-        - Учебная база
       x-implementation: implemented
   /learn/assessments/evaluate:
     post:

@@ -53,11 +53,11 @@ func TestLearningReadVariantCandidatesPreservesCurriculumCompetencies(t *testing
 	if _, err := pool.Exec(ctx, `
 INSERT INTO users(id,email,password_hash,created_at) VALUES ('variant-test-user','variant-test@example.test','hash',1);
 INSERT INTO subjects(id,name,created_at) VALUES ('subject:test','Тестовый предмет',1);
-INSERT INTO learning_map_imports(revision,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers,subject_id)
+INSERT INTO course_map_imports(revision,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers,subject_id)
 VALUES (1,1,'variant-test-user',1,1,0,0,'paired','[]'::jsonb,'subject:test');
 INSERT INTO learning_subject_state(subject_id,active_revision) VALUES ('subject:test',1);
-INSERT INTO learning_competencies(id,name,revision) VALUES ('competency:test','Компетенция',1);
-INSERT INTO learning_constituents(id,competency_id,name,topic_level_id) VALUES ('constituent:test','competency:test','Составляющая','topic:basic');
+INSERT INTO course_map_competencies(id,name,revision) VALUES ('competency:test','Компетенция',1);
+INSERT INTO course_map_constituents(id,competency_id,name,topic_level_id) VALUES ('constituent:test','competency:test','Составляющая','topic:basic');
 INSERT INTO learning_curriculum_sections(id,revision,code,title) VALUES ('section:test',1,'Р.1','Раздел');
 INSERT INTO learning_curriculum_competencies(id,revision,code) VALUES ('curriculum:test',1,'ОПК-1');
 INSERT INTO learning_constituent_sections(id,revision,constituent_id,section_id) VALUES ('constituent-section:test',1,'constituent:test','section:test');

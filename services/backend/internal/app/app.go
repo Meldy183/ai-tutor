@@ -176,32 +176,29 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	a.warmer.Prepare(geekllm.PreparedSpeech())
 	// A course graph is built from the materials or from a competency map.
 	learningMapRepository := competencypg.New(pool)
-	learningMapImport := competencyapp.New(learningMapRepository, &csvparser.Parser{}, a.now)
+	learningMapImport := competencyapp.New(learningMapRepository)
 	graphRepository := &pairedCourseGraphRepository{Repository: graphpg.New(pool), pool: pool, learning: learningMapRepository}
 	a.graphWorker = graphapp.New(graphRepository, materialRepository, a.materialsStorage, graphapi.New(cfg.CourseGraphURL), a.warmer, graphxlsx.Read)
-	a.graphWorker.SetLearningMapImporter(func(ctx context.Context, actor user.User, subjectID string, data []byte, sheets []coursegraphentity.MapSheet) (*competencymap.Map, []coursegraphentity.ImportWarning, error) {
-		if len(sheets) < 2 {
-			return nil, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Для единой карты нужны листы Geek и обучения.")
-		}
+	a.graphWorker.SetLearningMapImporter(func(ctx context.Context, actor user.User, subjectID string, data []byte, sheets []coursegraphentity.MapSheet) (competencymap.Map, []coursegraphentity.ImportWarning, error) {
 		geekMapKeys, err := coursegraphentity.CompetencyMapStructureKeys(sheets[0])
 		if err != nil {
-			return nil, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для Geek.")
+			return competencymap.Map{}, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для Geek.")
 		}
 		learningMap, err := csvparser.ParseXLSXSheet(data, 1)
 		if err != nil {
-			return nil, nil, learningSheetParseFailure(err)
+			return competencymap.Map{}, nil, learningSheetParseFailure(err)
 		}
 		if err := competencymap.ValidateStructureKeys(geekMapKeys, learningMap); err != nil {
-			return nil, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_STRUCTURE_MISMATCH", err.Error())
+			return competencymap.Map{}, nil, fault.New(fault.Invalid, "COMPETENCY_MAP_STRUCTURE_MISMATCH", err.Error())
 		}
 		if err := learningMapImport.Authorize(actor); err != nil {
-			return nil, nil, err
+			return competencymap.Map{}, nil, err
 		}
 		warnings := make([]coursegraphentity.ImportWarning, len(learningMap.Warnings))
 		for i, warning := range learningMap.Warnings {
 			warnings[i] = coursegraphentity.ImportWarning{Row: warning.Row, ColumnIndex: warning.ColumnIndex, Column: warning.Column, Code: warning.Code}
 		}
-		return &learningMap, warnings, nil
+		return learningMap, warnings, nil
 	})
 	a.graphWorker.SetQuestions(builtQuestions{examiner: examiner, logger: logger.With(zap.String("worker", "graph_questions"))})
 
@@ -346,7 +343,7 @@ func (a *App) Handler() http.Handler {
 	geekService.SetSummaries(a.summarizer, geekpg.New(a.pool))
 	geekHandlers := geekhttp.New(geekService)
 	learningSubjects := subjecthttp.New(subjectapp.New(subjectpg.New(a.pool), security.IDGenerator{}, a.now))
-	competencyHandlers := competencyhttp.New(competencyapp.New(competencypg.New(a.pool), &csvparser.Parser{}, a.now), a.cfg.MaxUploadBytes)
+	competencyHandlers := competencyhttp.New(competencyapp.New(competencypg.New(a.pool)))
 	variantHandlers := variantgenhttp.New(variantgenapp.New(a.variantRepository, variantgenrandom.Chooser{}, security.IDGenerator{}, a.now).
 		WithGraphLabels(variantgenlabels.New(variantgenlabels.NewPostgresStore(a.pool), a.gatewayClient, a.cfg.LLMTimeout)))
 

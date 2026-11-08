@@ -58,7 +58,7 @@ func TestXLSXMapPreservesBlankRowsAndParsesSourceCoordinates(t *testing.T) {
 		t.Fatalf("parse generated XLSX: %#v", err)
 	}
 	if len(parsed.Outcomes) != 101 || len(parsed.Tasks) != 13 || parsed.UnparsedTaskCells != 41 {
-		t.Fatalf("parsed XLSX counts: learning_outcomes=%d learning_tasks=%d fragments=%d", len(parsed.Outcomes), len(parsed.Tasks), parsed.UnparsedTaskCells)
+		t.Fatalf("parsed XLSX counts: course_map_outcomes=%d course_map_tasks=%d fragments=%d", len(parsed.Outcomes), len(parsed.Tasks), parsed.UnparsedTaskCells)
 	}
 	firstTask := parsed.Tasks[0]
 	if firstTask.SourceColumnIndex != 11 || firstTask.SourceRowIndex <= 0 {
@@ -111,7 +111,7 @@ func TestLearningStillReadsSecondSheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(parsed.Outcomes) != 1 || parsed.Outcomes[0].Name != "Для диагностики" {
-		t.Fatalf("learning_outcomes = %+v", parsed.Outcomes)
+		t.Fatalf("course_map_outcomes = %+v", parsed.Outcomes)
 	}
 	// A book of one sheet is read as before.
 	if parsed, err := Parse(book(t, map[string][][]any{"Карта": simulation}, []string{"Карта"})); err != nil || parsed.Outcomes[0].Name != "Для симуляции" {

@@ -23,47 +23,35 @@ WHERE course_graph_jobs.status NOT IN ('pending', 'processing')
 RETURNING subject_id;
 
 -- name: SaveCourseGraphMap :exec
-INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at, learning_revision)
+INSERT INTO course_graph_maps(subject_id, filename, sheet, fingerprint, graph, uploaded_at, map_revision)
 SELECT sqlc.arg(subject_id), sqlc.arg(filename), sqlc.arg(sheet), sqlc.arg(fingerprint), sqlc.arg(graph)::jsonb, sqlc.arg(now)::bigint,
-       NULLIF(sqlc.arg(graph)::jsonb->>'learning_revision','')::bigint
+       sqlc.narg(map_revision)::bigint
 WHERE EXISTS (SELECT 1 FROM subjects s WHERE s.id=sqlc.arg(subject_id))
 ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded.sheet,
     fingerprint=excluded.fingerprint, graph=excluded.graph, uploaded_at=excluded.uploaded_at,
-    learning_revision=excluded.learning_revision;
+    map_revision=excluded.map_revision;
 
 -- name: ReadCourseGraphMap :one
 SELECT graph FROM course_graph_maps WHERE subject_id = $1;
 
--- name: ReadCourseGraphMapProjection :one
-SELECT CASE WHEN m.graph->>'canonical'='true'
-            THEN course_graph_map_projection(m.subject_id,COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint),m.graph,false)
-            ELSE m.graph END::jsonb AS graph
-FROM course_graph_maps m WHERE m.subject_id=$1;
+-- name: CourseMapOutcomesOfRevision :many
+-- The outcomes of a map revision with their place in the structure, so the
+-- Geek sheet's topics resolve to the same outcomes.
+SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent_id,
+       competency.name AS competency_name, constituent.name AS constituent_name, outcome.name AS outcome_name
+FROM course_map_outcomes outcome
+JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies competency ON competency.id = constituent.competency_id
+WHERE competency.revision = $1;
 
--- name: CourseGraphInsertExamTopic :exec
-INSERT INTO course_graph_exam_topics(map_revision,exam_revision,outcome_id,topic_order,role)
-VALUES($1,$2,$3,$4,$5);
+-- name: InsertCourseMapExamTask :exec
+INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, reference_answer, criteria, created_at)
+VALUES (sqlc.arg(id), sqlc.arg(outcome_id), 'exam', sqlc.arg(position), sqlc.arg(question),
+        sqlc.arg(reference_answer), sqlc.arg(criteria), sqlc.arg(created_at));
 
--- name: CourseGraphCreateExamVersion :one
-INSERT INTO course_graph_exam_versions(map_revision,created_at) VALUES($1,$2) RETURNING id;
-
--- name: CourseGraphInsertExamTask :exec
-INSERT INTO course_graph_exam_tasks(map_revision,exam_revision,outcome_id,position,question,content,assessment_guidance)
-VALUES($1,$2,$3,$4,$5,$6,$7);
-
--- name: CourseGraphInsertPrerequisite :exec
-INSERT INTO learning_graph_prerequisites(map_revision,source_outcome_id,target_outcome_id,reason)
-VALUES($1,$2,$3,$4);
-
--- name: CourseGraphDeleteExamTopics :exec
-DELETE FROM course_graph_exam_topics WHERE exam_revision=$1;
-
--- name: CourseGraphDeletePrerequisites :exec
-DELETE FROM learning_graph_prerequisites WHERE map_revision=$1;
-
--- name: CourseGraphUpdateExamTaskRephrase :execrows
-UPDATE course_graph_exam_tasks SET rephrase=$4
-WHERE exam_revision=$1 AND outcome_id=$2 AND position=$3;
+-- name: UpdateCourseMapExamTaskRephrase :execrows
+UPDATE course_map_tasks SET rephrase = sqlc.arg(rephrase)
+WHERE id = sqlc.arg(id) AND mode = 'exam';
 
 -- name: ClaimCourseGraph :one
 -- A requested build takes its source as it is when it starts: the materials
@@ -98,9 +86,11 @@ WITH accepted AS (
                  AND i.source=j.source AND i.fingerprint=sqlc.arg(fingerprint))
     RETURNING j.subject_id, j.source, j.fingerprint
 ), published AS (
+-- A graph of a competency map keeps the revision of the map it was built from.
 INSERT INTO course_graphs(subject_id,source,fingerprint,graph,updated_at,map_revision)
-SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb-'learning_revision',sqlc.arg(now)::bigint,
-       NULLIF(sqlc.arg(graph)::jsonb->>'learning_revision','')::bigint FROM accepted
+SELECT accepted.subject_id,accepted.source,accepted.fingerprint,sqlc.arg(graph)::jsonb,sqlc.arg(now)::bigint,
+       CASE WHEN accepted.source='competency_map' THEN (SELECT m.map_revision FROM course_graph_maps m WHERE m.subject_id=accepted.subject_id) END
+FROM accepted
 ON CONFLICT(subject_id) DO UPDATE SET source=excluded.source,fingerprint=excluded.fingerprint,graph=excluded.graph,
     updated_at=excluded.updated_at,map_revision=excluded.map_revision
 RETURNING subject_id
@@ -127,7 +117,7 @@ SELECT s.id, coalesce(j.status,'not_requested')::text AS status,
        coalesce(j.source,'')::text AS job_source,
        coalesce(m.fingerprint,'')::text AS map_fingerprint,
        coalesce(m.filename,'')::text AS map_filename, coalesce(m.sheet,'')::text AS map_sheet,
-       COALESCE(m.learning_revision,(m.graph->>'learning_revision')::bigint) AS map_learning_revision
+       m.map_revision AS map_revision
 FROM subjects s LEFT JOIN course_graph_jobs j ON j.subject_id=s.id
 LEFT JOIN course_graphs g ON g.subject_id=s.id
 LEFT JOIN course_graph_inputs i ON i.subject_id=s.id
@@ -137,27 +127,20 @@ LEFT JOIN course_graph_maps m ON m.subject_id=s.id WHERE s.id=$1;
 -- The graph Geek examines by. It stays published while its source changes
 -- until the next build; a graph of materials goes with the last of them, a
 -- graph of a competency map needs none.
-SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
-            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
-            ELSE g.graph END::jsonb AS graph
+SELECT g.graph
 FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.subject_id=$1 AND (g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id));
 
 -- name: ListPublishedCourseGraphs :many
 -- Every graph Geek examines by, under the condition of ReadPublishedCourseGraph;
 -- the newest first, so their questions are voiced first.
-SELECT CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
-            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
-            ELSE g.graph END::jsonb AS graph
+SELECT g.graph
 FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id;
 
 -- name: ListPublishedCourseGraphsForAudio :many
-SELECT g.subject_id,
-       CASE WHEN g.source='competency_map' AND g.graph->>'canonical'='true'
-            THEN course_graph_map_projection(g.subject_id,g.map_revision,g.graph,true)
-            ELSE g.graph END::jsonb AS graph
+SELECT g.subject_id, g.graph
 FROM course_graphs g JOIN subjects s ON s.id=g.subject_id
 WHERE g.source='competency_map' OR EXISTS(SELECT 1 FROM subject_materials m WHERE m.subject_id=g.subject_id)
 ORDER BY g.updated_at DESC, g.subject_id;
@@ -167,11 +150,7 @@ ORDER BY g.updated_at DESC, g.subject_id;
 -- concurrent map update checks its fingerprint before changing any data.
 UPDATE course_graph_maps m
 SET filename=sqlc.arg(filename), sheet=sqlc.arg(sheet),
-    fingerprint=sqlc.arg(fingerprint), graph=sqlc.arg(graph)::jsonb, uploaded_at=sqlc.arg(now)::bigint,
-    learning_revision=CASE WHEN EXISTS (SELECT 1 FROM learning_subject_state state
-                                        WHERE state.subject_id=m.subject_id
-                                          AND state.active_revision=m.learning_revision)
-                           THEN m.learning_revision ELSE NULL END
+    fingerprint=sqlc.arg(fingerprint), graph=sqlc.arg(graph)::jsonb, uploaded_at=sqlc.arg(now)::bigint
 WHERE m.subject_id=sqlc.arg(subject_id) AND m.fingerprint=sqlc.arg(expected_fingerprint)
   AND EXISTS (SELECT 1 FROM course_graphs g WHERE g.subject_id=m.subject_id
               AND g.source='competency_map' AND g.fingerprint=m.fingerprint)

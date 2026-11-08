@@ -25,32 +25,29 @@ func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool, queries: db.New(pool)}
 }
 
+// Replace adds a new active revision in its own transaction; a map import
+// uses ReplaceInTx to store it with the Geek sheet.
 func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64) (competencymap.ImportResult, error) {
-	return r.replace(ctx, subjectID, actorID, parsed, importedAt, expectedRevision, false)
-}
-
-func (r *Repository) replace(ctx context.Context, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64, preserveHistory bool) (competencymap.ImportResult, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return competencymap.ImportResult{}, err
 	}
 	defer tx.Rollback(ctx)
-	result, err := r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, expectedRevision, preserveHistory)
+	result, err := r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, expectedRevision)
 	if err != nil {
 		return competencymap.ImportResult{}, err
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	return result, nil
+	return result, tx.Commit(ctx)
 }
 
 // ReplaceInTx imports a learning map as part of an enclosing transaction.
 func (r *Repository) ReplaceInTx(ctx context.Context, tx db.DBTX, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision int64) (competencymap.ImportResult, error) {
-	return r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, &expectedRevision, true)
+	return r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, &expectedRevision)
 }
 
-func (r *Repository) replaceInTx(ctx context.Context, tx db.DBTX, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64, preserveHistory bool) (competencymap.ImportResult, error) {
+// replaceInTx adds a new revision and activates it. Earlier revisions stay
+// while a published Geek graph, a variant or a session still uses them.
+func (r *Repository) replaceInTx(ctx context.Context, tx db.DBTX, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64) (competencymap.ImportResult, error) {
 	var err error
 	queries := db.New(tx)
 	{
@@ -89,15 +86,10 @@ func (r *Repository) replaceInTx(ctx context.Context, tx db.DBTX, subjectID, act
 		UnparsedTaskCells: parsed.UnparsedTaskCells, Warnings: parsed.Warnings,
 	}
 
-	if !preserveHistory {
-		if _, err = queries.LearningCancelPendingTaskAudioForSubject(ctx, subjectID); err != nil {
-			return competencymap.ImportResult{}, fmt.Errorf("cancel task audio before subject map replacement: %w", err)
-		}
-		if err = queries.LearningDeleteCompetencyMapImportsForSubject(ctx, subjectID); err != nil {
-			return competencymap.ImportResult{}, err
-		}
+	// Audio still waiting for the replaced revision's tasks is no longer needed.
+	if _, err = queries.LearningCancelPendingTaskAudioForSubject(ctx, subjectID); err != nil {
+		return competencymap.ImportResult{}, fmt.Errorf("cancel task audio before subject map replacement: %w", err)
 	}
-
 	headers, err := json.Marshal(parsed.SourceHeaders)
 	if err != nil {
 		return competencymap.ImportResult{}, err

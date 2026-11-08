@@ -30,31 +30,6 @@ type CourseGraph struct {
 	MapRevision *int64
 }
 
-type CourseGraphExamTask struct {
-	MapRevision        int64
-	OutcomeID          string
-	Position           int32
-	Question           string
-	Content            string
-	AssessmentGuidance string
-	Rephrase           string
-	ExamRevision       int64
-}
-
-type CourseGraphExamTopic struct {
-	MapRevision  int64
-	OutcomeID    string
-	TopicOrder   int32
-	Role         string
-	ExamRevision int64
-}
-
-type CourseGraphExamVersion struct {
-	ID          int64
-	MapRevision int64
-	CreatedAt   int64
-}
-
 type CourseGraphInput struct {
 	SubjectID   string
 	Fingerprint string
@@ -80,18 +55,76 @@ type CourseGraphJobInput struct {
 }
 
 type CourseGraphMap struct {
-	SubjectID        string
-	Filename         string
-	Sheet            string
-	Fingerprint      string
-	Graph            []byte
-	UploadedAt       int64
-	LearningRevision *int64
+	SubjectID   string
+	Filename    string
+	Sheet       string
+	Fingerprint string
+	Graph       []byte
+	UploadedAt  int64
+	MapRevision *int64
 }
 
-type CourseGraphMapLegacyBackup struct {
-	SubjectID string
-	Graph     []byte
+type CourseMapCompetency struct {
+	ID       string
+	Name     string
+	Revision int64
+}
+
+type CourseMapConstituent struct {
+	ID           string
+	CompetencyID string
+	Name         string
+	TopicLevelID *string
+}
+
+type CourseMapImport struct {
+	Revision              int64
+	Singleton             bool
+	ImportedAt            int64
+	ImportedBy            string
+	CompetencyCount       int32
+	ConstituentCount      int32
+	OutcomeCount          int32
+	TaskCount             int32
+	SourceFormat          string
+	SourceHeaders         []byte
+	UnparsedTaskCellCount int32
+	SubjectID             string
+}
+
+type CourseMapOutcome struct {
+	ID                 string
+	ConstituentID      string
+	Name               string
+	IncludeInTest      *bool
+	TaxonomyID         *string
+	AldLevelID         *string
+	Importance         *int16
+	EducationalContent *string
+	TheoryMinutes      *int16
+	PracticeMinutes    *int16
+}
+
+type CourseMapTask struct {
+	ID                string
+	OutcomeID         string
+	Question          string
+	Criteria          *string
+	SourceRow         *int32
+	SourceColumn      *string
+	Options           []byte
+	VoiceInstruction  *string
+	ReferenceAnswer   *string
+	Origin            string
+	GenerationRunID   *string
+	SourceRevision    *int64
+	SourceRowIndex    *int32
+	SourceColumnIndex *int32
+	CreatedAt         int64
+	AudioAssetID      *string
+	Mode              string
+	Rephrase          string
+	Position          int32
 }
 
 type GeekRequest struct {
@@ -155,19 +188,6 @@ type LearningAudioAsset struct {
 	CreatedAt           pgtype.Timestamptz
 	UpdatedAt           pgtype.Timestamptz
 	PriorityRequestedAt pgtype.Timestamptz
-}
-
-type LearningCompetency struct {
-	ID       string
-	Name     string
-	Revision int64
-}
-
-type LearningConstituent struct {
-	ID           string
-	CompetencyID string
-	Name         string
-	TopicLevelID *string
 }
 
 type LearningConstituentCurriculumProfile struct {
@@ -270,28 +290,6 @@ type LearningGraphLabel struct {
 	DisplayName string
 }
 
-type LearningGraphPrerequisite struct {
-	MapRevision     int64
-	SourceOutcomeID string
-	TargetOutcomeID string
-	Reason          string
-}
-
-type LearningMapImport struct {
-	Revision              int64
-	Singleton             bool
-	ImportedAt            int64
-	ImportedBy            string
-	CompetencyCount       int32
-	ConstituentCount      int32
-	OutcomeCount          int32
-	TaskCount             int32
-	SourceFormat          string
-	SourceHeaders         []byte
-	UnparsedTaskCellCount int32
-	SubjectID             string
-}
-
 type LearningMapSourceRow struct {
 	Revision   int64
 	RowIndex   int32
@@ -325,19 +323,6 @@ type LearningMaterialEmbedding struct {
 	Dimensions  int32
 	MapRevision int64
 	Embedding   []float64
-}
-
-type LearningOutcome struct {
-	ID                 string
-	ConstituentID      string
-	Name               string
-	IncludeInTest      *bool
-	TaxonomyID         *string
-	AldLevelID         *string
-	Importance         *int16
-	EducationalContent *string
-	TheoryMinutes      *int16
-	PracticeMinutes    *int16
 }
 
 type LearningOutcomeSourceRow struct {
@@ -375,28 +360,8 @@ type LearningSession struct {
 }
 
 type LearningSubjectState struct {
-	SubjectID       string
-	ActiveRevision  *int64
-	PendingRevision *int64
-}
-
-type LearningTask struct {
-	ID                string
-	OutcomeID         string
-	Question          string
-	Criteria          *string
-	SourceRow         *int32
-	SourceColumn      *string
-	Options           []byte
-	VoiceInstruction  *string
-	ReferenceAnswer   *string
-	Origin            string
-	GenerationRunID   *string
-	SourceRevision    *int64
-	SourceRowIndex    *int32
-	SourceColumnIndex *int32
-	CreatedAt         int64
-	AudioAssetID      *string
+	SubjectID      string
+	ActiveRevision *int64
 }
 
 type LearningTaskAssignment struct {

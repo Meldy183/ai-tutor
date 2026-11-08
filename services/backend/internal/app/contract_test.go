@@ -242,7 +242,7 @@ func TestOpenAPIResponses(t *testing.T) {
 		t.Fatalf("map that is not a book: %d %s", notABook.Code, notABook.Body.String())
 	}
 	check("POST", mapContract, notABook)
-	imported := upload(f, mapPath, "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", mapBook(t), admin)
+	imported := uploadWithHeader(f, mapPath, "file", "map.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", mapBook(t), admin, "X-Expected-Learning-Revision", "0")
 	if imported.Code != http.StatusAccepted || !strings.Contains(imported.Body.String(), `"build_source":"competency_map"`) {
 		t.Fatalf("map import: %d %s", imported.Code, imported.Body.String())
 	}
@@ -252,7 +252,7 @@ func TestOpenAPIResponses(t *testing.T) {
 		t.Fatalf("skip while building: %d %s", whileBuilding.Code, whileBuilding.Body.String())
 	}
 	check("POST", skipContract, whileBuilding)
-	check("POST", mapContract, upload(f, mapPath, "file", "map.xlsx", "application/octet-stream", mapBook(t), admin))
+	check("POST", mapContract, uploadWithHeader(f, mapPath, "file", "map.xlsx", "application/octet-stream", mapBook(t), admin, "X-Expected-Learning-Revision", "1"))
 	// Publish the imported graph as the worker would, then validate the 202
 	// response of the actual skip endpoint against the OpenAPI snapshot schema.
 	if _, err := f.pool.Exec(t.Context(), `INSERT INTO course_graphs(subject_id, source, fingerprint, graph, updated_at) SELECT subject_id, 'competency_map', fingerprint, graph, 1 FROM course_graph_maps WHERE subject_id=$1`, contractSubject.ID); err != nil {
@@ -521,30 +521,5 @@ func TestHTTPSCookieLifecycle(t *testing.T) {
 		if resp.StatusCode != step.status {
 			t.Fatalf("cookie lifecycle %s: %d %s", step.path, resp.StatusCode, data)
 		}
-	}
-}
-
-func TestCompetencyImportRevisionContract(t *testing.T) {
-	data, err := os.ReadFile("../../../../api/openapi.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var spec map[string]any
-	if err := yaml.Unmarshal(data, &spec); err != nil {
-		t.Fatal(err)
-	}
-	op := spec["paths"].(map[string]any)["/learn/admin/subjects/{subject_id}/competency-map/import"].(map[string]any)["post"].(map[string]any)
-	found := false
-	for _, item := range op["parameters"].([]any) {
-		param := item.(map[string]any)
-		if param["name"] == "X-Expected-Map-Revision" && param["in"] == "header" && param["required"] != true && param["schema"].(map[string]any)["type"] == "integer" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("optional revision header missing from contract")
-	}
-	if _, ok := op["responses"].(map[string]any)["409"]; !ok {
-		t.Fatal("409 response missing from contract")
 	}
 }

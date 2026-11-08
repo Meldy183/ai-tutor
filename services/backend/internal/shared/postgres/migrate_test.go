@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -238,91 +237,6 @@ WHERE table_schema=current_schema() AND table_name IN
 	}
 	if remaining != 0 {
 		t.Fatalf("schema tables remain after rollback: %d", remaining)
-	}
-}
-
-func TestGeekProjectionMigrationRollbackPreservesMapData(t *testing.T) {
-	pool := migrationPool(t)
-	ctx := context.Background()
-	if err := migrate(ctx, pool, migrationsUpTo(t, 19)); err != nil {
-		t.Fatal(err)
-	}
-	_, err := pool.Exec(ctx, `
-INSERT INTO users(id,email,password_hash,created_at) VALUES ('user:map','map@example.test','hash',1);
-INSERT INTO subjects(id,name,created_at) VALUES ('subject:map','Курс',1);
-INSERT INTO learning_map_imports(revision,imported_at,imported_by,competency_count,constituent_count,outcome_count,task_count,source_format,source_headers,subject_id)
-VALUES (1,1,'user:map',1,1,2,2,'paired','[]','subject:map');
-INSERT INTO learning_competencies(id,name,revision) VALUES ('competency:1','Компетенция',1);
-INSERT INTO learning_constituents(id,competency_id,name) VALUES ('constituent:1','competency:1','Составляющая');
-INSERT INTO learning_outcomes(id,constituent_id,name) VALUES
-('outcome:1','constituent:1','ОР 1'), ('outcome:2','constituent:1','ОР 2');
-INSERT INTO learning_graph_prerequisites(map_revision,source_outcome_id,target_outcome_id,reason)
-VALUES (1,'outcome:1','outcome:2','Основа');
-INSERT INTO course_graph_exam_topics(map_revision,outcome_id,topic_order,role) VALUES
-(1,'outcome:1',1,'basic'), (1,'outcome:2',2,'main');
-INSERT INTO course_graph_exam_tasks(map_revision,outcome_id,position,question,content,assessment_guidance,rephrase) VALUES
-(1,'outcome:1',1,'Вопрос 1?','Ответ 1','Критерий 1','Перефраз 1'),
-(1,'outcome:2',1,'Вопрос 2?','Ответ 2','Критерий 2','Перефраз 2');
-INSERT INTO course_graph_maps(subject_id,filename,sheet,fingerprint,graph,uploaded_at,learning_revision)
-VALUES ('subject:map','map.xlsx','Карта','fingerprint',
-'{"canonical":true,"learning_revision":1,"skipped":[],"assessment_warnings":[],"quality":{"acyclic":true}}',1,1);
-INSERT INTO course_graphs(subject_id,fingerprint,graph,updated_at,source,map_revision)
-VALUES ('subject:map','fingerprint',
-'{"canonical":true,"learning_revision":1,"skipped":[],"assessment_warnings":[],"quality":{"acyclic":true}}',1,'competency_map',1);
-`)
-	if err != nil {
-		t.Fatalf("seed canonical course-map data before Geek projection migration: %v", err)
-	}
-	if err := migrate(ctx, pool, migrationsUpTo(t, 20)); err != nil {
-		t.Fatalf("apply Geek projection version migration: %v", err)
-	}
-	var upProjection string
-	if err := pool.QueryRow(ctx, `SELECT course_graph_map_projection('subject:map',1,graph,true)::text FROM course_graph_maps WHERE subject_id='subject:map'`).Scan(&upProjection); err != nil {
-		t.Fatalf("read versioned projection before rollback: %v", err)
-	}
-	if !strings.Contains(upProjection, `"exam_revision"`) || !strings.Contains(upProjection, `"source": "outcome:1"`) {
-		t.Fatalf("versioned projection missing revision or canonical relation: %s", upProjection)
-	}
-	db := stdlib.OpenDB(*pool.Config().ConnConfig)
-	defer db.Close()
-	locker, err := lock.NewPostgresSessionLocker()
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, files,
-		goose.WithSessionLocker(locker), goose.WithDisableGlobalRegistry(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(ctx, 19); err != nil {
-		t.Fatalf("rollback Geek projection version: %v", err)
-	}
-	var topics, tasks, edges int
-	if err := pool.QueryRow(ctx, `SELECT
-	(SELECT count(*) FROM course_graph_exam_topics WHERE map_revision=1),
-	(SELECT count(*) FROM course_graph_exam_tasks WHERE map_revision=1),
-	(SELECT count(*) FROM learning_graph_prerequisites WHERE map_revision=1)`).Scan(&topics, &tasks, &edges); err != nil {
-		t.Fatal(err)
-	}
-	if topics != 2 || tasks != 2 || edges != 1 {
-		t.Fatalf("rollback lost canonical map rows: topics=%d tasks=%d edges=%d", topics, tasks, edges)
-	}
-	var restoredProjection string
-	if err := pool.QueryRow(ctx, `SELECT course_graph_map_projection('subject:map',1,graph,true)::text FROM course_graph_maps WHERE subject_id='subject:map'`).Scan(&restoredProjection); err != nil {
-		t.Fatalf("read restored v19 projection: %v", err)
-	}
-	if strings.Contains(restoredProjection, `"exam_revision"`) || !strings.Contains(restoredProjection, `"source": "outcome:1"`) {
-		t.Fatalf("rollback did not restore v19 projection over preserved rows: %s", restoredProjection)
-	}
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("reapply Geek projection version migration: %v", err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM course_graph_exam_tasks WHERE exam_revision=(SELECT (graph->>'exam_revision')::bigint FROM course_graph_maps WHERE subject_id='subject:map')`).Scan(&tasks); err != nil || tasks != 2 {
-		t.Fatalf("reapplied migration lost exam tasks: tasks=%d err=%v", tasks, err)
 	}
 }
 

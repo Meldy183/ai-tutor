@@ -48,18 +48,18 @@ func TestLearningBloomNormalizationAndTiesMatchLegacy(t *testing.T) {
 	if got.MapRevision != 7 || got.SubjectID != "subject:test" || got.SubjectNameSnapshot != "Тест" || got.IncludedCompetencyCount != 1 || got.CreatedAt != 100 || got.AlgorithmVersion != AlgorithmVersion {
 		t.Fatalf("variant metadata: %+v", got)
 	}
-	learning_tasks := got.Competencies[0].Tasks
-	if len(learning_tasks) != 3 || learning_tasks[0].Role != "main" || learning_tasks[1].Role != "basic" || learning_tasks[2].Role != "basic" {
-		t.Fatalf("learning_tasks: %+v", learning_tasks)
+	course_map_tasks := got.Competencies[0].Tasks
+	if len(course_map_tasks) != 3 || course_map_tasks[0].Role != "main" || course_map_tasks[1].Role != "basic" || course_map_tasks[2].Role != "basic" {
+		t.Fatalf("course_map_tasks: %+v", course_map_tasks)
 	}
-	if learning_tasks[0].Task.Outcome.ID != "main" {
-		t.Fatalf("main outcome = %s, want the analysis outcome with the higher importance", learning_tasks[0].Task.Outcome.ID)
+	if course_map_tasks[0].Task.Outcome.ID != "main" {
+		t.Fatalf("main outcome = %s, want the analysis outcome with the higher importance", course_map_tasks[0].Task.Outcome.ID)
 	}
-	if learning_tasks[0].Task.ID != "main-task-2" {
-		t.Fatalf("random chooser did not select pool member: %s", learning_tasks[0].Task.ID)
+	if course_map_tasks[0].Task.ID != "main-task-2" {
+		t.Fatalf("random chooser did not select pool member: %s", course_map_tasks[0].Task.ID)
 	}
-	if learning_tasks[1].Task.Outcome.ID != "low-a" || learning_tasks[2].Task.Outcome.ID != "low-b" {
-		t.Fatalf("basics: %s, %s; want the simplest learning_outcomes", learning_tasks[1].Task.Outcome.ID, learning_tasks[2].Task.Outcome.ID)
+	if course_map_tasks[1].Task.Outcome.ID != "low-a" || course_map_tasks[2].Task.Outcome.ID != "low-b" {
+		t.Fatalf("basics: %s, %s; want the simplest course_map_outcomes", course_map_tasks[1].Task.Outcome.ID, course_map_tasks[2].Task.Outcome.ID)
 	}
 	if chooser.calls != 1 {
 		t.Fatalf("chooser called %d times, want once for multi-task pool", chooser.calls)
@@ -76,14 +76,14 @@ func TestBuildAllowsBasicsWithTheMainBloomRank(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	learning_tasks := got.Competencies[0].Tasks
+	course_map_tasks := got.Competencies[0].Tasks
 	want := []string{"app-5", "app-4", "app-3"}
-	if len(learning_tasks) != 3 {
-		t.Fatalf("learning_tasks: %+v", learning_tasks)
+	if len(course_map_tasks) != 3 {
+		t.Fatalf("course_map_tasks: %+v", course_map_tasks)
 	}
 	for i, id := range want {
-		if learning_tasks[i].Task.Outcome.ID != id {
-			t.Fatalf("task %d = %s, want %s", i, learning_tasks[i].Task.Outcome.ID, id)
+		if course_map_tasks[i].Task.Outcome.ID != id {
+			t.Fatalf("task %d = %s, want %s", i, course_map_tasks[i].Task.Outcome.ID, id)
 		}
 	}
 }

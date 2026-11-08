@@ -28,8 +28,8 @@ func TestDiagnosticOutlineMatchesVariantWithoutCreatingSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	imported := upload(f, "/learn/admin/subjects/subject:test/competency-map/import", "file", "map.csv", "text/csv", data, f.admin(t))
-	if imported.Code != http.StatusOK {
+	imported := importCourseMap(t, f, "subject:test", data, 0, f.admin(t))
+	if imported.Code != http.StatusAccepted {
 		t.Fatalf("import: %d %s", imported.Code, imported.Body.String())
 	}
 	preview := f.request(http.MethodGet, path, "", student)

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/application"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/fault"
@@ -39,12 +38,29 @@ func (r *Repository) Release(ctx context.Context, job coursegraph.Job, now time.
 	_, err := db.New(r.pool).ReleaseCourseGraph(ctx, db.ReleaseCourseGraphParams{SubjectID: job.SubjectID, Token: job.Token, Now: now.Unix()})
 	return err
 }
+
+// Finish publishes a build; a graph of a competency map also keeps the
+// prepared rephrases with its exam tasks, in the same transaction.
 func (r *Repository) Finish(ctx context.Context, job coursegraph.Job, graph json.RawMessage, now time.Time) (bool, error) {
-	_, err := db.New(r.pool).FinishCourseGraph(ctx, db.FinishCourseGraphParams{SubjectID: job.SubjectID, Fingerprint: job.Fingerprint, Token: job.Token, Graph: graph, Now: now.Unix()})
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+	if job.Source == coursegraph.SourceMap {
+		if err := keepRephrases(ctx, q, graph); err != nil {
+			return false, err
+		}
+	}
+	_, err = q.FinishCourseGraph(ctx, db.FinishCourseGraphParams{SubjectID: job.SubjectID, Fingerprint: job.Fingerprint, Token: job.Token, Graph: graph, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 func (r *Repository) Fail(ctx context.Context, job coursegraph.Job, message string, now time.Time) error {
 	return db.New(r.pool).FailCourseGraph(ctx, db.FailCourseGraphParams{SubjectID: job.SubjectID, Token: job.Token, ErrorMessage: message, Now: now.Unix()})
@@ -65,7 +81,7 @@ func (r *Repository) Read(ctx context.Context, subjectID string) (coursegraph.Sn
 	}
 	if row.MapFilename != "" {
 		snapshot.Map = &coursegraph.MapFile{Filename: row.MapFilename, Sheet: row.MapSheet,
-			Fingerprint: row.MapFingerprint, LearningRevision: row.MapLearningRevision}
+			Fingerprint: row.MapFingerprint, LearningRevision: row.MapRevision}
 	}
 	return snapshot, nil
 }
@@ -73,130 +89,12 @@ func (r *Repository) Read(ctx context.Context, subjectID string) (coursegraph.Sn
 // SaveMap stores an imported competency map and queues a build of it in one
 // transaction; false, with nothing stored, when a build is already queued or
 // running.
-func (r *Repository) SaveMap(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) (bool, error) {
-	return r.saveMap(ctx, subjectID, filename, sheet, graph, "", now)
-}
-
-func (r *Repository) SaveMapWithLearning(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time, _ string, _ int64, learningMap *competencymap.Map) (bool, int64, error) {
-	// The composition adapter handles paired imports. This repository alone is
-	// sufficient only when the workbook has no learning sheet.
-	if learningMap != nil {
-		return false, 0, fault.New(fault.Unavailable, "COMPETENCY_MAP_UNAVAILABLE", "Совместное сохранение учебной карты не настроено.")
-	}
-	queued, err := r.SaveMap(ctx, subjectID, filename, sheet, graph, now)
-	return queued, 0, err
-}
-
-func (r *Repository) SaveMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) error {
-	return persistMapTx(ctx, tx, subjectID, filename, sheet, graph, now)
-}
-
 // SaveMapIfCurrent atomically replaces only the confirmed, published map.
 func (r *Repository) SaveMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, expectedFingerprint string, now time.Time) (bool, error) {
 	if expectedFingerprint == "" {
 		return false, mapChanged()
 	}
 	return r.saveMap(ctx, subjectID, filename, sheet, graph, expectedFingerprint, now)
-}
-
-// SaveCanonicalMapIfCurrent replaces only the Geek-specific projection data
-// for a canonical learning-map revision and queues its preparation atomically.
-func (r *Repository) SaveCanonicalMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, projection json.RawMessage, revision int64, expectedFingerprint string, now time.Time) (bool, error) {
-	if expectedFingerprint == "" {
-		return false, mapChanged()
-	}
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := db.New(tx)
-	examRevision, err := q.CourseGraphCreateExamVersion(ctx, db.CourseGraphCreateExamVersionParams{MapRevision: revision, CreatedAt: now.Unix()})
-	if err != nil {
-		return false, err
-	}
-	if err = persistCanonicalExamData(ctx, tx, projection, revision, examRevision); err != nil {
-		return false, err
-	}
-	metadata, err := canonicalMapMetadata(projection, revision, examRevision)
-	if err != nil {
-		return false, err
-	}
-	sum := sha256.Sum256(metadata)
-	fingerprint := hex.EncodeToString(sum[:])
-	n, err := q.ReplaceCurrentCourseGraphMap(ctx, db.ReplaceCurrentCourseGraphMapParams{
-		SubjectID: subjectID, Filename: filename, Sheet: sheet, Fingerprint: fingerprint,
-		Graph: metadata, ExpectedFingerprint: expectedFingerprint, Now: now.Unix(),
-	})
-	if err != nil {
-		return false, err
-	}
-	if n != 1 {
-		return false, mapChanged()
-	}
-	if _, err = q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, tx.Commit(ctx)
-}
-
-func persistCanonicalExamData(ctx context.Context, tx pgx.Tx, graph json.RawMessage, revision, examRevision int64) error {
-	var projection struct {
-		Topics []struct {
-			ID       string `json:"id"`
-			Role     string `json:"role"`
-			Variants []struct {
-				Question           string `json:"question"`
-				Content            string `json:"content"`
-				AssessmentGuidance string `json:"assessment_guidance"`
-			} `json:"variants"`
-		} `json:"topics"`
-		Prerequisites []struct {
-			Source string `json:"source"`
-			Target string `json:"target"`
-			Reason string `json:"reason"`
-		} `json:"prerequisites"`
-	}
-	if err := json.Unmarshal(graph, &projection); err != nil {
-		return err
-	}
-	queries := db.New(tx)
-	for topicIndex, topic := range projection.Topics {
-		if topic.ID == "" || len(topic.Variants) == 0 {
-			return fmt.Errorf("canonical Geek topic is missing its outcome ID or tasks")
-		}
-		if err := queries.CourseGraphInsertExamTopic(ctx, db.CourseGraphInsertExamTopicParams{
-			MapRevision: revision, ExamRevision: examRevision, OutcomeID: topic.ID, TopicOrder: int32(topicIndex + 1), Role: topic.Role,
-		}); err != nil {
-			return err
-		}
-		for taskIndex, task := range topic.Variants {
-			if err := queries.CourseGraphInsertExamTask(ctx, db.CourseGraphInsertExamTaskParams{
-				MapRevision: revision, ExamRevision: examRevision, OutcomeID: topic.ID, Position: int32(taskIndex + 1), Question: task.Question,
-				Content: task.Content, AssessmentGuidance: task.AssessmentGuidance,
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func canonicalMapMetadata(graph json.RawMessage, revision, examRevision int64) (json.RawMessage, error) {
-	var metadata map[string]json.RawMessage
-	if err := json.Unmarshal(graph, &metadata); err != nil {
-		return nil, err
-	}
-	for _, key := range []string{"topics", "prerequisites", "hierarchy"} {
-		delete(metadata, key)
-	}
-	metadata["canonical"] = json.RawMessage("true")
-	metadata["learning_revision"], _ = json.Marshal(revision)
-	metadata["exam_revision"], _ = json.Marshal(examRevision)
-	return json.Marshal(metadata)
 }
 
 func mapChanged() error {
@@ -222,9 +120,6 @@ func (r *Repository) saveMap(ctx context.Context, subjectID, filename, sheet str
 		if n != 1 {
 			return false, mapChanged()
 		}
-	} else if err = q.SaveCourseGraphMap(ctx, db.SaveCourseGraphMapParams{SubjectID: subjectID, Filename: filename, Sheet: sheet,
-		Fingerprint: hex.EncodeToString(sum[:]), Graph: graph, Now: now.Unix()}); err != nil {
-		return false, err
 	}
 	_, err = q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -236,19 +131,9 @@ func (r *Repository) saveMap(ctx context.Context, subjectID, filename, sheet str
 	return true, tx.Commit(ctx)
 }
 
-func persistMapTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) error {
-	q := db.New(tx)
-	sum := sha256.Sum256(graph)
-	if err := q.SaveCourseGraphMap(ctx, db.SaveCourseGraphMapParams{SubjectID: subjectID, Filename: filename, Sheet: sheet, Fingerprint: hex.EncodeToString(sum[:]), Graph: graph, Now: now.Unix()}); err != nil {
-		return err
-	}
-	_, err := q.RequestCourseGraphMapBuild(ctx, db.RequestCourseGraphMapBuildParams{SubjectID: subjectID, Now: now.Unix()})
-	return err
-}
-
 // MapGraph is the graph of the imported competency map of a course.
 func (r *Repository) MapGraph(ctx context.Context, subjectID string) (json.RawMessage, error) {
-	graph, err := db.New(r.pool).ReadCourseGraphMapProjection(ctx, subjectID)
+	graph, err := db.New(r.pool).ReadCourseGraphMap(ctx, subjectID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("course %s has no competency map", subjectID)
 	}

@@ -482,7 +482,7 @@ func TestRunContinuesAfterOneJobFailure(t *testing.T) {
 		t.Fatal("worker did not stop after cancellation")
 	}
 	if len(queue.failed) != 1 || len(queue.completed) != 1 {
-		t.Fatalf("job learning_outcomes failed=%d complete=%d", len(queue.failed), len(queue.completed))
+		t.Fatalf("job course_map_outcomes failed=%d complete=%d", len(queue.failed), len(queue.completed))
 	}
 }
 
@@ -494,7 +494,7 @@ func TestProcessOneDoesNotTurnLostCompleteTokenIntoFailure(t *testing.T) {
 		t.Fatalf("lost completion token: processed=%v err=%v", processed, err)
 	}
 	if len(queue.failed) != 0 || len(queue.completed) != 1 {
-		t.Fatalf("stale completion learning_outcomes failed=%d complete=%d", len(queue.failed), len(queue.completed))
+		t.Fatalf("stale completion course_map_outcomes failed=%d complete=%d", len(queue.failed), len(queue.completed))
 	}
 }
 

@@ -98,17 +98,17 @@ func TestTrustedTrainingSnapshotUsesTwoPointScale(t *testing.T) {
 
 func TestEvaluateVariantUsesOwnedHistoricalSnapshot(t *testing.T) {
 	transcriptions := &transcriptionStub{text: "классификация, потому что два класса"}
-	learning_tasks := &variantTaskStub{result: validVariantTask("main")}
+	course_map_tasks := &variantTaskStub{result: validVariantTask("main")}
 	grader := &graderStub{result: validMainEvaluation()}
 
-	got, err := New(transcriptions, learning_tasks, grader).EvaluateVariant(
+	got, err := New(transcriptions, course_map_tasks, grader).EvaluateVariant(
 		context.Background(), "student-1", "tr-1", "variant-1", "variant-task-1",
 	)
 	if err != nil || got.Score != 2 || got.MaxScore != 2 || got.Verdict != "correct" {
 		t.Fatalf("unexpected evaluation: %#v, %v", got, err)
 	}
-	if learning_tasks.ownerID != "student-1" || learning_tasks.variantID != "variant-1" || learning_tasks.variantTaskID != "variant-task-1" {
-		t.Fatalf("unexpected snapshot lookup: owner=%q variant=%q task=%q", learning_tasks.ownerID, learning_tasks.variantID, learning_tasks.variantTaskID)
+	if course_map_tasks.ownerID != "student-1" || course_map_tasks.variantID != "variant-1" || course_map_tasks.variantTaskID != "variant-task-1" {
+		t.Fatalf("unexpected snapshot lookup: owner=%q variant=%q task=%q", course_map_tasks.ownerID, course_map_tasks.variantID, course_map_tasks.variantTaskID)
 	}
 	if transcriptions.owner != "student-1" || transcriptions.id != "tr-1" || grader.answer != transcriptions.text {
 		t.Fatalf("unexpected transcription lookup: owner=%q id=%q answer=%q", transcriptions.owner, transcriptions.id, grader.answer)
@@ -325,10 +325,10 @@ func TestEvaluateVariantRejectsMalformedFeedback(t *testing.T) {
 
 func TestEvaluateVariantStopsWhenSnapshotLookupFails(t *testing.T) {
 	transcriptions := &transcriptionStub{text: "ответ"}
-	learning_tasks := &variantTaskStub{err: fault.New(fault.NotFound, "VARIANT_TASK_NOT_FOUND", "Задание варианта не найдено.")}
+	course_map_tasks := &variantTaskStub{err: fault.New(fault.NotFound, "VARIANT_TASK_NOT_FOUND", "Задание варианта не найдено.")}
 	grader := &graderStub{}
 
-	_, err := New(transcriptions, learning_tasks, grader).EvaluateVariant(
+	_, err := New(transcriptions, course_map_tasks, grader).EvaluateVariant(
 		context.Background(), "student-1", "tr-1", "variant-1", "variant-task-1",
 	)
 	if err == nil || transcriptions.id != "" || grader.answer != "" {

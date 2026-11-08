@@ -34,7 +34,7 @@ func TestSearchParsesAllSupportedQueryFilters(t *testing.T) {
 	repository := &recordingRepository{}
 	handler := New(application.New(repository))
 	request := httptest.NewRequest(http.MethodGet,
-		"/learning_tasks?subject_id=subject%3Ab&outcome_id=o1&competency_id=c1&constituent_id=s1&taxonomy=analysis&ald_level=advanced&topic_level=intermediate&importance=5&include_in_test=false&origin=ai_generated&section=R.6&curriculum_competency=ОПК-8&limit=75", nil)
+		"/course_map_tasks?subject_id=subject%3Ab&outcome_id=o1&competency_id=c1&constituent_id=s1&taxonomy=analysis&ald_level=advanced&topic_level=intermediate&importance=5&include_in_test=false&origin=ai_generated&section=R.6&curriculum_competency=ОПК-8&limit=75", nil)
 	response := httptest.NewRecorder()
 	handler.Search(response, request)
 	if response.Code != http.StatusOK {
@@ -67,7 +67,7 @@ func TestSearchRejectsInvalidTypedQueryFiltersBeforeRepositoryCall(t *testing.T)
 			repository := &recordingRepository{}
 			handler := New(application.New(repository))
 			response := httptest.NewRecorder()
-			handler.Search(response, httptest.NewRequest(http.MethodGet, "/learning_tasks?"+query, nil))
+			handler.Search(response, httptest.NewRequest(http.MethodGet, "/course_map_tasks?"+query, nil))
 			if response.Code != 422 || repository.calls != 0 {
 				t.Fatalf("query %q: status=%d repository calls=%d body=%s", query, response.Code, repository.calls, response.Body.String())
 			}
@@ -82,7 +82,7 @@ func TestSearchUsesDefaultAndPassesBoundaryLimits(t *testing.T) {
 		input    string
 		expected int32
 	}{{"subject_id=subject%3Atest", 50}, {"subject_id=subject%3Atest&limit=1", 1}, {"subject_id=subject%3Atest&limit=100", 100}} {
-		request := httptest.NewRequest(http.MethodGet, "/learning_tasks?"+tc.input, nil)
+		request := httptest.NewRequest(http.MethodGet, "/course_map_tasks?"+tc.input, nil)
 		response := httptest.NewRecorder()
 		handler.Search(response, request)
 		if response.Code != http.StatusOK {
@@ -99,7 +99,7 @@ func TestSearchRequiresNonblankSubjectID(t *testing.T) {
 	for _, query := range []string{"", "subject_id=%20%20"} {
 		repository := &recordingRepository{}
 		response := httptest.NewRecorder()
-		New(application.New(repository)).Search(response, httptest.NewRequest(http.MethodGet, "/learning_tasks?"+query, nil))
+		New(application.New(repository)).Search(response, httptest.NewRequest(http.MethodGet, "/course_map_tasks?"+query, nil))
 		if response.Code != http.StatusUnprocessableEntity || repository.calls != 0 {
 			t.Fatalf("query %q: status=%d calls=%d body=%s", query, response.Code, repository.calls, response.Body.String())
 		}
@@ -110,7 +110,7 @@ func TestProfileRequiresNonblankSubjectID(t *testing.T) {
 	for _, query := range []string{"", "?subject_id=%20%20"} {
 		repository := &recordingRepository{}
 		response := httptest.NewRecorder()
-		New(application.New(repository)).Profile(response, httptest.NewRequest(http.MethodGet, "/learning_tasks/task-1"+query, nil))
+		New(application.New(repository)).Profile(response, httptest.NewRequest(http.MethodGet, "/course_map_tasks/task-1"+query, nil))
 		if response.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("query %q: status=%d body=%s", query, response.Code, response.Body.String())
 		}
@@ -123,7 +123,7 @@ func TestSearchRejectsInvalidImportanceRanges(t *testing.T) {
 	for _, query := range []string{"subject_id=subject%3Atest&importance_min=0", "subject_id=subject%3Atest&importance_max=6", "subject_id=subject%3Atest&importance_min=no", "subject_id=subject%3Atest&importance_min=4&importance_max=2"} {
 		repository := &recordingRepository{}
 		response := httptest.NewRecorder()
-		New(application.New(repository)).Search(response, httptest.NewRequest("GET", "/learning_tasks?"+query, nil))
+		New(application.New(repository)).Search(response, httptest.NewRequest("GET", "/course_map_tasks?"+query, nil))
 		if response.Code != 422 || repository.calls != 0 {
 			t.Fatalf("%s: %d %s", query, response.Code, response.Body.String())
 		}

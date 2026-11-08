@@ -30,10 +30,11 @@ type Repository interface {
 	RetryMap(ctx context.Context, subjectID, expectedFingerprint string, now time.Time) (bool, error)
 	// Published lists the graphs Geek examines by.
 	Published(context.Context) ([]PublishedGraph, error)
-	// SaveMap stores an imported competency map and queues its build; false
-	// when a build is already queued or running.
-	SaveMap(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) (bool, error)
-	SaveMapWithLearning(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time, actorID string, expectedRevision int64, learning *competencymap.Map) (bool, int64, error)
+	// SaveMapWithLearning stores both sheets of an imported competency map
+	// in one transaction: the learning sheet as a new active map revision,
+	// the Geek sheet as its exam tasks, and queues the Geek build; false when
+	// a build is already queued or running.
+	SaveMapWithLearning(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time, actorID string, expectedRevision int64, learning competencymap.Map) (bool, int64, error)
 	// SaveMapIfCurrent rejects a changed fingerprint or an unpublished map atomically.
 	SaveMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, expectedFingerprint string, now time.Time) (bool, error)
 	// MapGraph is the graph of the imported competency map.
@@ -72,9 +73,9 @@ type Questions interface {
 	Prepare(ctx context.Context, graph json.RawMessage) (json.RawMessage, error)
 }
 
-// LearningMapStager stores the second workbook sheet as an inactive learning
-// projection and returns its revision for atomic publication with the graph.
-type LearningMapImporter func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (*competencymap.Map, []coursegraph.ImportWarning, error)
+// LearningMapImporter parses the learning sheet of a workbook and checks that
+// it has the structure of the Geek sheet.
+type LearningMapImporter func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (competencymap.Map, []coursegraph.ImportWarning, error)
 
 // MapReader reads the worksheets of an imported competency map book.
 type MapReader func(data []byte) ([]coursegraph.MapSheet, error)
@@ -281,6 +282,11 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось прочитать книгу Excel (.xlsx).")
 	}
+	// One upload holds both modes: the first sheet is Geek's, the second the
+	// learning diagnostic's (decision of 08.11.2026).
+	if len(sheets) < 2 || w.importLearningMap == nil {
+		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "UNIFIED_COMPETENCY_MAP_REQUIRED", "Нужна книга с двумя листами карты компетенций: первый — для экзамена Geek, второй — для учебной диагностики.")
+	}
 	built, err := coursegraph.BuildMapGraph(sheets)
 	var mapErr *coursegraph.MapError
 	if errors.As(err, &mapErr) {
@@ -289,16 +295,12 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, err
 	}
-	var learningMap *competencymap.Map
-	var learningWarnings []coursegraph.ImportWarning
-	if len(sheets) > 1 && w.importLearningMap != nil {
-		if expectedLearningRevision < 0 {
-			return coursegraph.Snapshot{}, fault.New(fault.Conflict, "COMPETENCY_MAP_CHANGED", "Обновите состояние учебной карты и подтвердите замену ещё раз.")
-		}
-		learningMap, learningWarnings, err = w.importLearningMap(ctx, actor, subjectID, data, sheets)
-		if err != nil {
-			return coursegraph.Snapshot{}, err
-		}
+	if expectedLearningRevision < 0 {
+		return coursegraph.Snapshot{}, fault.New(fault.Conflict, "COMPETENCY_MAP_CHANGED", "Обновите состояние учебной карты и подтвердите замену ещё раз.")
+	}
+	learningMap, learningWarnings, err := w.importLearningMap(ctx, actor, subjectID, data, sheets)
+	if err != nil {
+		return coursegraph.Snapshot{}, err
 	}
 	// Returned with the upload response so admins can review warnings from
 	// the learning sheet even though it is parsed by a separate importer.

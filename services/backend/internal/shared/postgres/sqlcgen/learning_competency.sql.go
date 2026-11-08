@@ -10,9 +10,9 @@ import (
 )
 
 const learningCountExistingOutcomesForSubject = `-- name: LearningCountExistingOutcomesForSubject :one
-SELECT count(*)::integer FROM learning_outcomes outcome
-JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies competency ON competency.id = constituent.competency_id
+SELECT count(*)::integer FROM course_map_outcomes outcome
+JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies competency ON competency.id = constituent.competency_id
 JOIN subjects subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE outcome.id = ANY($2::text[])
@@ -28,15 +28,6 @@ func (q *Queries) LearningCountExistingOutcomesForSubject(ctx context.Context, a
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
-}
-
-const learningDeleteCompetencyMapImportsForSubject = `-- name: LearningDeleteCompetencyMapImportsForSubject :exec
-DELETE FROM learning_map_imports WHERE subject_id = $1
-`
-
-func (q *Queries) LearningDeleteCompetencyMapImportsForSubject(ctx context.Context, subjectID string) error {
-	_, err := q.db.Exec(ctx, learningDeleteCompetencyMapImportsForSubject, subjectID)
-	return err
 }
 
 const learningDeleteMaterialLinksBySubjectAndName = `-- name: LearningDeleteMaterialLinksBySubjectAndName :exec
@@ -58,10 +49,10 @@ const learningGetGeneratedTaskByKey = `-- name: LearningGetGeneratedTaskByKey :o
 SELECT task.id, task.outcome_id, task.question, task.options, task.voice_instruction,
        task.reference_answer, task.criteria, task.origin
 FROM learning_generation_runs AS run
-JOIN learning_tasks AS task ON task.generation_run_id = run.id
-JOIN learning_outcomes AS outcome ON outcome.id = run.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_tasks AS task ON task.generation_run_id = run.id
+JOIN course_map_outcomes AS outcome ON outcome.id = run.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE run.outcome_id = $2::text AND run.request_key = $3::text
@@ -106,10 +97,10 @@ SELECT state.active_revision::bigint AS revision, outcome.id, outcome.name, outc
        constituent.name AS constituent_name, topic.code AS topic_level_code,
        competency.name AS competency_name,
        COALESCE(curriculum_profile.curriculum_sections, '[]')::text AS curriculum_sections
-FROM learning_outcomes AS outcome
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
+FROM course_map_outcomes AS outcome
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
@@ -182,17 +173,17 @@ SELECT
     topic.code AS topic_level_code,
     competency.id AS competency_id, competency.name AS competency_name,
     COALESCE(curriculum_profile.curriculum_sections, '[]')::text AS curriculum_sections
-FROM learning_tasks AS task
-JOIN learning_outcomes AS outcome ON outcome.id = task.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
+FROM course_map_tasks AS task
+JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
-WHERE task.id = $2::text
+WHERE task.id = $2::text AND task.mode = 'diagnostic'
 `
 
 type LearningGetTaskProfileParams struct {
@@ -256,7 +247,7 @@ func (q *Queries) LearningGetTaskProfile(ctx context.Context, arg LearningGetTas
 }
 
 const learningInsertCompetency = `-- name: LearningInsertCompetency :exec
-INSERT INTO learning_competencies(id, name, revision) VALUES ($1, $2, $3)
+INSERT INTO course_map_competencies(id, name, revision) VALUES ($1, $2, $3)
 `
 
 type LearningInsertCompetencyParams struct {
@@ -271,7 +262,7 @@ func (q *Queries) LearningInsertCompetency(ctx context.Context, arg LearningInse
 }
 
 const learningInsertCompetencyMapImport = `-- name: LearningInsertCompetencyMapImport :exec
-INSERT INTO learning_map_imports(
+INSERT INTO course_map_imports(
     revision, subject_id, imported_at, imported_by, competency_count, constituent_count,
     outcome_count, task_count, source_format, source_headers, unparsed_task_cell_count
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -331,7 +322,7 @@ func (q *Queries) LearningInsertCompetencyMapSourceRow(ctx context.Context, arg 
 }
 
 const learningInsertConstituent = `-- name: LearningInsertConstituent :exec
-INSERT INTO learning_constituents(id, competency_id, name, topic_level_id)
+INSERT INTO course_map_constituents(id, competency_id, name, topic_level_id)
 VALUES ($1, $2, $3, NULLIF($4::text, ''))
 `
 
@@ -427,9 +418,9 @@ func (q *Queries) LearningInsertCurriculumSection(ctx context.Context, arg Learn
 }
 
 const learningInsertGeneratedTask = `-- name: LearningInsertGeneratedTask :exec
-INSERT INTO learning_tasks(id, outcome_id, question, options, voice_instruction, reference_answer, criteria,
-                  origin, generation_run_id, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai_generated', $8, $9)
+INSERT INTO course_map_tasks(id, outcome_id, question, options, voice_instruction, reference_answer, criteria,
+                  origin, mode, generation_run_id, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai_generated', 'diagnostic', $8, $9)
 `
 
 type LearningInsertGeneratedTaskParams struct {
@@ -548,7 +539,7 @@ func (q *Queries) LearningInsertMaterialChunk(ctx context.Context, arg LearningI
 }
 
 const learningInsertOutcome = `-- name: LearningInsertOutcome :exec
-INSERT INTO learning_outcomes(
+INSERT INTO course_map_outcomes(
     id, constituent_id, name, include_in_test, taxonomy_id,
     ald_level_id, importance, educational_content, theory_minutes, practice_minutes
 ) VALUES (
@@ -606,12 +597,12 @@ func (q *Queries) LearningInsertOutcomeSourceRow(ctx context.Context, arg Learni
 }
 
 const learningInsertTask = `-- name: LearningInsertTask :exec
-INSERT INTO learning_tasks(
+INSERT INTO course_map_tasks(
     id, outcome_id, question, criteria, source_row, source_column, options,
-    voice_instruction, reference_answer, origin, source_revision,
+    voice_instruction, reference_answer, origin, mode, source_revision,
     source_row_index, source_column_index, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, 'authored',
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, 'authored', 'diagnostic',
     NULLIF($10::bigint, 0),
     NULLIF($11::integer, 0),
     NULLIF($12::integer, 0),
@@ -670,8 +661,8 @@ func (q *Queries) LearningLinkMaterialChunkToOutcome(ctx context.Context, arg Le
 
 const learningListGenerationExamples = `-- name: LearningListGenerationExamples :many
 SELECT task.id, task.question, task.options, task.voice_instruction, task.reference_answer, task.criteria
-FROM learning_tasks AS task
-WHERE task.outcome_id = $1
+FROM course_map_tasks AS task
+WHERE task.outcome_id = $1 AND task.mode = 'diagnostic'
 ORDER BY CASE WHEN task.origin = 'authored' THEN 0 ELSE 1 END, task.created_at DESC, task.id
 LIMIT $2
 `
@@ -761,15 +752,15 @@ SELECT COALESCE(state.active_revision, 0)::bigint AS revision, import.imported_a
        task.id AS task_id, task.question, task.options, task.voice_instruction, task.origin
 FROM subjects AS subject
 LEFT JOIN learning_subject_state state ON state.subject_id = subject.id
-LEFT JOIN learning_map_imports AS import ON import.revision = state.active_revision
-LEFT JOIN learning_competencies AS competency ON competency.revision = state.active_revision
-LEFT JOIN learning_constituents AS constituent ON constituent.competency_id = competency.id
+LEFT JOIN course_map_imports AS import ON import.revision = state.active_revision
+LEFT JOIN course_map_competencies AS competency ON competency.revision = state.active_revision
+LEFT JOIN course_map_constituents AS constituent ON constituent.competency_id = competency.id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
 LEFT JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-LEFT JOIN learning_outcomes AS outcome ON outcome.constituent_id = constituent.id
+LEFT JOIN course_map_outcomes AS outcome ON outcome.constituent_id = constituent.id
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
-LEFT JOIN learning_tasks AS task ON task.outcome_id = outcome.id
+LEFT JOIN course_map_tasks AS task ON task.outcome_id = outcome.id AND task.mode = 'diagnostic'
 WHERE subject.id = $1
 ORDER BY competency.name, competency.id, constituent.name, constituent.id,
          outcome.name, outcome.id, task.created_at, task.id
@@ -902,16 +893,17 @@ SELECT task.id, task.question, task.options, task.voice_instruction,
        competency.name AS competency_name, constituent.name AS constituent_name,
        taxonomy.code AS taxonomy_code, ald.code AS ald_level_code,
        topic.code AS topic_level_code, outcome.importance, outcome.include_in_test
-FROM learning_tasks AS task
-JOIN learning_outcomes AS outcome ON outcome.id = task.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+FROM course_map_tasks AS task
+JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id
 JOIN subjects AS subject ON subject.id = $1::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
-WHERE ($2::text = '' OR outcome.id = $2::text)
+WHERE task.mode = 'diagnostic'
+  AND ($2::text = '' OR outcome.id = $2::text)
   AND ($3::text = '' OR competency.id = $3::text)
   AND ($4::text = '' OR constituent.id = $4::text)
   AND ($5::text = '' OR taxonomy.code = $5::text)

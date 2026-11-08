@@ -30,7 +30,7 @@ type Session struct {
 	// owned by the diagnostic feature; CurrentCompetency and CurrentTask point
 	// at its current task, CurrentPosition is the 1-based position of the
 	// current constituent in the traversal order.
-	Traversal          json.RawMessage
+	Traversal          json.RawMessage `json:",omitempty"`
 	CurrentPosition    int
 	Answers            []Answer
 	SkippedBasics      []TaskSnapshot
