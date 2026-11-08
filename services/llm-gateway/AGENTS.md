@@ -13,7 +13,7 @@
 
 - Не пишите в логи содержимое сообщений и ответов модели.
 - Не отдавайте клиенту адреса инстансов, upstream-токены и сырые ошибки upstream.
-- Gateway runtime YAML хранится в Git. По решению владельца upstream model tokens пока допустимы в `config/dev.yaml`; остальные секреты держите вне Git. Новое поле добавьте в YAML loader, tests, dev YAML и README.
+- Dev YAML и prod-шаблон gateway хранятся в Git; заполненная серверная копия с секретами подключается из игнорируемого deployment-каталога. По решению владельца upstream model tokens пока допустимы в `config/dev.yaml`; остальные секреты держите вне Git. Новое поле добавьте в YAML loader, tests, dev YAML и README.
 
 ## Сборка и проверки
 

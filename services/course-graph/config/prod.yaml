@@ -1,0 +1,27 @@
+# Production template. Copy to deployment/course-graph/prod.yaml and provision deployment values outside Git.
+server:
+  port: 8000
+logging:
+  level: info
+llm_gateway:
+  address: "llm-gateway:8011"
+  timeout: 300s
+embedding:
+  model: "intfloat/multilingual-e5-small"
+  threads: 4
+topics:
+  max_chars: 6000
+models:
+  bootstrap:
+    enabled: true
+    attempts: 3
+ocr:
+  threads: 4
+  document_timeout: 0s
+  enrich_code: true
+  enrich_formula: true
+  picture_text: true
+  full_page: false
+cache:
+  documents_dir: "/var/lib/course-graph/ocr"
+  rapidocr_dir: "/var/lib/course-graph/rapidocr"

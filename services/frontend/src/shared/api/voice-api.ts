@@ -29,8 +29,8 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(
   '',
 )
 
-function requestSignal(signal: AbortSignal) {
-  return AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+function requestSignal(signal: AbortSignal, timeoutMs = 120_000) {
+  return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
 }
 
 function isAbortOrTimeout(error: unknown) {
@@ -57,7 +57,8 @@ export async function transcribeRecording(
     method: 'POST',
     credentials: 'include',
     body: form,
-    signal: requestSignal(signal),
+    // Backend allows 400 s, including the gateway queue and recognition.
+    signal: requestSignal(signal, 430_000),
   })
   if (!response.ok) {
     const error: unknown = await response.json().catch(() => null)

@@ -2,7 +2,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { fetchStoredAudio, transcribeRecording } from '@/shared/api'
 import { validExtensibleWavBlob, validWavBlob } from '../../support/audio'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 it('uploads recording as multipart file and reads actual transcription', async () => {
   const fetchMock = vi.fn().mockResolvedValue({
@@ -227,4 +231,70 @@ it('preserves unauthorized status for a useful session error', async () => {
   await expect(
     transcribeRecording(new Blob(['a']), new AbortController().signal),
   ).rejects.toMatchObject({ status: 401 })
+})
+
+function delayedTranscription(delay: number) {
+  vi.useFakeTimers()
+  // Native AbortSignal timers use real time in Node; connect them to the clock.
+  vi.spyOn(AbortSignal, 'timeout').mockImplementation((milliseconds) => {
+    const controller = new AbortController()
+    setTimeout(
+      () => controller.abort(new DOMException('Timed out', 'TimeoutError')),
+      milliseconds,
+    )
+    return controller.signal
+  })
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((_url, options: RequestInit) => {
+      const signal = options.signal!
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(
+          () => resolve(Response.json({ id: 'tr-long', text: 'Ответ' })),
+          delay,
+        )
+        const abort = () => {
+          clearTimeout(timer)
+          reject(signal.reason)
+        }
+        if (signal.aborted) abort()
+        else signal.addEventListener('abort', abort, { once: true })
+      })
+    }),
+  )
+}
+
+it('keeps waiting for recognition after two minutes within the backend budget', async () => {
+  delayedTranscription(395_000)
+  const result = transcribeRecording(
+    new Blob(['audio']),
+    new AbortController().signal,
+  )
+  const checked = expect(result).resolves.toEqual({
+    id: 'tr-long',
+    text: 'Ответ',
+  })
+  await vi.advanceTimersByTimeAsync(395_000)
+  await checked
+})
+
+it('stops recognition after the browser budget is exhausted', async () => {
+  delayedTranscription(460_000)
+  const result = transcribeRecording(
+    new Blob(['audio']),
+    new AbortController().signal,
+  )
+  const checked = expect(result).rejects.toMatchObject({ name: 'TimeoutError' })
+  await vi.advanceTimersByTimeAsync(430_000)
+  await checked
+})
+
+it('allows the caller to cancel recognition while it waits in the queue', async () => {
+  delayedTranscription(395_000)
+  const controller = new AbortController()
+  const result = transcribeRecording(new Blob(['audio']), controller.signal)
+  const checked = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+  await vi.advanceTimersByTimeAsync(150_000)
+  controller.abort()
+  await checked
 })

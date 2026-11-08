@@ -63,3 +63,6 @@ Gateway всегда входит в корневой Compose stack. `COMPOSE_PR
 Backend (Geek, перевод OCR) и `services/course-graph` ходят в gateway по gRPC; адреса задаются в их `config/dev.yaml`.
 
 Мониторинг также собирает метрики отдельного [voice gateway](../voice-gateway/README.md): target `voice-gateway:8020`, папка Grafana `Voice Gateway`. Процесс Grafana и Prometheus общие для обоих gateway.
+
+
+Для серверного запуска добавлен шаблон `config/prod.yaml`. Заполненная копия подключается prod Compose из `deployment/llm-gateway/prod.yaml`; секреты не коммитятся. Механизм загрузки настроек сервиса не менялся.

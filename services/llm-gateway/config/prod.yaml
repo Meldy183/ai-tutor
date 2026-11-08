@@ -1,0 +1,133 @@
+# Production template. Copy to deployment/llm-gateway/prod.yaml and provision deployment values outside Git.
+---
+log_level: info
+listen_address: ":8010"
+kafka_brokers:
+- redpanda:9092
+requests_topic: llm.requests.v1
+state_topic: llm.state.v1
+consumer_group: llm-gateway-v1
+transactional_id: llm-gateway-v1
+max_body_bytes: 1048576
+max_pending: 1000
+max_pending_bytes: 268435456
+max_connections: 1024
+request_deadline: 180s
+upstream_timeout: 120s
+retention: 24h
+max_input_lag: 24h
+grace_period: 30s
+pools:
+  low:
+  - gemma
+  medium:
+  - gpt-oss-120b
+  high:
+  - gpt-oss-120b
+instances:
+- id: qwen-3-6
+  base_url: http://10.100.10.70:8123/v1
+  model: Qwen/Qwen3.6-35B-A3B
+  token: "REPLACE_WITH_UPSTREAM_TOKEN"
+  max_in_flight: 1
+  supported_parameters:
+  - temperature
+  - top_p
+  - stop
+  - presence_penalty
+  - frequency_penalty
+  - seed
+  - max_tokens
+  - max_completion_tokens
+  - response_format
+  - reasoning_effort
+  supported_response_formats:
+  - text
+  - json_object
+  context_window: 128000
+  timeout: 120s
+  server_execution_limit: 0s
+  abort_on_disconnect: true
+- id: gemma
+  base_url: http://10.100.10.70:9998/v1
+  model: google/gemma-4-31B-it
+  token: "REPLACE_WITH_UPSTREAM_TOKEN"
+  max_in_flight: 1
+  supported_parameters:
+  - temperature
+  - top_p
+  - stop
+  - presence_penalty
+  - frequency_penalty
+  - seed
+  - max_tokens
+  - max_completion_tokens
+  - response_format
+  - reasoning_effort
+  supported_response_formats:
+  - text
+  - json_object
+  context_window: 65536
+  timeout: 120s
+  server_execution_limit: 0s
+  abort_on_disconnect: true
+- id: gpt-oss-120b
+  base_url: http://10.100.10.105:30245/v1
+  model: gpt-oss-120b
+  token: "REPLACE_WITH_UPSTREAM_TOKEN"
+  max_in_flight: 1
+  supported_parameters:
+  - temperature
+  - top_p
+  - stop
+  - presence_penalty
+  - frequency_penalty
+  - seed
+  - max_tokens
+  - max_completion_tokens
+  - response_format
+  - reasoning_effort
+  supported_response_formats:
+  - text
+  - json_object
+  context_window: 128000
+  timeout: 120s
+  server_execution_limit: 0s
+  abort_on_disconnect: true
+- id: qwen3-coder-next
+  base_url: http://10.100.10.105:30888/v1
+  model: Qwen3-Coder-Next
+  token: "REPLACE_WITH_UPSTREAM_TOKEN"
+  max_in_flight: 1
+  supported_parameters:
+  - temperature
+  - top_p
+  - stop
+  - presence_penalty
+  - frequency_penalty
+  - seed
+  - max_tokens
+  - max_completion_tokens
+  - response_format
+  - reasoning_effort
+  supported_response_formats:
+  - text
+  - json_object
+  context_window: 128000
+  timeout: 120s
+  server_execution_limit: 0s
+  abort_on_disconnect: true
+grpc_listen_address: ":8011"
+grpc_max_receive_bytes: 2097152
+grpc_max_send_bytes: 41943040
+grpc_max_concurrent_streams: 128
+model_rules:
+  models:
+    Qwen/Qwen3.6-35B-A3B:
+      reasoning_effort_body:
+        low:
+          chat_template_kwargs:
+            enable_thinking: false
+        medium:
+          chat_template_kwargs:
+            enable_thinking: false

@@ -8,8 +8,7 @@ trap 'rm -f "$override"' EXIT INT TERM
 cat > "$override" <<'EOF'
 services:
   voice-gateway:
-    environment:
-      VOICE_GATEWAY_CONFIG: /missing-voice-config.yaml
+    command: ["--config", "/missing-voice-config.yaml"]
 EOF
 
 docker compose -f docker-compose.yaml "$@" -f "$override" up -d --no-build --force-recreate voice-gateway

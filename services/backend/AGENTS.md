@@ -27,7 +27,7 @@
 
 ## Конфигурация
 
-Новые настройки приложения добавляйте в YAML loader, его tests, `config/dev.yaml` и README. Env остаётся для секретов/инфраструктуры; prod template не используется.
+Новые настройки приложения добавляйте в YAML loader, его tests, `config/dev.yaml`, серверный шаблон `config/prod.yaml` и README. Заполненная серверная копия хранится вне Git в `deployment/backend/prod.yaml`. Env остаётся для секретов/инфраструктуры и не переопределяет поля YAML.
 
 ## Тесты
 

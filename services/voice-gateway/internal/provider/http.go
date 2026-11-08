@@ -4,8 +4,12 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/AskarKasimov/ai-tutor/services/voice-gateway/internal/diagnostic"
 	"google.golang.org/grpc/codes"
 	"io"
 	"mime"
@@ -21,7 +25,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/AskarKasimov/ai-tutor/services/audio"
-	"github.com/AskarKasimov/ai-tutor/services/voice-gateway/internal/diagnostic"
 )
 
 const (
@@ -60,7 +63,7 @@ func statusCode(err error) codes.Code {
 func responseFailure(resp *http.Response, stt bool) error {
 	code := codes.Internal
 	switch resp.StatusCode {
-	case 429, 503:
+	case 401, 403, 429, 503:
 		code = codes.Unavailable
 	case 408, 504:
 		code = codes.DeadlineExceeded
@@ -84,16 +87,28 @@ func responseFailure(resp *http.Response, stt bool) error {
 			}
 		}
 	}
-	return &diagnostic.Error{Code: code, Uncertain: resp.StatusCode == http.StatusGatewayTimeout || resp.StatusCode == http.StatusRequestTimeout, Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
+	states := resp.Header.Values("X-Voice-Execution-State")
+	// Existing model APIs do not report execution state. Preserve their HTTP
+	// error handling; a receiver header takes precedence except for redirects.
+	uncertain := resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout
+	if len(states) != 0 {
+		uncertain = !(len(states) == 1 && (states[0] == "not-started" || states[0] == "finished"))
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		uncertain = true // Redirects are not followed, regardless of execution state.
+	}
+	return &diagnostic.Error{Code: code, Uncertain: uncertain, Stage: "upstream", Reason: "http_response", HTTPStatus: resp.StatusCode}
 }
 
 type STT struct {
+	Token    string
 	URL      string
 	Model    string
 	Longform bool
 	Timeout  time.Duration
 }
 type TTS struct {
+	Token    string
 	URL      string
 	Timeout  time.Duration
 	Profiles map[string]Options
@@ -122,7 +137,10 @@ func (p *HTTP) client() *http.Client {
 // request when cancellation arrives. Before GotConn, no HTTP bytes can reach
 // the model. Custom transports without this trace contract stay conservative.
 func (p *HTTP) do(req *http.Request) (*http.Response, error) {
-	client := p.client()
+	// Never forward credentials or payloads to a redirect target. Copy the
+	// client so injected/shared clients keep their own redirect policy.
+	client := *p.client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	transport := client.Transport
 	if transport == nil {
 		transport = http.DefaultTransport
@@ -143,8 +161,6 @@ func (p *HTTP) Transcribe(ctx context.Context, instance string, data []byte, med
 	if !ok {
 		return "", errors.New("unknown STT instance")
 	}
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
 	parts := [][]byte{data}
 	base, _, _ := mime.ParseMediaType(media)
 	if !cfg.Longform && (base == "audio/wav" || base == "audio/x-wav" || base == "audio/wave") {
@@ -156,8 +172,12 @@ func (p *HTTP) Transcribe(ctx context.Context, instance string, data []byte, med
 		}
 	}
 	texts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		text, err := p.transcribeOnce(ctx, cfg, part, media)
+	for index, part := range parts {
+		// Each fragment waits in the receiver queue independently. Its HTTP
+		// budget starts here; the caller's deadline still bounds all fragments.
+		partCtx, cancel := context.WithTimeout(context.WithValue(ctx, partKey{}, index), cfg.Timeout)
+		text, err := p.transcribeOnce(partCtx, cfg, part, media)
+		cancel()
 		if err != nil {
 			return "", err
 		}
@@ -197,6 +217,7 @@ func (p *HTTP) transcribeOnce(ctx context.Context, cfg STT, data []byte, media s
 		return "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	setReceiverHeaders(req, cfg.Token)
 	if err := ctx.Err(); err != nil {
 		return "", &diagnostic.Error{Code: statusCode(err), Stage: "connect", Reason: "cancelled_before_send"}
 	}
@@ -246,6 +267,7 @@ func (p *HTTP) Synthesize(ctx context.Context, instance, profile, text string) (
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setReceiverHeaders(req, cfg.Token)
 	if err := ctx.Err(); err != nil {
 		return nil, &diagnostic.Error{Code: statusCode(err), Stage: "connect", Reason: "cancelled_before_send"}
 	}
@@ -274,4 +296,24 @@ func responseReadFailure(err error) error {
 	d.Reason = "response_body_interrupted"
 	d.HTTPStatus = 200
 	return &d
+}
+
+// Each chunk is a separate receiver job, stable for the lifetime of a gateway job.
+type partKey struct{}
+
+func setReceiverHeaders(req *http.Request, token string) {
+	if token == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	id := diagnostic.ID(req.Context())
+	if id == "" {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return
+		}
+		id = hex.EncodeToString(raw[:])
+	}
+	index, _ := req.Context().Value(partKey{}).(int)
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("%s-%d", id, index))
 }

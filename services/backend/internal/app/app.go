@@ -171,7 +171,7 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	translator := materialstranslator.NewWithCompleter(materialstranslator.NewGateway(llmgatewayv1.NewGatewayClient(conn), cfg.LLMTimeout), 4)
 	a.ocrWorker = materialsapp.NewOCRWorker(materialRepository, a.materialsStorage, materialsOCR, translator)
 	a.cleaningWorker = materialsapp.NewCleaningWorker(materialRepository, a.materialsStorage, materialsOCR)
-	a.speech = geekapp.NewSpeechCache(a.synthesizer(), geekstorage.NewAudio(storage, cfg.S3Bucket), a.voiceSynth.VoiceName)
+	a.speech = geekapp.NewSpeechCache(a.synthesizer(), geekstorage.NewAudio(storage, cfg.S3Bucket), a.voiceSynth.VoiceName, cfg.VoiceTimeout)
 	a.warmer = geekapp.NewWarmer(a.speech, logger.With(zap.String("worker", "speech_warmer")))
 	a.warmer.Prepare(geekllm.PreparedSpeech())
 	// A course graph is built from the materials or from a competency map.
