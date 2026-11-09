@@ -25,13 +25,40 @@ func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool, queries: db.New(pool)}
 }
 
+// Replace adds a new active revision in its own transaction; a map import
+// uses ReplaceInTx to store it with the Geek sheet.
 func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64) (competencymap.ImportResult, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return competencymap.ImportResult{}, err
 	}
 	defer tx.Rollback(ctx)
-	queries := r.queries.WithTx(tx)
+	result, err := r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, expectedRevision)
+	if err != nil {
+		return competencymap.ImportResult{}, err
+	}
+	return result, tx.Commit(ctx)
+}
+
+// ReplaceInTx imports a learning map as part of an enclosing transaction.
+func (r *Repository) ReplaceInTx(ctx context.Context, tx db.DBTX, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision int64) (competencymap.ImportResult, error) {
+	return r.replaceInTx(ctx, tx, subjectID, actorID, parsed, importedAt, &expectedRevision)
+}
+
+// replaceInTx adds a new revision and activates it. Earlier revisions stay
+// while a published Geek graph, a variant or a session still uses them.
+func (r *Repository) replaceInTx(ctx context.Context, tx db.DBTX, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64) (competencymap.ImportResult, error) {
+	var err error
+	queries := db.New(tx)
+	{
+		var locked bool
+		if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended(current_database() || ':' || current_schema() || ':course-map-import:' || $1, 0))`, subjectID).Scan(&locked); err != nil {
+			return competencymap.ImportResult{}, err
+		}
+		if !locked {
+			return competencymap.ImportResult{}, fault.New(fault.Conflict, "COMPETENCY_MAP_IMPORT_IN_PROGRESS", "Импорт карты уже выполняется. Повторите попытку позже.")
+		}
+	}
 
 	if _, err = queries.LearningLockSubjectForImport(ctx, subjectID); err == pgx.ErrNoRows {
 		return competencymap.ImportResult{}, fault.New(fault.NotFound, "SUBJECT_NOT_FOUND", "Предмет не найден.")
@@ -47,6 +74,7 @@ func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, par
 			return competencymap.ImportResult{}, fault.New(fault.Conflict, "COMPETENCY_MAP_CHANGED", "Карта изменилась. Проверьте её состояние и повторите загрузку.")
 		}
 	}
+
 	previousRevision, err := queries.LearningLockCompetencyMapRevision(ctx)
 	if err != nil {
 		return competencymap.ImportResult{}, err
@@ -58,13 +86,10 @@ func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, par
 		UnparsedTaskCells: parsed.UnparsedTaskCells, Warnings: parsed.Warnings,
 	}
 
+	// Audio still waiting for the replaced revision's tasks is no longer needed.
 	if _, err = queries.LearningCancelPendingTaskAudioForSubject(ctx, subjectID); err != nil {
 		return competencymap.ImportResult{}, fmt.Errorf("cancel task audio before subject map replacement: %w", err)
 	}
-	if err = queries.LearningDeleteCompetencyMapImportsForSubject(ctx, subjectID); err != nil {
-		return competencymap.ImportResult{}, err
-	}
-
 	headers, err := json.Marshal(parsed.SourceHeaders)
 	if err != nil {
 		return competencymap.ImportResult{}, err
@@ -264,9 +289,6 @@ func (r *Repository) Replace(ctx context.Context, subjectID, actorID string, par
 		return competencymap.ImportResult{}, err
 	}
 	if err = queries.LearningUpdateSubjectActiveRevision(ctx, db.LearningUpdateSubjectActiveRevisionParams{SubjectID: subjectID, ActiveRevision: &result.Revision}); err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
 		return competencymap.ImportResult{}, err
 	}
 	return result, nil

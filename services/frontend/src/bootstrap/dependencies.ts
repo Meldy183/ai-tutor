@@ -72,7 +72,6 @@ export function createAppDependencies(): AppDependencies {
     learningMap: {
       readOutline: learningMap.readCompetencyMapOutline,
       read: learningMap.readCompetencyMap,
-      import: learningMap.importCompetencyMap,
     },
     learningSubjects: {
       listSubjects: learningSubjects.listSubjects,

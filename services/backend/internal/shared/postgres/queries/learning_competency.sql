@@ -12,11 +12,8 @@ SELECT revision FROM learning_map_state WHERE singleton = true FOR UPDATE;
 -- name: LearningLockSubjectForTaskgen :one
 SELECT state.active_revision FROM subjects subject JOIN learning_subject_state state ON state.subject_id = subject.id WHERE subject.id = $1 FOR SHARE OF subject;
 
--- name: LearningDeleteCompetencyMapImportsForSubject :exec
-DELETE FROM learning_map_imports WHERE subject_id = $1;
-
 -- name: LearningInsertCompetencyMapImport :exec
-INSERT INTO learning_map_imports(
+INSERT INTO course_map_imports(
     revision, subject_id, imported_at, imported_by, competency_count, constituent_count,
     outcome_count, task_count, source_format, source_headers, unparsed_task_cell_count
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
@@ -25,14 +22,14 @@ INSERT INTO learning_map_imports(
 INSERT INTO learning_subject_state(subject_id, active_revision) VALUES ($1, $2) ON CONFLICT (subject_id) DO UPDATE SET active_revision = EXCLUDED.active_revision;
 
 -- name: LearningInsertCompetency :exec
-INSERT INTO learning_competencies(id, name, revision) VALUES ($1, $2, $3);
+INSERT INTO course_map_competencies(id, name, revision) VALUES ($1, $2, $3);
 
 -- name: LearningInsertConstituent :exec
-INSERT INTO learning_constituents(id, competency_id, name, topic_level_id)
+INSERT INTO course_map_constituents(id, competency_id, name, topic_level_id)
 VALUES ($1, $2, $3, NULLIF(sqlc.arg(topic_level_id)::text, ''));
 
 -- name: LearningInsertOutcome :exec
-INSERT INTO learning_outcomes(
+INSERT INTO course_map_outcomes(
     id, constituent_id, name, include_in_test, taxonomy_id,
     ald_level_id, importance, educational_content, theory_minutes, practice_minutes
 ) VALUES (
@@ -58,12 +55,12 @@ INSERT INTO learning_constituent_section_competencies(revision, constituent_sect
 VALUES ($1, $2, $3);
 
 -- name: LearningInsertTask :exec
-INSERT INTO learning_tasks(
+INSERT INTO course_map_tasks(
     id, outcome_id, question, criteria, source_row, source_column, options,
-    voice_instruction, reference_answer, origin, source_revision,
+    voice_instruction, reference_answer, origin, mode, source_revision,
     source_row_index, source_column_index, created_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, 'authored',
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, 'authored', 'diagnostic',
     NULLIF(sqlc.arg(source_revision)::bigint, 0),
     NULLIF(sqlc.arg(source_row_index)::integer, 0),
     NULLIF(sqlc.arg(source_column_index)::integer, 0),
@@ -93,15 +90,15 @@ SELECT COALESCE(state.active_revision, 0)::bigint AS revision, import.imported_a
        task.id AS task_id, task.question, task.options, task.voice_instruction, task.origin
 FROM subjects AS subject
 LEFT JOIN learning_subject_state state ON state.subject_id = subject.id
-LEFT JOIN learning_map_imports AS import ON import.revision = state.active_revision
-LEFT JOIN learning_competencies AS competency ON competency.revision = state.active_revision
-LEFT JOIN learning_constituents AS constituent ON constituent.competency_id = competency.id
+LEFT JOIN course_map_imports AS import ON import.revision = state.active_revision
+LEFT JOIN course_map_competencies AS competency ON competency.revision = state.active_revision AND competency.source_mode = 'diagnostic'
+LEFT JOIN course_map_constituents AS constituent ON constituent.competency_id = competency.id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
 LEFT JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-LEFT JOIN learning_outcomes AS outcome ON outcome.constituent_id = constituent.id
+LEFT JOIN course_map_outcomes AS outcome ON outcome.constituent_id = constituent.id
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
-LEFT JOIN learning_tasks AS task ON task.outcome_id = outcome.id
+LEFT JOIN course_map_tasks AS task ON task.outcome_id = outcome.id AND task.mode = 'diagnostic'
 WHERE subject.id = $1
 ORDER BY competency.name, competency.id, constituent.name, constituent.id,
          outcome.name, outcome.id, task.created_at, task.id;
@@ -117,17 +114,17 @@ SELECT
     topic.code AS topic_level_code,
     competency.id AS competency_id, competency.name AS competency_name,
     COALESCE(curriculum_profile.curriculum_sections, '[]')::text AS curriculum_sections
-FROM learning_tasks AS task
-JOIN learning_outcomes AS outcome ON outcome.id = task.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
+FROM course_map_tasks AS task
+JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = sqlc.arg(subject_id)::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
-WHERE task.id = sqlc.arg(task_id)::text;
+WHERE task.id = sqlc.arg(task_id)::text AND task.mode = 'diagnostic';
 
 -- name: LearningSearchTaskProfiles :many
 SELECT task.id, task.question, task.options, task.voice_instruction,
@@ -135,16 +132,17 @@ SELECT task.id, task.question, task.options, task.voice_instruction,
        competency.name AS competency_name, constituent.name AS constituent_name,
        taxonomy.code AS taxonomy_code, ald.code AS ald_level_code,
        topic.code AS topic_level_code, outcome.importance, outcome.include_in_test
-FROM learning_tasks AS task
-JOIN learning_outcomes AS outcome ON outcome.id = task.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+FROM course_map_tasks AS task
+JOIN course_map_outcomes AS outcome ON outcome.id = task.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = sqlc.arg(subject_id)::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels AS ald ON ald.id = outcome.ald_level_id
 LEFT JOIN learning_topic_levels AS topic ON topic.id = constituent.topic_level_id
-WHERE (sqlc.arg(outcome_id)::text = '' OR outcome.id = sqlc.arg(outcome_id)::text)
+WHERE task.mode = 'diagnostic'
+  AND (sqlc.arg(outcome_id)::text = '' OR outcome.id = sqlc.arg(outcome_id)::text)
   AND (sqlc.arg(competency_id)::text = '' OR competency.id = sqlc.arg(competency_id)::text)
   AND (sqlc.arg(constituent_id)::text = '' OR constituent.id = sqlc.arg(constituent_id)::text)
   AND (sqlc.arg(taxonomy_code)::text = '' OR taxonomy.code = sqlc.arg(taxonomy_code)::text)
@@ -176,10 +174,10 @@ ON CONFLICT (outcome_id, request_key) DO NOTHING;
 SELECT task.id, task.outcome_id, task.question, task.options, task.voice_instruction,
        task.reference_answer, task.criteria, task.origin
 FROM learning_generation_runs AS run
-JOIN learning_tasks AS task ON task.generation_run_id = run.id
-JOIN learning_outcomes AS outcome ON outcome.id = run.outcome_id
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_tasks AS task ON task.generation_run_id = run.id
+JOIN course_map_outcomes AS outcome ON outcome.id = run.outcome_id
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = sqlc.arg(subject_id)::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE run.outcome_id = sqlc.arg(outcome_id)::text AND run.request_key = sqlc.arg(request_key)::text;
@@ -191,9 +189,9 @@ INSERT INTO learning_generation_run_examples(generation_run_id, task_id) VALUES 
 INSERT INTO learning_generation_run_chunks(generation_run_id, chunk_id) VALUES ($1, $2);
 
 -- name: LearningInsertGeneratedTask :exec
-INSERT INTO learning_tasks(id, outcome_id, question, options, voice_instruction, reference_answer, criteria,
-                  origin, generation_run_id, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai_generated', $8, $9);
+INSERT INTO course_map_tasks(id, outcome_id, question, options, voice_instruction, reference_answer, criteria,
+                  origin, mode, generation_run_id, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'ai_generated', 'diagnostic', $8, $9);
 
 -- name: LearningGetOutcomeForGeneration :one
 SELECT state.active_revision::bigint AS revision, outcome.id, outcome.name, outcome.include_in_test, taxonomy.code AS taxonomy_code,
@@ -201,10 +199,10 @@ SELECT state.active_revision::bigint AS revision, outcome.id, outcome.name, outc
        constituent.name AS constituent_name, topic.code AS topic_level_code,
        competency.name AS competency_name,
        COALESCE(curriculum_profile.curriculum_sections, '[]')::text AS curriculum_sections
-FROM learning_outcomes AS outcome
-JOIN learning_constituents AS constituent ON constituent.id = outcome.constituent_id
+FROM course_map_outcomes AS outcome
+JOIN course_map_constituents AS constituent ON constituent.id = outcome.constituent_id
 JOIN learning_constituent_curriculum_profiles AS curriculum_profile ON curriculum_profile.constituent_id = constituent.id
-JOIN learning_competencies AS competency ON competency.id = constituent.competency_id
+JOIN course_map_competencies AS competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects AS subject ON subject.id = sqlc.arg(subject_id)::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 LEFT JOIN learning_taxonomies AS taxonomy ON taxonomy.id = outcome.taxonomy_id
@@ -214,8 +212,8 @@ WHERE outcome.id = sqlc.arg(outcome_id)::text;
 
 -- name: LearningListGenerationExamples :many
 SELECT task.id, task.question, task.options, task.voice_instruction, task.reference_answer, task.criteria
-FROM learning_tasks AS task
-WHERE task.outcome_id = $1
+FROM course_map_tasks AS task
+WHERE task.outcome_id = $1 AND task.mode = 'diagnostic'
 ORDER BY CASE WHEN task.origin = 'authored' THEN 0 ELSE 1 END, task.created_at DESC, task.id
 LIMIT $2;
 
@@ -231,9 +229,9 @@ WHERE chunk_id IN (SELECT id FROM learning_material_chunks WHERE subject_id = $1
 INSERT INTO learning_material_chunk_outcomes(chunk_id, outcome_id) VALUES ($1, $2);
 
 -- name: LearningCountExistingOutcomesForSubject :one
-SELECT count(*)::integer FROM learning_outcomes outcome
-JOIN learning_constituents constituent ON constituent.id = outcome.constituent_id
-JOIN learning_competencies competency ON competency.id = constituent.competency_id
+SELECT count(*)::integer FROM course_map_outcomes outcome
+JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
+JOIN course_map_competencies competency ON competency.id = constituent.competency_id AND competency.source_mode = 'diagnostic'
 JOIN subjects subject ON subject.id = sqlc.arg(subject_id)::text
 JOIN learning_subject_state state ON state.subject_id = subject.id AND state.active_revision = competency.revision
 WHERE outcome.id = ANY(sqlc.arg(outcome_ids)::text[]);

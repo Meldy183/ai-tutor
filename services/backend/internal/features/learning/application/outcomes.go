@@ -7,11 +7,11 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/learning"
 )
 
-// outcomes uses the same accepted evidence as the diagnostic report. Broader
-// study is limited to a fully unstudied constituent in the same map revision.
+// outcomes includes every unmastered outcome of an open constituent in the
+// same map revision, including the outcomes the diagnostic did not ask.
 // Saved plans are not rebuilt; reimported maps cannot alter historical evidence.
 func (s *Service) outcomes(ctx context.Context, session diagnostic.Session) ([]learning.Outcome, error) {
-	// A competency closed at 90% and above stays out of the plan.
+	// A constituent closes independently of its parent competency.
 	findings := diagnostic.OpenFindings(session.Answers)
 	failed := map[string]diagnostic.Answer{}
 	full := map[string]bool{}
@@ -27,7 +27,7 @@ func (s *Service) outcomes(ctx context.Context, session diagnostic.Session) ([]l
 			continue
 		}
 		failed[id] = a
-		if f.FullStudy {
+		if a.Task.ConstituentID != "" {
 			full[a.CompetencyID+"\x00"+a.Task.ConstituentID] = true
 		}
 		if !seenComp[a.CompetencyID] {
@@ -52,7 +52,7 @@ func (s *Service) outcomes(ctx context.Context, session diagnostic.Session) ([]l
 		if testedGap && a.CompetencyID != o.CompetencyID {
 			continue
 		}
-		if !testedGap && !full[o.CompetencyID+"\x00"+o.ConstituentID] {
+		if !testedGap && (!full[o.CompetencyID+"\x00"+o.ConstituentID] || masteredOutcome(session.Answers, o.OutcomeID)) {
 			continue
 		}
 		if !seen[o.OutcomeID] {
@@ -78,4 +78,17 @@ func (s *Service) outcomes(ctx context.Context, session diagnostic.Session) ([]l
 			Importance: int(a.Task.Importance), EducationalContent: a.Task.EducationalContent})
 	}
 	return result, nil
+}
+
+func masteredOutcome(answers []diagnostic.Answer, outcomeID string) bool {
+	for _, a := range answers {
+		id := a.Task.OutcomeID
+		if id == "" {
+			id = a.OutcomeID
+		}
+		if id == outcomeID && a.Score >= diagnostic.AnswerMaximum(a) && !a.Skipped {
+			return true
+		}
+	}
+	return false
 }

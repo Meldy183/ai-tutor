@@ -38,9 +38,9 @@ func (f *fakeSummaries) SaveResultSummary(_ context.Context, _, id, summary stri
 func TestSummaryReportSortsTopicsByTheirPoints(t *testing.T) {
 	score := func(v int) *int { return &v }
 	report := summaryReport(exam.Result{Nodes: []exam.NodeResult{
-		{Title: "Полный", Status: exam.StatusIndependent, Score: score(4), Maximum: score(4), Reply: "верно"},
-		{Title: "С помощью", Status: exam.StatusAssisted, Score: score(3), Maximum: score(4)},
-		{Title: "Пробел", Status: exam.StatusGap, Score: score(1), Maximum: score(4)},
+		{Title: "Полный", Status: exam.StatusIndependent, Score: score(2), Maximum: 2, Reply: "верно"},
+		{Title: "С помощью", Status: exam.StatusAssisted, Score: score(1), Maximum: 2},
+		{Title: "Пробел", Status: exam.StatusGap, Score: score(0), Maximum: 1},
 		{Title: "Неясно", Status: exam.StatusInsufficient},
 		{Title: "Засчитано", Status: exam.StatusCredited},
 		{Title: "Не спрошено", Status: exam.StatusUnchecked},

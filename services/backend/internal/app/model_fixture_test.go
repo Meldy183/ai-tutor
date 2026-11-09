@@ -115,7 +115,19 @@ func (fixtureGateway) Complete(_ context.Context, r *llmgatewayv1.CompleteReques
 				k[0], k[1], k[2], k[3] = max(k[0], c[0]), max(k[1], c[1]), c[2], c[3]
 				evidence = append(evidence, json.Number(line[1]))
 			}
-			answer = map[string]any{"verdict": "answered", "answer_complete": true, "criteria": map[string]int{"k1": k[0], "k2": k[1], "k3": k[2], "k4": k[3]}, "evidence_lines": evidence}
+			// The longer the answer, the more of the topic's scale it earns.
+			maximum := 1
+			if strings.Contains(prompt, "по шкале темы: 0, 1 или 2") {
+				maximum = 2
+			}
+			score := 0
+			switch {
+			case k[0] == 2 && k[1] == 2:
+				score = maximum
+			case k[0] >= 1 && maximum == 2:
+				score = 1
+			}
+			answer = map[string]any{"verdict": "answered", "score": score, "reasons": []string{"по длине ответа"}, "evidence_lines": evidence}
 		}
 	}
 	content, _ := json.Marshal(answer)

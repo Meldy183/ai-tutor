@@ -13,7 +13,8 @@ export const diagnosticApiBase =
   (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/$/, '') + '/learn'
 const id = z.string().min(1)
 const count = z.number().int().nonnegative()
-const score = count.max(3)
+// A main task scores 0–2, a basic one 0–1 (decision of 08.11.2026).
+const score = count.max(2)
 const verdict = z.enum(['correct', 'partial', 'incorrect'])
 const criteria = z.array(
   z.object({ key: id, satisfied: z.boolean(), explanation: id }),
@@ -48,7 +49,7 @@ const progressSchema: z.ZodType<DiagnosticProgress> = z
     text: id.optional(),
     score: score.optional(),
     grader_score: score.optional(),
-    grader_max_score: count.min(1).max(3).optional(),
+    grader_max_score: count.min(1).max(2).optional(),
     verdict: verdict.optional(),
     criterion_results: criteria.optional(),
     feedback: feedback.optional(),
@@ -93,7 +94,7 @@ const answerSchema = z
     transcription_id: id,
     text: id,
     grader_score: score,
-    grader_max_score: count.min(1).max(3),
+    grader_max_score: count.min(1).max(2),
     score,
     verdict,
     criterion_results: criteria,
@@ -103,10 +104,7 @@ const answerSchema = z
   .refine(
     (a) =>
       a.score <= a.grader_max_score &&
-      (a.role === 'main'
-        ? (a.grader_max_score === 2 || a.grader_max_score === 3) &&
-          !(a.grader_max_score === 3 && a.score === 2)
-        : a.grader_max_score === 1) &&
+      a.grader_max_score === (a.role === 'main' ? 2 : 1) &&
       a.task.variant_task_id === a.variant_task_id &&
       a.task.role === a.role,
   )
@@ -319,9 +317,8 @@ export async function submitDiagnostic(
   if (
     progress.session_id !== input.sessionId ||
     progress.score === undefined ||
-    progress.grader_max_score !== (input.role === 'main' ? 3 : 1) ||
+    progress.grader_max_score !== (input.role === 'main' ? 2 : 1) ||
     progress.score > progress.grader_max_score ||
-    (input.role === 'main' && progress.score === 2) ||
     !progress.feedback ||
     !progress.verdict
   )

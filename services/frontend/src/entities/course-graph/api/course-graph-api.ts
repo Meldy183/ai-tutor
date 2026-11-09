@@ -17,14 +17,27 @@ const snapshotSchema = z.object({
   inputs_ready: z.boolean(),
   updated_at: z.number().int().nonnegative(),
   graph_source: z.enum(['built', 'competency_map', 'none']).optional(),
+  graph_fingerprint: z.string(),
+  graph_map_revision: z.number().int().positive().nullable(),
   build_source: z.enum(['materials', 'competency_map']).nullable().optional(),
   map: z
     .object({
       filename: z.string(),
       sheet: z.string(),
       fingerprint: z.string().optional(),
+      learning_revision: z.number().int().positive().nullable(),
     })
     .nullable()
+    .optional(),
+  learning_warnings: z
+    .array(
+      z.object({
+        row: z.number().int().positive(),
+        column_index: z.number().int().positive(),
+        column: z.string(),
+        code: z.string(),
+      }),
+    )
     .optional(),
   progress: z
     .object({
@@ -226,7 +239,17 @@ function toBuild(
     stale: snapshot.stale,
     inputsReady: snapshot.inputs_ready,
     source: snapshot.build_source ?? null,
-    map: snapshot.map ?? null,
+    graphFingerprint: snapshot.graph_fingerprint,
+    graphMapRevision: snapshot.graph_map_revision,
+    map: snapshot.map
+      ? {
+          filename: snapshot.map.filename,
+          sheet: snapshot.map.sheet,
+          fingerprint: snapshot.map.fingerprint,
+          learningRevision: snapshot.map.learning_revision,
+        }
+      : null,
+    learningWarnings: snapshot.learning_warnings ?? [],
   }
 }
 
@@ -307,12 +330,13 @@ export async function startCourseGraphBuild(
   return build
 }
 
-// Builds the course graph from a competency map instead of the materials;
-// the server reads the first sheet of the book.
+// Imports one competency workbook. For a two-sheet workbook the server prepares
+// both mode projections and publishes them together.
 export async function importCompetencyMap(
   subjectId: string,
   file: File,
   signal: AbortSignal,
+  expectedLearningRevision?: number,
 ): Promise<CourseGraphBuild> {
   const body = new FormData()
   body.append('file', file)
@@ -322,7 +346,18 @@ export async function importCompetencyMap(
       await fetchJSON(
         `/admin/subjects/${encodeURIComponent(subjectId)}/graph/competency-map`,
         signal,
-        { method: 'POST', body },
+        {
+          method: 'POST',
+          body,
+          headers:
+            expectedLearningRevision === undefined
+              ? undefined
+              : {
+                  'X-Expected-Learning-Revision': String(
+                    expectedLearningRevision,
+                  ),
+                },
+        },
       ),
     ),
   )
@@ -355,7 +390,14 @@ export async function readCourseGraph(
     view,
     source:
       snapshot.graph_source === 'competency_map' ? 'competency_map' : 'built',
-    map: snapshot.map ?? null,
+    map: snapshot.map
+      ? {
+          filename: snapshot.map.filename,
+          sheet: snapshot.map.sheet,
+          fingerprint: snapshot.map.fingerprint,
+          learningRevision: snapshot.map.learning_revision,
+        }
+      : null,
     nodes: view.topics.map((topic) => ({
       id: topic.id,
       title: topic.title,

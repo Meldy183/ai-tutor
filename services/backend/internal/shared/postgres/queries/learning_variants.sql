@@ -11,10 +11,10 @@ SELECT id FROM subjects WHERE id = $1;
 
 -- name: LearningReadVariantCandidates :many
 SELECT sqlc.arg(revision)::bigint AS revision,
-       COALESCE((SELECT min(osr.source_row_index) FROM learning_outcomes co
+       COALESCE((SELECT min(osr.source_row_index) FROM course_map_outcomes co
                  LEFT JOIN learning_outcome_source_rows osr ON osr.outcome_id = co.id
                  WHERE co.constituent_id IN (
-                     SELECT c2.id FROM learning_constituents c2 WHERE c2.competency_id = competency.id
+                     SELECT c2.id FROM course_map_constituents c2 WHERE c2.competency_id = competency.id
                  )), 2147483647)::bigint AS competency_source_order,
        COALESCE((SELECT min(source_row_index) FROM learning_outcome_source_rows WHERE outcome_id = outcome.id), 2147483647)::bigint AS outcome_source_order,
        task.id AS task_id,
@@ -43,14 +43,14 @@ SELECT sqlc.arg(revision)::bigint AS revision,
                'importance', outcome.importance, 'educational_content', outcome.educational_content
            )
        ) AS profile_json
-FROM learning_competencies competency
-LEFT JOIN learning_constituents constituent ON constituent.competency_id = competency.id
+FROM course_map_competencies competency
+LEFT JOIN course_map_constituents constituent ON constituent.competency_id = competency.id
 LEFT JOIN learning_topic_levels topic ON topic.id = constituent.topic_level_id
-LEFT JOIN learning_outcomes outcome ON outcome.constituent_id = constituent.id
+LEFT JOIN course_map_outcomes outcome ON outcome.constituent_id = constituent.id
 LEFT JOIN learning_taxonomies taxonomy ON taxonomy.id = outcome.taxonomy_id
 LEFT JOIN learning_ald_levels ald ON ald.id = outcome.ald_level_id
-LEFT JOIN learning_tasks task ON task.outcome_id = outcome.id
-WHERE competency.revision = sqlc.arg(revision)::bigint
+LEFT JOIN course_map_tasks task ON task.outcome_id = outcome.id AND task.mode = 'diagnostic'
+WHERE competency.revision = sqlc.arg(revision)::bigint AND competency.source_mode = 'diagnostic'
 ORDER BY competency_source_order, competency.name, competency.id,
          outcome_source_order, outcome.name, outcome.id,
          CASE WHEN task.source_row_index IS NULL THEN 1 ELSE 0 END,

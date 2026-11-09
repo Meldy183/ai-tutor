@@ -114,17 +114,13 @@ func (g *Gateway) Question(ctx context.Context, r application.QuestionRequest) (
 }
 
 func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest) (application.Assessment, error) {
-	spec, specErr := exam.ParseRubric(r.Node.AssessmentGuidance)
-	if specErr != nil {
-		return application.Assessment{}, specErr
-	}
 	_, request := lastSupportInput(r)
 	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(request), ".!?… "))
 	if normalized == "я не знаю" || normalized == "не знаю" {
 		return application.Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictDontKnow}}, nil
 	}
 	if r.ClarificationPending {
-		route, err := g.routeRubric(ctx, r)
+		route, err := g.route(ctx, r)
 		if err != nil {
 			return application.Assessment{}, err
 		}
@@ -146,21 +142,13 @@ func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest)
 	if pureControl(request, "skip") {
 		return application.Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictDontKnow}}, nil
 	}
-	if len(spec) > 0 {
-		return g.evaluateRubric(ctx, r, spec)
-	}
 	var result application.Assessment
 	// The student waits for the evaluation, so it uses the fast low pool too.
 	err := g.complete(ctx, "evaluate:"+string(r.Kind), llmgatewayv1.Complexity_COMPLEXITY_LOW, true, evaluationPrompt(r), func(content []byte) error {
 		var out struct {
-			AnswerComplete *bool        `json:"answer_complete"`
-			Verdict        exam.Verdict `json:"verdict"`
-			Criteria       *struct {
-				K1 *int            `json:"k1"`
-				K2 *int            `json:"k2"`
-				K3 json.RawMessage `json:"k3"`
-				K4 json.RawMessage `json:"k4"`
-			} `json:"criteria"`
+			Verdict           exam.Verdict           `json:"verdict"`
+			Score             *int                   `json:"score"`
+			Reasons           []string               `json:"reasons"`
 			Evidence          []json.Number          `json:"evidence_lines"`
 			AddressPreference exam.AddressPreference `json:"address_preference"`
 		}
@@ -179,31 +167,14 @@ func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest)
 		}
 		switch out.Verdict {
 		case exam.VerdictAnswered:
-			if out.AnswerComplete == nil {
-				return errors.New("missing answer_complete")
+			if out.Score == nil || *out.Score < 0 || *out.Score > r.MaxScore {
+				return fmt.Errorf("score out of 0..%d", r.MaxScore)
 			}
-			e.AnswerComplete = out.AnswerComplete
-			k := out.Criteria
-			if k == nil || k.K1 == nil || k.K2 == nil || len(k.K3) == 0 || len(k.K4) == 0 {
-				return errors.New("missing criteria")
-			}
-			e.Criteria = exam.Criteria{K1: *k.K1, K2: *k.K2}
-			for _, field := range []struct {
-				raw        json.RawMessage
-				value      *int
-				unassessed *bool
-			}{
-				{k.K3, &e.Criteria.K3, &e.Unassessed.K3},
-				{k.K4, &e.Criteria.K4, &e.Unassessed.K4},
-			} {
-				if string(field.raw) == "null" {
-					*field.unassessed = true
-				} else if err := json.Unmarshal(field.raw, field.value); err != nil {
-					return err
+			e.Score = *out.Score
+			for _, reason := range out.Reasons {
+				if reason = strings.TrimSpace(reason); reason != "" {
+					e.Reasons = append(e.Reasons, reason)
 				}
-			}
-			if !e.Criteria.Valid() {
-				return fmt.Errorf("criteria out of range: %+v", e.Criteria)
 			}
 		case exam.VerdictDontKnow, exam.VerdictHintRequested, exam.VerdictAddressCorrection, exam.VerdictClarifyQuestion, exam.VerdictPause:
 		default:
@@ -244,17 +215,8 @@ func (g *Gateway) Feedback(ctx context.Context, r application.FeedbackRequest) (
 		return transition(r, rephraseTransitions), nil
 	}
 	if !r.Closed {
-		if r.Result.Rubric != nil {
-			if r.Result.Rubric.Complete() {
-				return transition(r, soundFollowupTransitions), nil
-			}
-			return transition(r, partialFollowupTransitions), nil
-		}
 		// Only the actual followup asks for the missing knowledge. Generating
 		// a second reaction with the same model repeatedly leaked that answer.
-		if k := r.Result.Criteria; k != nil && k.K1 == 2 && k.K2 == 2 {
-			return transition(r, soundFollowupTransitions), nil
-		}
 		return transition(r, partialFollowupTransitions), nil
 	}
 	var text string
@@ -290,14 +252,8 @@ func (g *Gateway) complete(ctx context.Context, operation string, level llmgatew
 	if operation == "name_verify" {
 		system = nameVerifyPrompt
 	}
-	if operation == "route_rubric" {
-		system = rubricRouterSystemPrompt
-	}
-	if operation == "review_rubric" {
-		system = rubricReviewSystemPrompt
-	}
-	if strings.HasPrefix(operation, "evaluate_rubric:") {
-		system = rubricSystemPrompt
+	if operation == "route" {
+		system = routerSystemPrompt
 	}
 	if operation == "feedback" {
 		system = feedbackSystemPrompt

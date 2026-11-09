@@ -73,20 +73,22 @@ func (s Session) Dialogue(nodeID string) []Turn {
 	return out
 }
 
+// NodeResult is the outcome of one topic of a completed diagnostic.
 type NodeResult struct {
 	NodeID   string
 	Title    string
 	Status   Status
-	Grade    *Grade
 	TopLevel bool
 	// Requires lists the node's direct prerequisites in this graph snapshot.
 	Requires []string
 	// Assisted tells that the student answered after a rephrase or a hint.
 	Assisted bool
-	// Score and Maximum are the topic's points; nil when it has none.
+	// Score and Maximum are the topic's points; Score is nil when the topic
+	// was credited, unclear or never reached.
 	Score   *int
-	Maximum *int
-	Marks   []TopicMark
+	Maximum int
+	// Reasons are the grader's grounds for the score.
+	Reasons []string
 	// Reply is what Geek said when the topic closed; empty when unknown.
 	Reply string
 }
@@ -155,50 +157,47 @@ type Result struct {
 	Maximum int
 	Nodes   []NodeResult
 	Gaps    []Gap
-	// WeakSpots are the topics on C, with the same sources as a gap.
+	// WeakSpots are the topics passed below their maximum, with the same
+	// sources as a gap.
 	WeakSpots []Gap
 }
 
 func (s Session) Result() Result {
 	e := s.Exam
-	top := e.Graph.TopLevel()
+	required := e.Graph.required()
+	nodes := make(map[string]Node, len(e.Graph.Nodes))
 	r := Result{SessionID: s.ID, Nodes: []NodeResult{}, Gaps: []Gap{}, WeakSpots: []Gap{}}
 	replies := s.closingReplies()
 	shares := map[string]float64{}
 	for _, n := range e.Graph.Nodes {
+		nodes[n.ID] = n
 		state := e.Nodes[n.ID]
-		marks := e.TopicMarks(n.ID)
-		node := NodeResult{NodeID: n.ID, Title: n.Title, Status: state.Status, Grade: state.Grade, TopLevel: slices.Contains(top, n.ID),
-			Requires: append([]string{}, n.Prerequisites...), Assisted: state.Assisted, Marks: marks, Reply: replies[n.ID]}
-		if len(marks) > 0 {
-			score, maximum := 0, 0
-			for _, m := range marks {
-				score += m.Score
-				maximum += m.Maximum
-			}
-			node.Score, node.Maximum = &score, &maximum
-			if maximum > 0 {
-				share := float64(score) / float64(maximum)
-				// Preserve the raw rubric marks above, but cap the contribution
-				// to the overall result when assistance was used or the answer
-				// did not cover the whole question.
-				if (state.Assisted || !state.complete()) && share > 0.8 {
-					share = 0.8
-				}
-				shares[n.ID] = share
-			}
+		maximum := maxScore(required, n.ID)
+		node := NodeResult{NodeID: n.ID, Title: n.Title, Status: state.Status, TopLevel: !required[n.ID],
+			Requires: append([]string{}, n.Prerequisites...), Assisted: state.Assisted, Maximum: maximum,
+			Reasons: append([]string{}, state.Reasons...), Reply: replies[n.ID]}
+		if scored(state) {
+			score := *state.Score
+			node.Score = &score
+			shares[n.ID] = float64(score) / float64(maximum)
 		}
 		r.Nodes = append(r.Nodes, node)
 	}
 	r.Score, r.Maximum, r.ScorePercent = OverallScore(e.Graph.competencyShares(shares))
 	r.Grade = CourseGrade(r.ScorePercent)
 	for _, id := range e.Gaps() {
-		n, _ := e.Graph.Node(id)
+		n := nodes[id]
 		r.Gaps = append(r.Gaps, NewGap(id, n.Title, n.Sources))
 	}
 	for _, id := range e.WeakSpots() {
-		n, _ := e.Graph.Node(id)
+		n := nodes[id]
 		r.WeakSpots = append(r.WeakSpots, NewGap(id, n.Title, n.Sources))
 	}
 	return r
+}
+
+// scored reports whether a topic has points that count: asked and concluded,
+// not credited, unclear or unreached.
+func scored(state *NodeState) bool {
+	return state.Score != nil && (state.Status == StatusIndependent || state.Status == StatusAssisted || state.Status == StatusGap)
 }

@@ -3,8 +3,6 @@ package application
 
 import (
 	"context"
-	"strings"
-	"time"
 
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
@@ -12,22 +10,17 @@ import (
 )
 
 type Repository interface {
-	Replace(ctx context.Context, subjectID, actorID string, parsed competencymap.Map, importedAt int64, expectedRevision *int64) (competencymap.ImportResult, error)
 	Read(ctx context.Context, subjectID string) (competencymap.Snapshot, error)
 }
 
-type Parser interface {
-	Parse(data []byte) (competencymap.Map, error)
-}
-
+// Service reads the competency map of a course and authorizes its import,
+// which the course graph runs for both sheets at once.
 type Service struct {
-	repo   Repository
-	parser Parser
-	now    func() time.Time
+	repo Repository
 }
 
-func New(repo Repository, parser Parser, now func() time.Time) *Service {
-	return &Service{repo: repo, parser: parser, now: now}
+func New(repo Repository) *Service {
+	return &Service{repo: repo}
 }
 
 func (s *Service) ReadSubject(ctx context.Context, subjectID string) (competencymap.Snapshot, error) {
@@ -40,20 +33,4 @@ func (s *Service) Authorize(actor user.User) error {
 		return fault.New(fault.Forbidden, "FORBIDDEN", "Операция доступна только admin.")
 	}
 	return nil
-}
-
-func (s *Service) ImportForSubject(ctx context.Context, actor user.User, subjectID string, data []byte, media string, expectedRevision *int64) (competencymap.ImportResult, error) {
-	if err := s.Authorize(actor); err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	media = strings.TrimSpace(strings.Split(media, ";")[0])
-	if media != "text/csv" && media != "application/csv" && media != "application/vnd.ms-excel" &&
-		media != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
-		return competencymap.ImportResult{}, fault.New(fault.Unsupported, "UNSUPPORTED_MEDIA_TYPE", "Ожидается файл CSV или XLSX.")
-	}
-	parsed, err := s.parser.Parse(data)
-	if err != nil {
-		return competencymap.ImportResult{}, err
-	}
-	return s.repo.Replace(ctx, subjectID, actor.ID, parsed, s.now().Unix(), expectedRevision)
 }

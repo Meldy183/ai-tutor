@@ -111,9 +111,7 @@ type LearningMaterials struct {
 }
 
 type NodeResult struct {
-	// Оценка A–D; null — оценки нет (тема не проверялась или недостаточно данных)
-	Grade  *string `json:"grade" enums:"A,B,C,D" extensions:"x-nullable"`
-	NodeID string  `json:"node_id"`
+	NodeID string `json:"node_id"`
 	// independent — самостоятельный ответ, assisted — ответ с помощью, gap — пробел, insufficient — недостаточно данных, credited_by_parent — засчитано по вышестоящей вершине (для неё это пререквизит), unchecked — не спрашивалась
 	Status string `json:"status" enums:"independent,assisted,gap,insufficient,credited_by_parent,unchecked"`
 	Title  string `json:"title"`
@@ -123,26 +121,14 @@ type NodeResult struct {
 	TopLevel bool `json:"top_level"`
 	// Ответ дан после переформулировки или подсказки
 	Assisted bool `json:"assisted"`
-	// Баллы темы; null — тема не спрашивалась, засчитана или данных недостаточно
-	Score    *int `json:"score" minimum:"0" extensions:"x-nullable"`
-	MaxScore *int `json:"max_score" minimum:"1" extensions:"x-nullable"`
-	// Результаты по пунктам рубрики или критериям К1–К4
-	Marks []TopicMark `json:"marks"`
+	// Балл темы: у вершины верхнего уровня 0–2, у пререквизита 0–1; null — тема не спрашивалась, засчитана или данных недостаточно
+	Score *int `json:"score" minimum:"0" maximum:"2" extensions:"x-nullable"`
+	// Максимум темы: 2 у вершины верхнего уровня, 1 у пререквизита
+	MaxScore int `json:"max_score" minimum:"1" maximum:"2"`
+	// Основания балла от модели
+	Reasons []string `json:"reasons"`
 	// Реплика Geek при закрытии темы; пустая, если её нет
 	Reply string `json:"reply"`
-}
-
-// TopicMark is one rubric item or one of К1–К4 (id k1…k4).
-type TopicMark struct {
-	ID string `json:"id"`
-	// Короткое название пункта из карты; пустое у К1–К4 и пунктов без названия
-	Title    string `json:"title"`
-	Score    int    `json:"score" minimum:"0"`
-	MaxScore int    `json:"max_score" minimum:"1"`
-	// Основание балла; пустое, если модель его не сохранила
-	Reason string `json:"reason"`
-	// Дословная цитата из ответа студента; пустая, если её нет
-	Quote string `json:"quote"`
 }
 
 // Result is the student's outcome with the points and reasons of every asked topic.
@@ -151,7 +137,7 @@ type Result struct {
 	// Предварительная оценка курса A–D по проценту нормализованных баллов (от 90 — A, от 70 — B, от 60 — C); null — нет ни одной темы с баллами
 	Grade *string      `json:"grade" enums:"A,B,C,D" extensions:"x-nullable"`
 	Nodes []NodeResult `json:"nodes"`
-	// Слабые места — темы на C: засчитаны, но ответ неполный; источники и материалы — как у пробела
+	// Слабые места — темы с баллом ниже максимума: засчитаны, но ответ неполный; источники и материалы — как у пробела
 	WeakSpots []Gap `json:"weak_spots"`
 	// Процент нормализованных баллов от максимума; темы «недостаточно данных» и засчитанные исключены
 	ScorePercent *int `json:"score_percent" minimum:"0" maximum:"100" extensions:"x-nullable"`
@@ -506,12 +492,12 @@ func toResult(r domain.Result) Result {
 		if requires == nil {
 			requires = []string{}
 		}
-		marks := make([]TopicMark, 0, len(n.Marks))
-		for _, m := range n.Marks {
-			marks = append(marks, TopicMark{ID: m.ID, Title: m.Title, Score: m.Score, MaxScore: m.Maximum, Reason: m.Reason, Quote: m.Quote})
+		reasons := n.Reasons
+		if reasons == nil {
+			reasons = []string{}
 		}
-		out.Nodes = append(out.Nodes, NodeResult{Grade: grade(n.Grade), NodeID: n.NodeID, Requires: requires, Status: string(n.Status), Title: n.Title, TopLevel: n.TopLevel,
-			Assisted: n.Assisted, Score: n.Score, MaxScore: n.Maximum, Marks: marks, Reply: n.Reply})
+		out.Nodes = append(out.Nodes, NodeResult{NodeID: n.NodeID, Requires: requires, Status: string(n.Status), Title: n.Title, TopLevel: n.TopLevel,
+			Assisted: n.Assisted, Score: n.Score, MaxScore: n.Maximum, Reasons: reasons, Reply: n.Reply})
 	}
 	return out
 }

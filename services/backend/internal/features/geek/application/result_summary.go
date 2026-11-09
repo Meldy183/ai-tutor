@@ -68,7 +68,7 @@ func summaryReport(result exam.Result) resultsummary.Report {
 		case n.Score == nil:
 		case n.Status == exam.StatusGap:
 			report.Gaps = append(report.Gaps, finding)
-		case *n.Score == *n.Maximum:
+		case *n.Score == n.Maximum:
 			report.Strengths = append(report.Strengths, finding)
 		default:
 			report.Partial = append(report.Partial, finding)

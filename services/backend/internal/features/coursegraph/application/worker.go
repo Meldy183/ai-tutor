@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/competencymap"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/material"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
@@ -29,9 +31,11 @@ type Repository interface {
 	RetryMap(ctx context.Context, subjectID, expectedFingerprint string, now time.Time) (bool, error)
 	// Published lists the graphs Geek examines by.
 	Published(context.Context) ([]PublishedGraph, error)
-	// SaveMap stores an imported competency map and queues its build; false
-	// when a build is already queued or running.
-	SaveMap(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time) (bool, error)
+	// SaveMapWithLearning stores both sheets of an imported competency map
+	// in one transaction: the learning sheet as a new active map revision,
+	// the Geek sheet as its exam tasks, and queues the Geek build; false when
+	// a build is already queued or running.
+	SaveMapWithLearning(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, now time.Time, actorID string, expectedRevision int64, learning competencymap.Map) (bool, int64, error)
 	// SaveMapIfCurrent rejects a changed fingerprint or an unpublished map atomically.
 	SaveMapIfCurrent(ctx context.Context, subjectID, filename, sheet string, graph json.RawMessage, expectedFingerprint string, now time.Time) (bool, error)
 	// MapGraph is the graph of the imported competency map.
@@ -70,17 +74,22 @@ type Questions interface {
 	Prepare(ctx context.Context, graph json.RawMessage) (json.RawMessage, error)
 }
 
+// LearningMapImporter parses the learning sheet of a workbook and checks that
+// it has the structure of the Geek sheet.
+type LearningMapImporter func(context.Context, user.User, string, []byte, []coursegraph.MapSheet) (competencymap.Map, []coursegraph.ImportWarning, error)
+
 // MapReader reads the worksheets of an imported competency map book.
 type MapReader func(data []byte) ([]coursegraph.MapSheet, error)
 
 type Worker struct {
-	repo      Repository
-	materials Materials
-	storage   Storage
-	builder   Builder
-	voices    Voices
-	questions Questions
-	maps      MapReader
+	repo              Repository
+	materials         Materials
+	storage           Storage
+	builder           Builder
+	voices            Voices
+	questions         Questions
+	maps              MapReader
+	importLearningMap LearningMapImporter
 	// progress of running builds by subject, shown in snapshots.
 	mu            sync.Mutex
 	progress      map[string]coursegraph.BuildProgress
@@ -98,6 +107,8 @@ func New(repo Repository, materials Materials, storage Storage, builder Builder,
 // SetQuestions makes builds prepare their questions before publication;
 // without it a build is published with the questions course-graph wrote.
 func (w *Worker) SetQuestions(q Questions) { w.questions = q }
+
+func (w *Worker) SetLearningMapImporter(importer LearningMapImporter) { w.importLearningMap = importer }
 
 func (w *Worker) setProgress(subjectID string, p *coursegraph.BuildProgress) {
 	w.mu.Lock()
@@ -179,17 +190,19 @@ func TopicQuestions(graph json.RawMessage) []string {
 		Question string `json:"question"`
 		Rephrase string `json:"rephrase"`
 	}
+	type topic struct {
+		asked
+		Variants []asked `json:"variants"`
+	}
 	var shape struct {
-		Topics []struct {
-			asked
-			Variants []asked `json:"variants"`
-		} `json:"topics"`
+		Topics []topic `json:"topics"`
+		Bank   []topic `json:"bank"`
 	}
 	out := []string{}
 	if json.Unmarshal(graph, &shape) != nil {
 		return out
 	}
-	for _, t := range shape.Topics {
+	for _, t := range append(shape.Topics, shape.Bank...) {
 		texts := t.Variants
 		if len(texts) == 0 {
 			texts = []asked{t.asked}
@@ -199,9 +212,13 @@ func TopicQuestions(graph json.RawMessage) []string {
 			if q == "" {
 				continue
 			}
-			out = append(out, q)
+			if !slices.Contains(out, q) {
+				out = append(out, q)
+			}
 			if r := strings.TrimSpace(a.Rephrase); r != "" {
-				out = append(out, r)
+				if !slices.Contains(out, r) {
+					out = append(out, r)
+				}
 			}
 		}
 	}
@@ -220,6 +237,9 @@ func (w *Worker) snapshot(ctx context.Context, subjectID string) (coursegraph.Sn
 	snapshot, err := w.repo.Read(ctx, subjectID)
 	if err != nil {
 		return coursegraph.Snapshot{}, err
+	}
+	if snapshot.LearningWarnings == nil {
+		snapshot.LearningWarnings = []coursegraph.ImportWarning{}
 	}
 	if p, ok := w.progressOf(subjectID); ok && snapshot.Status == "processing" {
 		snapshot.Progress = &p
@@ -248,12 +268,10 @@ func (w *Worker) snapshot(ctx context.Context, subjectID string) (coursegraph.Sn
 	return snapshot, nil
 }
 
-// ImportMap builds the course graph from a competency map instead of the
-// materials (the admin's "import competency map" button): the map is read
-// and checked at once, its questions are prepared and published by the
-// worker like those of a build. The graph is read from the first sheet of
-// the book; the second one is the diagnostic's.
-func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, filename string, data []byte) (coursegraph.Snapshot, error) {
+// ImportMap validates and saves a competency map instead of the materials.
+// For a paired workbook, the learning projection becomes active with the
+// saved map and queued job; the worker prepares and publishes Geek later.
+func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, filename string, data []byte, expectedLearningRevision int64) (coursegraph.Snapshot, error) {
 	if actor.Role != user.Admin {
 		return coursegraph.Snapshot{}, fault.New(fault.Forbidden, "FORBIDDEN", "Доступно только admin.")
 	}
@@ -271,6 +289,11 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось прочитать книгу Excel (.xlsx).")
 	}
+	// One upload holds both modes: the first sheet is Geek's, the second the
+	// learning diagnostic's (decision of 08.11.2026).
+	if len(sheets) < 2 || w.importLearningMap == nil {
+		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "UNIFIED_COMPETENCY_MAP_REQUIRED", "Нужна книга с двумя листами карты компетенций: первый — для экзамена Geek, второй — для учебной диагностики.")
+	}
 	built, err := coursegraph.BuildMapGraph(sheets)
 	var mapErr *coursegraph.MapError
 	if errors.As(err, &mapErr) {
@@ -279,24 +302,43 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, err
 	}
+	if expectedLearningRevision < 0 {
+		return coursegraph.Snapshot{}, fault.New(fault.Conflict, "COMPETENCY_MAP_CHANGED", "Обновите состояние учебной карты и подтвердите замену ещё раз.")
+	}
+	learningMap, learningWarnings, err := w.importLearningMap(ctx, actor, subjectID, data, sheets)
+	if err != nil {
+		return coursegraph.Snapshot{}, err
+	}
+	// Returned with the upload response so admins can review warnings from
+	// the learning sheet even though it is parsed by a separate importer.
+	// This value is transient and is not persisted with the Geek graph.
 	var assessment struct {
 		Warnings []coursegraph.MapIssue `json:"assessment_warnings"`
 	}
 	if err := json.Unmarshal(built.Graph, &assessment); err != nil {
 		return coursegraph.Snapshot{}, err
 	}
-	queued, err := w.repo.SaveMap(ctx, subjectID, filename, built.Sheet, built.Graph, time.Now())
+	queued, _, err := w.repo.SaveMapWithLearning(ctx, subjectID, filename, built.Sheet, built.Graph, time.Now(), actor.ID, expectedLearningRevision, learningMap)
 	if err != nil {
 		return coursegraph.Snapshot{}, err
 	}
 	if !queued {
 		return coursegraph.Snapshot{}, fault.New(fault.Conflict, "GRAPH_BUILD_IN_PROGRESS", "Граф курса уже собирается.")
 	}
+	resultWarnings := learningWarnings
+	if resultWarnings == nil {
+		resultWarnings = []coursegraph.ImportWarning{}
+	}
 	for _, warning := range assessment.Warnings {
 		logx.From(ctx).Warn("course graph uses default assessment criteria", zap.String("subject_id", subjectID), zap.String("filename", filename),
 			zap.String("sheet", built.Sheet), zap.Int("row", warning.Row), zap.String("column", warning.Column), zap.String("warning", warning.Message))
 	}
-	return w.snapshot(ctx, subjectID)
+	snapshot, err := w.snapshot(ctx, subjectID)
+	if err != nil {
+		return coursegraph.Snapshot{}, err
+	}
+	snapshot.LearningWarnings = resultWarnings
+	return snapshot, nil
 }
 
 // RetryMap restarts preparation of the saved map without importing or filtering it.
@@ -555,7 +597,7 @@ func (w *Worker) process(ctx context.Context, job coursegraph.Job) error {
 		var shape struct {
 			Version string `json:"version"`
 		}
-		if json.Unmarshal(graph, &shape) != nil || (shape.Version != coursegraph.MapVersion && shape.Version != coursegraph.ExplicitMapVersion) {
+		if json.Unmarshal(graph, &shape) != nil || shape.Version != coursegraph.MapVersion {
 			return fmt.Errorf("invalid competency map graph")
 		}
 	} else if graph, err = w.buildMaterials(ctx, job); err != nil {

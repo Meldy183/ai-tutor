@@ -1,5 +1,6 @@
-// Package xlsx reads the worksheets of an Excel book as rows of cell text.
-// It needs only the standard library: a competency map is plain text cells.
+// Package xlsx reads the two map worksheets of an Excel book as rows of cell
+// text; later sheets are never read. It needs only the standard library: a
+// competency map is plain text cells.
 package xlsx
 
 import (
@@ -61,17 +62,14 @@ type reader struct {
 
 type sheetRef struct{ name, id string }
 
-// Read returns the worksheets in book order.
-func Read(data []byte) ([]coursegraph.MapSheet, error) { return read(data, 0) }
+// mapSheets is the number of leading worksheets that make up a competency
+// map. Later sheets (reference data and the like) are never read, so they
+// can neither fail the import nor spend its budget. The shared strings are
+// common to the book and are still read whole.
+const mapSheets = 2
 
-// First returns only the first worksheet of the book, the simulation's: the
-// parts of the other sheets are never read, so they can neither fail the
-// import nor spend its budget. The shared strings are common to the book and
-// are still read whole.
-func First(data []byte) ([]coursegraph.MapSheet, error) { return read(data, 1) }
-
-// read returns the first limit worksheets, or all of them for 0.
-func read(data []byte, limit int) ([]coursegraph.MapSheet, error) {
+// Read returns the first mapSheets worksheets of the book, in book order.
+func Read(data []byte) ([]coursegraph.MapSheet, error) {
 	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, ErrNotWorkbook
@@ -84,8 +82,8 @@ func read(data []byte, limit int) ([]coursegraph.MapSheet, error) {
 	if err != nil {
 		return nil, err
 	}
-	if limit > 0 && len(refs) > limit {
-		refs = refs[:limit]
+	if len(refs) > mapSheets {
+		refs = refs[:mapSheets]
 	}
 	targets, err := r.relationships()
 	if err != nil {

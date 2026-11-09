@@ -51,14 +51,14 @@ func TestEvaluateRejectsLegacyTaskIDAndFrontendRole(t *testing.T) {
 		`{"transcription_id":"tr-1","variant_id":"variant-1","variant_task_id":"variant-task-1","role":"basic"}`,
 	} {
 		transcriptions := &transcriptionStub{}
-		learning_tasks := &variantTaskStub{}
-		handler := New(application.New(transcriptions, learning_tasks, graderStub{}))
+		course_map_tasks := &variantTaskStub{}
+		handler := New(application.New(transcriptions, course_map_tasks, graderStub{}))
 		request := httptest.NewRequest(http.MethodPost, "/assessments/evaluate", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request = httpx.WithPrincipal(request, user.User{ID: "student-1", Role: user.Student})
 		response := httptest.NewRecorder()
 		handler.Evaluate(response, request)
-		if response.Code != http.StatusUnprocessableEntity || learning_tasks.ownerID != "" || transcriptions.owner != "" {
+		if response.Code != http.StatusUnprocessableEntity || course_map_tasks.ownerID != "" || transcriptions.owner != "" {
 			t.Fatalf("unexpected rejected request: %d %s", response.Code, response.Body.String())
 		}
 	}
@@ -66,7 +66,7 @@ func TestEvaluateRejectsLegacyTaskIDAndFrontendRole(t *testing.T) {
 
 func (graderStub) Grade(_ context.Context, _ application.GradingContext, _ string) (application.Evaluation, error) {
 	return application.Evaluation{
-		Score:   3,
+		Score:   2,
 		Verdict: "correct",
 		CriterionResults: []application.CriterionResult{
 			{Key: "answer_correctness", Satisfied: true, Explanation: "Ответ соответствует эталону."},
@@ -78,8 +78,8 @@ func (graderStub) Grade(_ context.Context, _ application.GradingContext, _ strin
 
 func TestEvaluateRequiresAuthAndReturnsVariantGrade(t *testing.T) {
 	transcriptions := &transcriptionStub{}
-	learning_tasks := &variantTaskStub{}
-	handler := New(application.New(transcriptions, learning_tasks, graderStub{}))
+	course_map_tasks := &variantTaskStub{}
+	handler := New(application.New(transcriptions, course_map_tasks, graderStub{}))
 	requestBody := `{"transcription_id":"tr-1","variant_id":"variant-1","variant_task_id":"variant-task-1"}`
 
 	unauthorized := httptest.NewRecorder()
@@ -98,10 +98,10 @@ func TestEvaluateRequiresAuthAndReturnsVariantGrade(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || transcriptions.owner != "student-1" || result.Score != 3 || result.MaxScore != 3 || result.Verdict != "correct" {
+	if response.Code != http.StatusOK || transcriptions.owner != "student-1" || result.Score != 2 || result.MaxScore != 2 || result.Verdict != "correct" {
 		t.Fatalf("response=%d %s, owner=%q", response.Code, response.Body.String(), transcriptions.owner)
 	}
-	if learning_tasks.ownerID != "student-1" || learning_tasks.variantID != "variant-1" || learning_tasks.variantTaskID != "variant-task-1" {
-		t.Fatalf("unexpected snapshot lookup: owner=%q variant=%q task=%q", learning_tasks.ownerID, learning_tasks.variantID, learning_tasks.variantTaskID)
+	if course_map_tasks.ownerID != "student-1" || course_map_tasks.variantID != "variant-1" || course_map_tasks.variantTaskID != "variant-task-1" {
+		t.Fatalf("unexpected snapshot lookup: owner=%q variant=%q task=%q", course_map_tasks.ownerID, course_map_tasks.variantID, course_map_tasks.variantTaskID)
 	}
 }

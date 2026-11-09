@@ -45,8 +45,8 @@ func validText(value string, max int) bool {
 
 func gradingMaxScore(gradingContext GradingContext) (int, error) {
 	switch {
-	case gradingContext.Role == "main" && gradingContext.MaxScore == 3:
-		return 3, nil
+	case gradingContext.Role == "main" && gradingContext.MaxScore == 2:
+		return 2, nil
 	case gradingContext.Role == "training" && gradingContext.MaxScore == 2:
 		return 2, nil
 	case gradingContext.Role == "basic" && gradingContext.MaxScore == 1:

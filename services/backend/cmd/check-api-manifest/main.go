@@ -30,7 +30,9 @@ func main() {
 	if err := json.Unmarshal(manifestBytes, &m); err != nil {
 		panic(err)
 	}
-	if m.BaselineCount != 76 || m.ImplementedCount != 76 || len(m.Routes) != 76 {
+	// The separate learning map import was removed (decision of 08.11.2026):
+	// a map is imported with its Geek sheet through the course graph.
+	if m.BaselineCount != 76 || m.ImplementedCount != 75 || len(m.Routes) != 75 {
 		panic(fmt.Sprintf("current API manifest counts invalid: baseline=%d implemented=%d routes=%d", m.BaselineCount, m.ImplementedCount, len(m.Routes)))
 	}
 	apiBytes, err := os.ReadFile("../../api/openapi.yaml")

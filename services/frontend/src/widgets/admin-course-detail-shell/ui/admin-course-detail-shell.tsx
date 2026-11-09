@@ -19,6 +19,7 @@ type Props = PropsWithChildren<{
   subjectName?: string
   courseMissing?: boolean
   course?: Subject
+  showBothStatuses?: boolean
   localImporting?: boolean
   statusRefreshError?: boolean
   onRetryStatus?: () => void
@@ -32,6 +33,7 @@ export function AdminCourseDetailShell({
   subjectName,
   courseMissing = false,
   course,
+  showBothStatuses = false,
   localImporting = false,
   statusRefreshError = false,
   onRetryStatus,
@@ -42,7 +44,10 @@ export function AdminCourseDetailShell({
   const { t } = useTranslation()
   const { user } = useAuth()
   const navigate = useNavigate()
-  const status = course && preparationBadge(course, active)
+  const directions: Direction[] = showBothStatuses
+    ? ['learn', 'exam']
+    : [active]
+  const hasStatuses = course !== undefined
 
   useEffect(() => {
     if (courseMissing) void navigate({ to: '/', replace: true })
@@ -75,37 +80,6 @@ export function AdminCourseDetailShell({
                 {t('adminCourses.backToCourses')}
               </Link>
             </Button>
-            <nav
-              className={styles.directionNav}
-              aria-label={t('directionNav.adminLabel')}
-            >
-              <Link
-                to="/admin/courses/$subjectId"
-                params={{ subjectId }}
-                search={{ direction: 'learn' }}
-                activeOptions={{ exact: true, includeSearch: true }}
-                className={styles.directionLink}
-                aria-current={active === 'learn' ? 'page' : undefined}
-                data-selected={active === 'learn' ? 'true' : undefined}
-              >
-                {t('directionNav.learnMaterials')}
-              </Link>
-              <Link
-                to="/admin/courses/$subjectId"
-                params={{ subjectId }}
-                search={{ direction: 'exam' }}
-                activeOptions={{
-                  exact: true,
-                  includeSearch: true,
-                  explicitUndefined: true,
-                }}
-                className={styles.directionLink}
-                aria-current={active === 'exam' ? 'page' : undefined}
-                data-selected={active === 'exam' ? 'true' : undefined}
-              >
-                {t('directionNav.examMaterials')}
-              </Link>
-            </nav>
           </div>
         </section>
         {statusRefreshError && (
@@ -127,17 +101,36 @@ export function AdminCourseDetailShell({
               {description}
             </Text>
           </div>
-          {status && (
-            <Badge color={status.color} className={styles.status}>
-              {(status.spinning || localImporting) && (
-                <LoaderCircle
-                  size={12}
-                  className={styles.spinner}
-                  aria-hidden="true"
-                />
-              )}
-              {t(localImporting ? 'sharedCourse.learn.importing' : status.key)}
-            </Badge>
+          {hasStatuses && (
+            <div className={styles.statuses}>
+              {directions.map((direction) => {
+                const status = course
+                  ? preparationBadge(course, direction)
+                  : undefined
+                if (!status) return null
+                return (
+                  <Badge
+                    key={direction}
+                    color={status.color}
+                    className={styles.status}
+                  >
+                    {(status.spinning ||
+                      (direction === 'learn' && localImporting)) && (
+                      <LoaderCircle
+                        size={12}
+                        className={styles.spinner}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {t(
+                      direction === 'learn' && localImporting
+                        ? 'sharedCourse.learn.importing'
+                        : status.key,
+                    )}
+                  </Badge>
+                )
+              })}
+            </div>
           )}
         </section>
         {user?.role === 'admin' && (

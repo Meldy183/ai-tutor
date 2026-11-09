@@ -197,8 +197,15 @@ test('one browser context switches modes while student and admin sessions stay s
             inputs_ready: true,
             updated_at: 1791158400,
             graph_source: 'competency_map',
+            graph_fingerprint: 'geek-map-fingerprint',
+            graph_map_revision: 1,
             build_source: 'competency_map',
-            map: { filename: 'ai-map.xlsx', sheet: 'Карта' },
+            map: {
+              filename: 'ai-map.xlsx',
+              sheet: 'Карта',
+              fingerprint: 'map-fingerprint',
+              learning_revision: 1,
+            },
             progress: null,
             graph: {
               topics: [
@@ -233,6 +240,8 @@ test('one browser context switches modes while student and admin sessions stay s
           inputs_ready: false,
           updated_at: 0,
           graph_source: 'none',
+          graph_fingerprint: '',
+          graph_map_revision: null,
           build_source: null,
           map: null,
           progress: null,
@@ -421,7 +430,9 @@ test('one browser context switches modes while student and admin sessions stay s
   await expect(
     page.getByRole('heading', { name: 'Выберите режим' }),
   ).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toHaveCount(0)
+  await expect(
+    page.getByRole('button', { name: 'Импортировать карту компетенций' }),
+  ).toHaveCount(0)
   await page.goBack()
   await expect(page).toHaveURL(/\/admin\/courses$/)
   await page.goto('/admin/courses/missing-course?direction=exam')
@@ -436,27 +447,35 @@ test('one browser context switches modes while student and admin sessions stay s
   await expect(
     page.getByRole('heading', { name: otherSubject.name, level: 1 }),
   ).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toBeVisible()
+  const importButton = page.getByRole('button', {
+    name: 'Импортировать карту компетенций',
+    exact: true,
+  })
+  await expect(importButton).toBeEnabled()
+  const chooserPromise = page.waitForEvent('filechooser')
+  await importButton.click()
+  const chooser = await chooserPromise
+  expect(await chooser.element().getAttribute('aria-label')).toBe(
+    'Файл карты компетенций',
+  )
+  const expectCoursePreparation = async () => {
+    await expect(
+      page.getByRole('heading', { name: subject.name, level: 1 }),
+    ).toBeVisible()
+    await expect(importButton).toBeEnabled()
+    await expect(
+      page.getByText('Карта компетенций успешно загружена'),
+    ).toBeVisible()
+    await expect(page.getByLabel('Добавить PDF или ZIP')).toBeVisible()
+    await expect(
+      page.getByRole('navigation', { name: 'Разделы администрирования' }),
+    ).toHaveCount(0)
+  }
   await page.goto(`/admin/courses/${subject.id}`)
-  await expect(page).toHaveURL(new RegExp(`/admin/courses/${subject.id}$`))
-  await expect(page.getByRole('heading', { name: subject.name })).toBeVisible()
-  await expect(page.getByText('Обучение: готово')).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toBeVisible()
-  await expect(
-    page.getByText('Карта компетенций успешно загружена'),
-  ).toBeVisible()
-  await expect(page.getByLabel('Добавить PDF или ZIP')).toHaveCount(0)
-  await expect(
-    page.getByRole('navigation', { name: 'Разделы администрирования' }),
-  ).toHaveCount(1)
-  await expect(
-    page
-      .getByRole('navigation', { name: 'Разделы администрирования' })
-      .getByRole('link', { name: 'Материалы для обучения' }),
-  ).toHaveAttribute('aria-current', 'page')
+  await expectCoursePreparation()
+  await expect(page.getByText('Курс готов для студентов').last()).toBeVisible()
   await page.reload()
-  await expect(page.getByRole('heading', { name: subject.name })).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toBeVisible()
+  await expectCoursePreparation()
   await page.screenshot({ path: testInfo.outputPath('learn-admin.png') })
   await expect
     .poll(() =>
@@ -483,145 +502,66 @@ test('one browser context switches modes while student and admin sessions stay s
   await expect(
     page.getByRole('heading', { name: 'Курсы', level: 1 }),
   ).toBeVisible()
-  await expect(
-    page.getByRole('navigation', { name: 'Разделы администрирования' }),
-  ).toHaveCount(0)
+  await expect(page.getByRole('link', { name: subject.name })).toBeVisible()
   await expect(page.getByText('Экзамен: готов')).toBeVisible()
   await expect(page.getByText('Обучение: готово')).toBeVisible()
   await page.getByRole('link', { name: subject.name }).click()
   await expect(page).toHaveURL(new RegExp(`/admin/courses/${subject.id}$`))
+  await expectCoursePreparation()
   await expect(
-    page.getByRole('heading', { name: 'Материалы для обучения' }),
+    page.getByText('Загруженные лекции и лабораторные'),
   ).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toBeVisible()
-  await expect(page.getByLabel('Добавить PDF или ZIP')).toHaveCount(0)
-  await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .getByRole('link', { name: 'Материалы для экзамена' })
-    .click()
-  await expect(page).toHaveURL(
-    new RegExp(`/admin/courses/${subject.id}\\?direction=exam$`),
-  )
-  await expect(page.getByRole('heading', { name: subject.name })).toBeVisible()
-  await expect(
-    page.getByRole('heading', { name: 'Материалы для экзамена' }),
-  ).toBeVisible()
-  await expect(page.getByLabel('Добавить PDF или ZIP')).toBeVisible()
-  await expect(page.getByLabel('Файл карты компетенций')).toHaveCount(0)
+  await expect(page.getByText('Курс готов для студентов').last()).toBeVisible()
+  const courseHeader = page.locator('section[aria-labelledby="course-name"]')
+  const desktopHeader = await courseHeader.boundingBox()
+  expect(desktopHeader).not.toBeNull()
+  await page.goto(`/admin/courses/${subject.id}?direction=exam`)
+  await expectCoursePreparation()
   const graphCard = page.locator('section[aria-labelledby="graph-title"]')
-  await expect(graphCard).toContainText(
-    'Вместо материалов загрузите карту компетенций',
-  )
   await expect(graphCard).toContainText('Курс готов для студентов.')
   await expect(graphCard).toContainText('Искусственный интеллект')
-  await expect(
-    graphCard.getByRole('button', { name: 'Импортировать карту компетенций' }),
-  ).toBeVisible()
-  await graphCard.screenshot({
-    path: testInfo.outputPath('exam-course-graph-card.png'),
-  })
   await page.reload()
-  await expect(page).toHaveURL(
-    new RegExp(`/admin/courses/${subject.id}\\?direction=exam$`),
-  )
-  await expect(page.getByLabel('Добавить PDF или ZIP')).toBeVisible()
-  await expect(
-    page
-      .getByRole('navigation', { name: 'Разделы администрирования' })
-      .getByRole('link', { name: 'Материалы для экзамена' }),
-  ).toHaveAttribute('aria-current', 'page')
-  const nav = page.getByRole('navigation', {
-    name: 'Разделы администрирования',
-  })
-  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
-  const desktopCourseHeader = await page
-    .locator('section[aria-labelledby="course-name"]')
-    .boundingBox()
-  const desktopDirectionNav = await nav.boundingBox()
-  expect(desktopCourseHeader).not.toBeNull()
-  expect(desktopDirectionNav).not.toBeNull()
-  await page.screenshot({ path: testInfo.outputPath('exam-admin.png') })
-
+  await expectCoursePreparation()
+  expect(await courseHeader.boundingBox()).toEqual(desktopHeader)
   await page.goBack()
   await expect(page).toHaveURL(new RegExp(`/admin/courses/${subject.id}$`))
-  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
-  await expect(
-    page
-      .getByRole('navigation', { name: 'Разделы администрирования' })
-      .getByRole('link', { name: 'Материалы для обучения' }),
-  ).toHaveAttribute('aria-current', 'page')
-  await expect(
-    page.getByRole('heading', { name: subject.name, level: 1 }),
-  ).toBeVisible()
-  const learnCourseHeader = await page
-    .locator('section[aria-labelledby="course-name"]')
-    .boundingBox()
-  const learnDirectionNav = await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .boundingBox()
-  expect(learnCourseHeader).toEqual(desktopCourseHeader)
-  expect(learnDirectionNav).toEqual(desktopDirectionNav)
-  await page.screenshot({ path: testInfo.outputPath('learn-admin.png') })
+  await expectCoursePreparation()
   await page.goForward()
   await expect(page).toHaveURL(
     new RegExp(`/admin/courses/${subject.id}\\?direction=exam$`),
   )
-  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
-  await expect(
-    page.getByRole('heading', { name: 'Материалы для экзамена' }),
-  ).toBeVisible()
-  await page.reload()
-  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1)
-  await expect(
-    page.getByRole('heading', { name: 'Материалы для экзамена' }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole('heading', { name: subject.name, level: 1 }),
-  ).toBeVisible()
-
+  await expectCoursePreparation()
   await page.setViewportSize({ width: 390, height: 844 })
-  const narrowExamHeader = await page
-    .locator('section[aria-labelledby="course-name"]')
-    .boundingBox()
-  const narrowExamNav = await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .boundingBox()
-  await page.screenshot({ path: testInfo.outputPath('exam-admin-narrow.png') })
-  await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .getByRole('link', { name: 'Материалы для обучения' })
-    .click()
-  await expect(page).toHaveURL(
-    new RegExp(`/admin/courses/${subject.id}\\?direction=learn$`),
-  )
-  await expect(
-    page
-      .getByRole('navigation', { name: 'Разделы администрирования' })
-      .locator('[aria-current="page"]'),
-  ).toHaveCount(1)
+  const narrowHeader = await courseHeader.boundingBox()
+  await page.screenshot({ path: testInfo.outputPath('learn-admin-narrow.png') })
+  await page.goto(`/admin/courses/${subject.id}?direction=learn`)
+  await expectCoursePreparation()
+  expect(await courseHeader.boundingBox()).toEqual(narrowHeader)
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.screenshot({ path: testInfo.outputPath('admin-course.png') })
+  await page.reload()
   await expect(
     page.getByRole('heading', { name: subject.name, level: 1 }),
   ).toBeVisible()
-  const narrowLearnHeader = await page
-    .locator('section[aria-labelledby="course-name"]')
-    .boundingBox()
-  const narrowLearnNav = await page
-    .getByRole('navigation', { name: 'Разделы администрирования' })
-    .boundingBox()
-  await page.screenshot({ path: testInfo.outputPath('learn-admin-narrow.png') })
-  expect(narrowLearnHeader).toEqual(narrowExamHeader)
-  expect(narrowLearnNav).toEqual(narrowExamNav)
+  await expect(
+    page.getByRole('button', { name: 'Импортировать карту компетенций' }),
+  ).toBeVisible()
+  await expect(
+    page.getByText('Карта компетенций успешно загружена'),
+  ).toBeVisible()
   const horizontalOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth,
   )
   expect(horizontalOverflow).toBe(false)
   await page.getByRole('link', { name: 'Ко всем курсам' }).click()
   await expect(page).toHaveURL(/\/admin\/courses$/)
-  await expect(page.getByRole('heading', { name: 'Курсы' })).toBeVisible()
-  await page.getByRole('link', { name: subject.name }).click()
-  await expect(page).toHaveURL(new RegExp(`/admin/courses/${subject.id}$`))
   await expect(
-    page.getByRole('heading', { name: 'Материалы для обучения' }),
+    page.getByRole('heading', { name: 'Курсы', level: 1 }),
   ).toBeVisible()
   await expect
     .poll(() =>

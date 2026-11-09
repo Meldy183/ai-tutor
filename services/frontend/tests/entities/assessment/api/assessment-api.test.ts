@@ -152,28 +152,28 @@ it('rejects malformed structured grading response', async () => {
   ).rejects.toThrow('Invalid assessment response')
 })
 
-it('accepts three points for a fully correct main answer', async () => {
+it('accepts two points for a fully correct main answer', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ ...validResult, score: 3, max_score: 3 }),
+      json: async () => ({ ...validResult, score: 2, max_score: 2 }),
     }),
   )
   await expect(
     evaluateAnswer('tr-1', savedTask, new AbortController().signal),
-  ).resolves.toMatchObject({ score: 3, maxScore: 3, verdict: 'correct' })
+  ).resolves.toMatchObject({ score: 2, maxScore: 2, verdict: 'correct' })
 })
-it('rejects two points on the three-point main scale', async () => {
+it('rejects a three-point main scale', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         ...validResult,
-        score: 2,
+        score: 3,
         max_score: 3,
-        verdict: 'partial',
+        verdict: 'correct',
       }),
     }),
   )

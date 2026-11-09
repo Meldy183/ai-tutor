@@ -45,7 +45,9 @@ func TestArchitectureDependencies(t *testing.T) {
 						t.Errorf("shared must be domain-agnostic: %s imports %s", relative, target)
 					}
 				case "entities":
-					if !withinPackage(internal, "shared") && !withinPackage(internal, "entities/"+parts[1]) {
+					// Diagnostic evidence reuses the common exam grading rules.
+					usesExamRules := parts[1] == "diagnostic" && withinPackage(internal, "entities/exam")
+					if !withinPackage(internal, "shared") && !withinPackage(internal, "entities/"+parts[1]) && !usesExamRules {
 						t.Errorf("entity imports an outer layer: %s -> %s", relative, target)
 					}
 				case "features":

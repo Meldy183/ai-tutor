@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	_ "github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/user"
@@ -49,7 +50,7 @@ func (h *Handler) RetryMap(w http.ResponseWriter, r *http.Request) {
 
 // SkipMissingCriteria excludes fallback-graded tasks after admin confirmation.
 // @Summary Исключить задания карты без критериев
-// @Description Доступно только admin. Исключает задания с общей рубрикой, пустые темы и связанные с ними рёбра из сохранённой карты и ставит пересборку в очередь. Исходный XLSX не меняется. Повтор без новых исключений не запускает сборку. Активные диагностики отменяются при публикации изменённого графа. Если вопросов не останется, операция отклоняется без изменения карты.
+// @Description Доступно только admin. Исключает задания с общей рубрикой, пустые темы, составляющие, где осталось меньше трёх тем, и связанные с ними рёбра из сохранённой карты и ставит пересборку в очередь. Исходный XLSX не меняется. Повтор без новых исключений не запускает сборку. Активные диагностики отменяются при публикации изменённого графа. Если вопросов не останется, операция отклоняется без изменения карты.
 // @Param X-Expected-Map-Fingerprint header string true "Fingerprint карты из подтверждённого snapshot; несовпадение или неопубликованная карта — 409"
 // @ID skipCourseGraphMissingCriteria
 // @Tags Материалы
@@ -82,7 +83,7 @@ func New(service *application.Worker) *Handler { return &Handler{service} }
 
 // Read returns the latest successful graph and current build status.
 // @Summary Граф курса и состояние построения
-// @Description Доступно только admin. Сборку запускает POST .../graph/build. stale — источник графа (материалы или карта) изменился после публикации; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source — откуда граф: built (собран из материалов), competency_map (собран по карте компетенций) или none — графа нет, курс студентам не виден. build_source — что читает последняя запрошенная сборка; map — последняя импортированная карта.
+// @Description Доступно только admin. Сборку запускает POST .../graph/build. stale — источник опубликованного Geek-графа изменился; inputs_ready — все материалы обработаны и сборку можно запустить. graph_source, graph_fingerprint и graph_map_revision описывают опубликованную версию Geek; status, build_source и error_message — последнюю подготовку. map и map.learning_revision описывают последнюю сохранённую карту. Для двухлистовой карты учебная версия активируется при сохранении карты; опубликованный Geek-граф остаётся доступен до успешной подготовки новой версии.
 // @ID getCourseGraph
 // @Tags Материалы
 // @Security accessCookie
@@ -120,7 +121,7 @@ func (h *Handler) Read(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {object} fault.Error
 // @Failure 403 {object} fault.Error
 // @Failure 404 {object} fault.Error
-// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS: сборка уже идёт"
+// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED"
 // @Failure 422 {object} fault.Error "GRAPH_INPUTS_NOT_READY: материалы ещё обрабатываются, не обработаны или их нет"
 // @Failure 503 {object} fault.Error
 // @Router /exam/admin/subjects/{subject_id}/graph/build [post]
@@ -140,7 +141,7 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 
 // ImportMap builds the course graph from a competency map.
 // @Summary Импортировать карту компетенций
-// @Description Доступно только admin. Кнопка «Импортировать карту компетенций»: граф курса собирается по карте вместо материалов — на каждую составляющую с тремя и более ОР с TRUE и заданием основное задание (наивысший Блум, затем важность) становится темой верхнего уровня, два самых простых — её пререквизитами; вопрос — задание карты без изменений. Карта проверяется сразу, затем вопросы готовятся и граф публикуется так же, как сборка из материалов, и заменяет прежний граф курса. Граф строится по первому листу книги (второй — для диагностики режима «Обучение»); колонки «Компетенция» и «Таксономия» принимаются вместо «Субкомпетенция» и «Уровень по Блуму». Все колонки «Задание N» ОР становятся вариантами темы с критериями из колонки «Критерии оценивания…» того же номера по порядку; экзамен при старте выбирает один вариант случайно.
+// @Description Доступно только admin. Одна XLSX-книга: первый лист — Geek, второй — учебная диагностика; дополнительные листы не читаются. Содержание листов может различаться. Полные ОР и задания обоих источников сохраняются в общей схеме и одной ревизии. Обучение активируется в транзакции импорта, Geek остаётся на предыдущем графе до успешной подготовки нового. Оба режима выбирают основное и два базовых ОР на составляющую с минимум тремя подходящими ОР; невыбранные ОР остаются для обучения. Авторские ID и пререквизиты не меняют отбор. Все варианты задания сохраняют свой эталон и критерии.
 // @ID importCourseGraphCompetencyMap
 // @Tags Материалы
 // @Security accessCookie
@@ -148,14 +149,15 @@ func (h *Handler) Build(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Param subject_id path string true "ID предмета"
 // @Param file formData file true "Карта компетенций .xlsx, до 25 МиБ"
+// @Param X-Expected-Learning-Revision header int64 true "Активная ревизия карты из GET /learn/subjects/{subject_id}/competency-map (0 — карты ещё нет): подтверждает замену"
 // @Success 202 {object} coursegraph.Snapshot
 // @Failure 400 {object} fault.Error
 // @Failure 401 {object} fault.Error
 // @Failure 403 {object} fault.Error
 // @Failure 404 {object} fault.Error
-// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS: сборка уже идёт"
+// @Failure 409 {object} fault.Error "GRAPH_BUILD_IN_PROGRESS или COMPETENCY_MAP_CHANGED"
 // @Failure 413 {object} fault.Error
-// @Failure 422 {object} fault.Error "COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY"
+// @Failure 422 {object} fault.Error "UNIFIED_COMPETENCY_MAP_REQUIRED, COMPETENCY_MAP_INVALID или COMPETENCY_MAP_EMPTY"
 // @Failure 503 {object} fault.Error
 // @Router /exam/admin/subjects/{subject_id}/graph/competency-map [post]
 func (h *Handler) ImportMap(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +201,15 @@ func (h *Handler) ImportMap(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(r.Context(), w, fault.New(fault.TooLarge, "PAYLOAD_TOO_LARGE", "Файл карты больше 25 МиБ."))
 		return
 	}
-	result, err := h.service.ImportMap(r.Context(), actor, r.PathValue("subject_id"), files[0].Filename, data)
+	expectedRevision := int64(-1)
+	if raw := r.Header.Get("X-Expected-Learning-Revision"); raw != "" {
+		expectedRevision, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || expectedRevision < 0 {
+			httpx.Error(r.Context(), w, fault.Validation("X-Expected-Learning-Revision", "Укажите номер активной версии учебной карты."))
+			return
+		}
+	}
+	result, err := h.service.ImportMap(r.Context(), actor, r.PathValue("subject_id"), files[0].Filename, data, expectedRevision)
 	if err != nil {
 		httpx.Error(r.Context(), w, err)
 		return

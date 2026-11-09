@@ -2,9 +2,6 @@ package diagnostic
 
 import "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/stats"
 
-// ClosedCompetencyPercent is where a competency needs no more training.
-const ClosedCompetencyPercent = 90
-
 type competencyShare struct {
 	id    string
 	share float64
@@ -42,18 +39,6 @@ func competencyShares(answers []Answer) []competencyShare {
 	return out
 }
 
-// OpenCompetencies are the competencies below ClosedCompetencyPercent: only
-// they go into training.
-func OpenCompetencies(answers []Answer) map[string]bool {
-	open := map[string]bool{}
-	for _, c := range competencyShares(answers) {
-		if stats.Percent(c.share) < ClosedCompetencyPercent {
-			open[c.id] = true
-		}
-	}
-	return open
-}
-
 // CompetencyShares are the normalized results of the competencies.
 func (r Result) CompetencyShares() []float64 {
 	competencies := competencyShares(r.Answers)
@@ -64,13 +49,12 @@ func (r Result) CompetencyShares() []float64 {
 	return shares
 }
 
-// OpenFindings are the outcomes to study: not mastered, in a competency that is
-// still open. A plan and training pick their tasks from them.
+// OpenFindings are accepted non-maximal answers of an open constituent.
+// Learning also reads its unasked outcomes from the full bank.
 func OpenFindings(answers []Answer) []OutcomeFinding {
-	open := OpenCompetencies(answers)
 	out := []OutcomeFinding{}
 	for _, f := range OutcomeFindings(answers) {
-		if !f.Mastered && open[f.Answer.CompetencyID] {
+		if !f.Mastered {
 			out = append(out, f)
 		}
 	}

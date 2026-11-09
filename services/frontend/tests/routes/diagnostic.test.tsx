@@ -75,8 +75,8 @@ const resultBody = {
   skipped_competencies: [],
   completed_tasks: 1,
   total_tasks: 3,
-  diagnostic_score: 3,
-  maximum_score: 3,
+  diagnostic_score: 2,
+  maximum_score: 2,
   report_score: 5,
   report_max_score: 5,
   training_needed: false,
@@ -92,9 +92,9 @@ const resultBody = {
       task: main,
       transcription_id: 'tr1',
       text: 'Настоящая расшифровка',
-      grader_score: 3,
-      grader_max_score: 3,
-      score: 3,
+      grader_score: 2,
+      grader_max_score: 2,
+      score: 2,
       verdict: 'correct',
       criterion_results: criteria,
       feedback,
@@ -170,7 +170,7 @@ function server(
   feedbackStatus = 200,
   strengths: string[] | null = ['Вы уверенно различаете модели.'],
   summary = 'Итоговое педагогическое резюме.',
-  mainScore = 3,
+  mainScore = 2,
 ) {
   const sessionProgress = { ...progress, total_tasks: totalTasks }
   let answered = false
@@ -247,7 +247,7 @@ function server(
         text: 'Я не знаю. Пропустить',
         score: 0,
         grader_score: 0,
-        grader_max_score: 3,
+        grader_max_score: 2,
         verdict: 'incorrect',
         criterion_results: [
           { key: 'skipped', satisfied: false, explanation: 'Вопрос пропущен.' },
@@ -274,9 +274,9 @@ function server(
         completed_tasks: 1,
         skipped_tasks: totalTasks - 1,
         text: 'Настоящая расшифровка',
-        score: 3,
-        grader_score: 3,
-        grader_max_score: 3,
+        score: 2,
+        grader_score: 2,
+        grader_max_score: 2,
         verdict: 'correct',
         criterion_results: criteria,
         feedback,
@@ -287,7 +287,7 @@ function server(
         ...resultBody,
         total_tasks: totalTasks,
         diagnostic_score: mainScore,
-        training_needed: mainScore < 3,
+        training_needed: mainScore < 2,
         answers: resultBody.answers.map((answer) => ({
           ...answer,
           score: mainScore,
@@ -302,8 +302,8 @@ function server(
       }
       return Response.json({
         session_id: 'session-real',
-        diagnostic_score: 3,
-        maximum_score: 3,
+        diagnostic_score: 2,
+        maximum_score: 2,
         score_percentage: 100,
         summary,
         strengths,
@@ -497,7 +497,7 @@ it('runs real diagnostic audio, obeys skipped basics and displays the server tot
     screen.queryByRole('heading', { name: 'Что доработать' }),
   ).not.toBeInTheDocument()
   const topics = screen.getByRole('list', { name: 'Темы на графе' })
-  expect(within(topics).getByText('3 из 3')).toBeVisible()
+  expect(within(topics).getByText('2 из 2')).toBeVisible()
   expect(within(topics).getAllByText('Засчитано')).toHaveLength(2)
   expect(screen.queryByText(/Критических пробелов нет/)).not.toBeInTheDocument()
   expect(
@@ -875,7 +875,7 @@ it('shows progress by topic and adds clarifying questions only when asked', asyn
           text: 'Неуверенный ответ',
           score: 0,
           grader_score: 0,
-          grader_max_score: 3,
+          grader_max_score: 2,
           verdict: 'incorrect',
           criterion_results: criteria,
           feedback,
@@ -1029,7 +1029,7 @@ it('uses backend basic tasks with a 0/1 scale and includes them in the diagnosti
           status: position === 3 ? 'completed' : 'active',
           score: scores[index],
           grader_score: scores[index],
-          grader_max_score: index === 0 ? 3 : 1,
+          grader_max_score: index === 0 ? 2 : 1,
           verdict:
             index === 2 ? 'incorrect' : index === 1 ? 'correct' : 'partial',
           criterion_results: criteria,
@@ -1055,7 +1055,7 @@ it('uses backend basic tasks with a 0/1 scale and includes them in the diagnosti
             role: task.role,
             score: scores[index],
             grader_score: scores[index],
-            grader_max_score: index === 0 ? 3 : 1,
+            grader_max_score: index === 0 ? 2 : 1,
             verdict:
               index === 2 ? 'incorrect' : index === 1 ? 'correct' : 'partial',
           })),
@@ -1083,7 +1083,7 @@ it('uses backend basic tasks with a 0/1 scale and includes them in the diagnosti
     )
     expect(await screen.findByText('Ответ принят')).toBeVisible()
     expect(
-      screen.queryByText(`${scores[index]} / ${index === 0 ? 3 : 1}`),
+      screen.queryByText(`${scores[index]} / ${index === 0 ? 2 : 1}`),
     ).not.toBeInTheDocument()
     fireEvent.click(
       screen.getByRole('button', {

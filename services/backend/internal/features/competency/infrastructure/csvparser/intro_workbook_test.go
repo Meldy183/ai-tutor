@@ -17,7 +17,7 @@ func TestParseIntroToMLWorkbook(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	if len(m.Competencies) != 13 || len(m.Constituents) != 17 || len(m.Outcomes) != 101 || len(m.Tasks) != 13 || m.UnparsedTaskCells != 41 {
-		t.Fatalf("learning_competencies=%d learning_constituents=%d learning_outcomes=%d learning_tasks=%d unparsed=%d",
+		t.Fatalf("course_map_competencies=%d course_map_constituents=%d course_map_outcomes=%d course_map_tasks=%d unparsed=%d",
 			len(m.Competencies), len(m.Constituents), len(m.Outcomes), len(m.Tasks), m.UnparsedTaskCells)
 	}
 	included := 0
@@ -30,7 +30,7 @@ func TestParseIntroToMLWorkbook(t *testing.T) {
 		}
 	}
 	if included != 18 {
-		t.Fatalf("learning_outcomes included in test = %d, want 18", included)
+		t.Fatalf("course_map_outcomes included in test = %d, want 18", included)
 	}
 	// Row 6 holds a table task cut after its header: the first cell lacks the
 	// instruction and answer, the next cells are leftover table fragments.

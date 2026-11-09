@@ -93,7 +93,7 @@ func (a *App) registerLearningRoutes(mux *http.ServeMux, auth *authapp.Service, 
 	taskGen := taskgenhttp.New(taskgenapp.New(taskGenRepository, taskGenerator, "learning-taskgen", func() int64 { return a.now().Unix() }), taskgenapp.NewMaterialService(taskGenRepository, func() int64 { return a.now().Unix() }))
 	trainingRepository := trainingpg.New(a.pool).WithLease(a.cfg.HTTPWriteTimeout())
 	trainingService := trainingapp.New(trainingRepository, a.diagnosticStore, voice, trainingAssessment{assessment}, trainingsnapshot.Provider{}, security.IDGenerator{}, a.now).
-		WithAudio(taskAudio).WithAudioRegenerator(a.audioWorker)
+		WithAudio(taskAudio).WithAudioRegenerator(a.audioWorker).WithBank(trainingRepository)
 	chatRepository := trainingpg.NewChatRepository(a.pool).WithLease(a.cfg.HTTPWriteTimeout())
 	trainingService = trainingService.WithCheckedNext(chatRepository)
 	var tutor trainingapp.Tutor
@@ -114,7 +114,6 @@ func (a *App) registerLearningRoutes(mux *http.ServeMux, auth *authapp.Service, 
 	protectRoute := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, protect(auth, h)) }
 	protectRoute("POST /admin/subjects", subjects.CreateLearning)
 	protectRoute("GET /subjects", subjects.ListLearning)
-	protectRoute("POST /admin/subjects/{subject_id}/competency-map/import", competency.ImportSubject)
 	protectRoute("GET /subjects/{subject_id}/competency-map", competency.ReadSubject)
 	protectRoute("GET /subjects/{subject_id}/diagnostic-outline", variants.Preview)
 	protectRoute("POST /variants", variants.Create)

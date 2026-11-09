@@ -216,19 +216,24 @@ func FuzzRead(f *testing.F) {
 	})
 }
 
-// The simulation reads only the first sheet: what the other sheets hold, even
-// a cell past the column limit or more rows than the budget, does not stop it.
-func TestExamStillReadsFirstSheet(t *testing.T) {
-	first := `<row r="1"><c r="A1" t="inlineStr"><is><t>Карта</t></is></c></row>`
+// A competency map is its first two sheets: whatever the later sheets hold,
+// even a cell past the column limit or more rows than the budget, does not
+// stop the import. A failure inside the two map sheets still does.
+func TestReadStopsAfterTheTwoMapSheets(t *testing.T) {
+	first := `<row r="1"><c r="A1" t="inlineStr"><is><t>Обучение</t></is></c></row>`
+	second := `<row r="1"><c r="A1" t="inlineStr"><is><t>Карта</t></is></c></row>`
 	huge := strings.Repeat(`<row><c><v>1</v></c></row>`, maxRows+1)
-	for name, second := range map[string]string{"column out of range": `<row r="1"><c r="GS1"><v>1</v></c></row>`, "rows over the budget": huge} {
-		data := sheetBook(t, first, second)
-		if _, err := Read(data); err == nil {
-			t.Fatalf("%s: the whole book is read", name)
+	for name, third := range map[string]string{"column out of range": `<row r="1"><c r="GS1"><v>1</v></c></row>`, "rows over the budget": huge} {
+		sheets, err := Read(sheetBook(t, first, second, third))
+		if err != nil || len(sheets) != 2 {
+			t.Fatalf("%s: sheets = %+v, %v", name, sheets, err)
 		}
-		sheets, err := First(data)
-		if err != nil || len(sheets) != 1 || sheets[0].Name != "Лист 1" || sheets[0].Rows[0][0] != "Карта" {
-			t.Fatalf("%s: first sheet = %+v, %v", name, sheets, err)
+		if sheets[0].Name != "Лист 1" || sheets[0].Rows[0][0] != "Обучение" || sheets[1].Name != "Лист 2" || sheets[1].Rows[0][0] != "Карта" {
+			t.Fatalf("%s: sheets = %+v", name, sheets)
 		}
+	}
+	bad := `<row r="1"><c r="GS1"><v>1</v></c></row>`
+	if _, err := Read(sheetBook(t, first, bad)); err == nil || !strings.Contains(err.Error(), "Лист 2") {
+		t.Fatalf("an error in the second sheet: %v", err)
 	}
 }

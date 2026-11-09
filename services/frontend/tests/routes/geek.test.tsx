@@ -293,67 +293,46 @@ function geekBackend(
             node_id: 'search-space',
             title: 'Пространство состояний',
             status: 'credited_by_parent',
-            grade: null,
             top_level: false,
             assisted: false,
             score: null,
-            max_score: null,
-            marks: [],
+            max_score: 1,
+            reasons: [],
             reply: '',
           },
           {
             node_id: 'heuristic',
             title: 'Эвристическая функция',
             status: 'gap',
-            grade: 'D',
             top_level: false,
             requires: ['search-space'],
             assisted: false,
             score: 0,
-            max_score: 4,
-            marks: [],
+            max_score: 1,
+            reasons: [],
             reply: 'Эвристика оценивает путь до цели.',
           },
           {
             node_id: 'a-star',
             title: 'Алгоритм A*',
             status: 'assisted',
-            grade: 'B',
             top_level: true,
             requires: ['heuristic', 'annealing'],
             assisted: true,
-            score: 3,
-            max_score: 4,
-            marks: [
-              {
-                id: 'r1',
-                title: 'Роль эвристики',
-                score: 1,
-                max_score: 2,
-                reason: 'Связь названа не полностью',
-                quote: 'оценка расстояния',
-              },
-              {
-                id: 'r2',
-                title: '',
-                score: 2,
-                max_score: 2,
-                reason: '',
-                quote: '',
-              },
-            ],
+            score: 1,
+            max_score: 2,
+            reasons: ['Связь названа не полностью', 'Помощь ограничила балл'],
             reply: '',
           },
           {
             node_id: 'annealing',
             title: 'Имитация отжига',
             status: 'unchecked',
-            grade: null,
             top_level: true,
             assisted: false,
             score: null,
-            max_score: null,
-            marks: [],
+            max_score: 2,
+            reasons: [],
             reply: '',
           },
         ],
@@ -597,19 +576,18 @@ it('runs a diagnostic from the home page to the result and back to the history',
   ).toBeVisible()
   // Topics are shown in points only, with no letter of their own.
   const topics = screen.getByRole('list', { name: 'Темы на графе' })
-  expect(within(topics).getByText('3 из 4')).toBeVisible()
+  expect(within(topics).getByText('1 из 2')).toBeVisible()
   expect(within(topics).getByText('Засчитано')).toBeVisible()
   expect(within(topics).queryByText(/^[A-D]$/)).not.toBeInTheDocument()
   // Topics the diagnostic never reached are not part of the feedback.
   expect(within(topics).queryByText('Имитация отжига')).not.toBeInTheDocument()
   expect(screen.queryByText('Не проверялась')).not.toBeInTheDocument()
   // The points and reasons of a topic open from its graph card.
-  fireEvent.click(within(topics).getByRole('button', { name: /3 из 4/ }))
+  fireEvent.click(within(topics).getByRole('button', { name: /1 из 2/ }))
   const details = within(screen.getByRole('dialog'))
   expect(details.getByText('С помощью')).toBeVisible()
   expect(details.getByText('Связь названа не полностью')).toBeVisible()
-  expect(details.getByText('«оценка расстояния»')).toBeVisible()
-  expect(details.getByText('Пункт 2')).toBeVisible()
+  expect(details.getByText('Помощь ограничила балл')).toBeVisible()
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
   // The graph shows the checked subgraph and says what each topic relies on.
   const map = screen.getByRole('list', { name: 'Темы на графе' })

@@ -33,15 +33,6 @@ var offTopicTransitions = []string{
 	"Кажется, мы пока не попали в суть вопроса. Попробую переформулировать его понятнее.",
 }
 
-var soundFollowupTransitions = []string{
-	"Основа ответа верная. Осталось уточнить отдельный момент, чтобы я мог уверенно оценить ответ.",
-	"Основная мысль верная. Давай проясним ещё один момент перед итогом.",
-	"С основой всё хорошо. Для уверенной оценки осталось небольшое уточнение.",
-	"В главном ты рассуждаешь верно. Уточню один момент, который пока остался открытым.",
-	"Верная основа в ответе есть. Давай уточним оставшуюся часть, чтобы картина была полной.",
-	"Основное в ответе верно. Осталось прояснить один момент — задам дополнительный вопрос.",
-}
-
 var partialFollowupTransitions = []string{
 	"В ответе пока остались моменты, которые нужно прояснить. Давай уточним их, прежде чем подводить итог.",
 	"Мне нужно чуть лучше понять твоё рассуждение. Уточню один момент перед итогом.",
@@ -54,7 +45,7 @@ var partialFollowupTransitions = []string{
 // PreparedSpeech warms the exact parts requested by the conversation player.
 func PreparedSpeech() []string {
 	texts := application.ConversationSpeech()
-	for _, group := range [][]string{hintTransitions, rephraseTransitions, offTopicTransitions, soundFollowupTransitions, partialFollowupTransitions} {
+	for _, group := range [][]string{hintTransitions, rephraseTransitions, offTopicTransitions, partialFollowupTransitions} {
 		for _, text := range group {
 			texts = append(texts, application.ReplySpeechParts(text)...)
 		}
