@@ -4,8 +4,10 @@ import (
 	"encoding/csv"
 	"errors"
 	"io"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +23,8 @@ var rpdCompetency = regexp.MustCompile(`(?:ОПК|ПК)-[0-9]+`)
 // Every source cell is archived; only self-contained assignments become tasks.
 // Columns it does not know (№, DOK, ALDs notes, criteria of the simulation…)
 // are archived but not read; the outer spaces of a header are ignored.
+// «Критерии N» are the criteria of «Задание N». The topic level, the ALDs
+// level and the curriculum section are optional: the modes do not use them.
 func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCell func(string) string) (competencymap.Map, error) {
 	result := competencymap.Map{SourceFormat: "ml-map", SourceHeaders: append([]string(nil), headers...)}
 	headers = append([]string(nil), headers...)
@@ -29,6 +33,14 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 	}
 	columns := make(map[string]int, len(headers))
 	taskColumns := []int{}
+	criteriaByNumber := map[string]int{}
+	taskNumbers := map[int]string{}
+	cellOf := func(row []string, name string) string {
+		if index, ok := columns[name]; ok {
+			return strings.TrimSpace(row[index])
+		}
+		return ""
+	}
 	allowed := map[string]bool{
 		"": true, "Компетенция": true, "Уровень темы": true,
 		"Составляющая": true, "Образовательный результат": true,
@@ -49,19 +61,26 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 		}
 		columns[header] = i
 		if match != nil {
-			if match[1] != "Задание" {
-				return result, csvError(headerLine, header, "В этом формате нет парных критериев; требования к ОР находятся в ОС.")
+			if match[1] == "Критерии" {
+				criteriaByNumber[match[2]] = i
+				continue
 			}
 			taskColumns = append(taskColumns, i)
+			taskNumbers[i] = match[2]
 		}
 	}
-	for _, header := range []string{"Компетенция", "Уровень темы", "Составляющая", "Образовательный результат", "Что должно войти в тест", "Таксономия", "Уровень ALDs", "Важность", "Раздел РПД · компетенции РПД", "ОС"} {
+	for _, header := range []string{"Компетенция", "Составляющая", "Образовательный результат", "Что должно войти в тест", "Таксономия", "Важность"} {
 		if _, exists := columns[header]; !exists {
 			return result, csvError(headerLine, header, "Обязательная колонка карты отсутствует.")
 		}
 	}
 	if len(taskColumns) == 0 {
 		return result, csvError(headerLine, "Задание 1", "Нужна хотя бы одна колонка заданий.")
+	}
+	for number, i := range criteriaByNumber {
+		if !slices.Contains(slices.Collect(maps.Values(taskNumbers)), number) {
+			return result, csvError(headerLine, headers[i], "Критерии без колонки «Задание "+number+"».")
+		}
 	}
 	seenCompetencies := map[string]bool{}
 	constituentIndexes := map[string]int{}
@@ -125,7 +144,7 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 			}
 			constituent = value
 		}
-		if value := strings.TrimSpace(row[columns["Уровень темы"]]); value != "" {
+		if value := cellOf(row, "Уровень темы"); value != "" {
 			canonical, ok := levelCode(value)
 			if !ok {
 				return result, csvError(line, "Уровень темы", "Ожидается базовый, средний или продвинутый уровень.")
@@ -155,9 +174,6 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 			if topicLevel == "" {
 				topicLevel = competencyLevel
 			}
-			if topicLevel == "" {
-				return result, csvError(line, "Уровень темы", "Для новой составляющей не задан уровень.")
-			}
 			constituentIndex = len(result.Constituents)
 			constituentIndexes[sKey] = constituentIndex
 			result.Constituents = append(result.Constituents, competencymap.Constituent{Key: sKey, CompetencyKey: cKey, Name: constituent, TopicLevelCode: topicLevel})
@@ -170,7 +186,7 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 		// authors' notes (decision of 19.10.2026, map «Введение в ИИ4»). A
 		// cell that does start so is a section, and its errors stay errors.
 		lecture := ""
-		if rawSection := strings.TrimSpace(row[columns["Раздел РПД · компетенции РПД"]]); rawSection != "" {
+		if rawSection := cellOf(row, "Раздел РПД · компетенции РПД"); rawSection != "" {
 			if !curriculumSectionHeading(rawSection) {
 				lecture = rawSection
 			} else {
@@ -207,6 +223,9 @@ func parseMLMap(reader *csv.Reader, headers []string, headerLine int, restoreCel
 		for _, i := range taskColumns {
 			if task, ok := parseMLTask(row[i]); ok {
 				task.OutcomeKey = oKey
+				if criteria, ok := criteriaByNumber[taskNumbers[i]]; ok {
+					task.Criteria = strings.TrimSpace(row[criteria])
+				}
 				// The provenance keeps the header as written; only its
 				// recognition ignores the outer spaces.
 				task.Column = result.SourceHeaders[i]
@@ -342,8 +361,8 @@ func parseOutcomeProperties(row []string, columns map[string]int, line int) (out
 	if err != nil {
 		return properties, err
 	}
-	if properties.includeInTest == nil || properties.taxonomyCode == "" || properties.aldLevelCode == "" || properties.importance == nil {
-		return properties, csvError(line, "Карта", "Для образовательного результата нужны включение в тест, таксономия, ALDs и важность.")
+	if properties.includeInTest == nil || properties.taxonomyCode == "" || properties.importance == nil {
+		return properties, csvError(line, "Карта", "Для образовательного результата нужны включение в тест, таксономия и важность.")
 	}
 	return properties, nil
 }

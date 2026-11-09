@@ -85,7 +85,39 @@ func parseXLSXSheet(data []byte, sheetIndex int) (competencymap.Map, error) {
 		}
 		return competencymap.Map{}, csvError(1, "XLSX", message)
 	}
+	return parseRows(selected, selectedHeader)
+}
 
+// ParseSheetRows parses worksheet rows already read from a book, cell text as
+// is: a sheet projected from a unified map has no worksheet of its own.
+func ParseSheetRows(rows [][]string) (competencymap.Map, error) {
+	if len(rows) > maxWorksheetRows {
+		return competencymap.Map{}, csvError(1, "XLSX", "Размер листа превышает предел.")
+	}
+	width := 0
+	for _, row := range rows {
+		width = max(width, len(row))
+	}
+	if width > maxWorksheetColumns {
+		return competencymap.Map{}, csvError(1, "XLSX", "Размер листа превышает предел.")
+	}
+	escaped := make([][]string, len(rows))
+	for i, row := range rows {
+		escaped[i] = make([]string, width)
+		for j, value := range row {
+			escaped[i][j] = escapeXLSXCell.Replace(value)
+		}
+	}
+	header := headerIndex(escaped)
+	if header < 0 {
+		return competencymap.Map{}, csvError(1, "XLSX", "Не найдены заголовки карты компетенций.")
+	}
+	return parseRows(escaped, header)
+}
+
+// parseRows bridges escaped worksheet rows to the CSV reader; the rows above
+// the header stay as empty lines so row numbers remain those of the sheet.
+func parseRows(selected [][]string, selectedHeader int) (competencymap.Map, error) {
 	var encoded bytes.Buffer
 	writer := csv.NewWriter(&encoded)
 	for range selected[:selectedHeader] {

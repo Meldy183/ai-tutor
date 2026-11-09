@@ -19,6 +19,7 @@ import (
 
 	"github.com/xuri/excelize/v2"
 
+	coursegraphentity "github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/csvparser"
 	competencypg "github.com/AskarKasimov/ai-tutor/services/backend/internal/features/competency/infrastructure/postgres"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/coursegraph/infrastructure/postgres"
@@ -78,6 +79,7 @@ func assertPairedWorkbookBanks(t *testing.T, book []byte) *fixture {
 		if outcomes == 0 || tasks == 0 {
 			t.Fatalf("%s bank empty: outcomes=%d tasks=%d", mode, outcomes, tasks)
 		}
+		t.Logf("%s bank: outcomes=%d tasks=%d", mode, outcomes, tasks)
 	}
 	learning, err := competencypg.New(f.pool).Read(ctx, "subject:test")
 	if err != nil || len(learning.Competencies) == 0 {
@@ -107,6 +109,103 @@ func assertPairedWorkbookBanks(t *testing.T, book []byte) *fixture {
 		}
 	}
 	return f
+}
+
+// Set REAL_UNIFIED_COMPETENCY_MAP_PATH to import a one-sheet unified map.
+func TestRealUnifiedWorkbookUsesBothModeBanks(t *testing.T) {
+	path := os.Getenv("REAL_UNIFIED_COMPETENCY_MAP_PATH")
+	if path == "" {
+		t.Skip("REAL_UNIFIED_COMPETENCY_MAP_PATH is not set")
+	}
+	book, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := assertUnifiedWorkbook(t, book)
+	var tasks, withCriteria int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*), count(*) FILTER (WHERE criteria <> '') FROM course_map_tasks WHERE mode='diagnostic'`).Scan(&tasks, &withCriteria); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("diagnostic tasks with criteria: %d of %d", withCriteria, tasks)
+}
+
+func TestUnifiedWorkbookUsesBothModeBanks(t *testing.T) {
+	f := assertUnifiedWorkbook(t, unifiedMapBook(t))
+	var withCriteria, levels int
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT (SELECT count(*) FROM course_map_tasks WHERE mode='diagnostic' AND criteria LIKE 'Эталон:%'),
+		       (SELECT count(*) FROM course_map_outcomes o JOIN course_map_constituents p ON p.id=o.constituent_id JOIN course_map_competencies c ON c.id=p.competency_id
+		        WHERE c.source_mode='diagnostic' AND o.ald_level_id IS NOT NULL)`).Scan(&withCriteria, &levels); err != nil {
+		t.Fatal(err)
+	}
+	if withCriteria != 3 {
+		t.Fatalf("diagnostic tasks keep their criteria: %d of 3", withCriteria)
+	}
+	if levels != 2 {
+		t.Fatalf("only the outcomes with ALDs in the book have one: %d", levels)
+	}
+}
+
+// assertUnifiedWorkbook imports a unified map and checks that each mode got
+// the tasks of its own columns only, with one structure of outcomes.
+func assertUnifiedWorkbook(t *testing.T, book []byte) *fixture {
+	t.Helper()
+	f := assertPairedWorkbookBanks(t, book)
+	ctx := context.Background()
+	var examOutcomes, diagnosticOutcomes, shared int
+	if err := f.pool.QueryRow(ctx, `
+		WITH o AS (SELECT c.source_mode, c.name AS competency, p.name AS constituent, o.name AS outcome
+		           FROM course_map_competencies c JOIN course_map_constituents p ON p.competency_id=c.id JOIN course_map_outcomes o ON o.constituent_id=p.id
+		           WHERE c.revision=1)
+		SELECT (SELECT count(*) FROM o WHERE source_mode='exam'), (SELECT count(*) FROM o WHERE source_mode='diagnostic'),
+		       (SELECT count(*) FROM o e JOIN o d USING (competency, constituent, outcome) WHERE e.source_mode='exam' AND d.source_mode='diagnostic')`).
+		Scan(&examOutcomes, &diagnosticOutcomes, &shared); err != nil {
+		t.Fatal(err)
+	}
+	if examOutcomes == 0 || examOutcomes != diagnosticOutcomes || shared != examOutcomes {
+		t.Fatalf("one sheet must give one structure: exam=%d diagnostic=%d shared=%d", examOutcomes, diagnosticOutcomes, shared)
+	}
+	return f
+}
+
+// unifiedMapBook is the paired book of pairedMapBook on one sheet, followed by
+// a reference sheet that must not be read as the learning map.
+func unifiedMapBook(t *testing.T) []byte {
+	t.Helper()
+	book := excelize.NewFile()
+	defer book.Close()
+	if err := book.SetSheetName(book.GetSheetName(0), "Карта компетенций"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := book.NewSheet("Сводка"); err != nil {
+		t.Fatal(err)
+	}
+	test := func(question, answer string) string {
+		return question + "\n\n\n[]\n\n\nОтветьте устно.\n\n\n" + answer
+	}
+	rows := [][]interface{}{
+		{"№", "Компетенция", "Составляющая", "Образовательный результат", "Что должно войти в тест", "Таксономия", "Уровень ALDs", "Важность", "Учебный текст",
+			"Задание диагностики 1", "Критерии к заданию диагностики 1", "Задание экзамена 1", "Критерии к заданию экзамена 1"},
+		{"1", "К1. Агент", "1.1 Описывает агента", "Называет части агента", "TRUE", "Помнить", "базовый", "4", "Агент воспринимает среду сенсорами.",
+			test("Назовите части агента.", "Сенсоры и исполнительные механизмы."), "Эталон: сенсоры и исполнительные механизмы.", "Назовите части агента и приведите пример.", "Эталон: сенсоры и исполнительные механизмы."},
+		{"2", "", "", "Объясняет рациональность", "TRUE", "Понимать", "", "3", "Рациональный агент максимизирует меру эффективности.",
+			test("Объясните рациональность агента.", "Максимизирует ожидаемую меру эффективности."), "Эталон: выбирает действие, максимизирующее ожидаемую меру.", "Объясните, что такое рациональный агент.", "Эталон: максимизирует меру эффективности."},
+		{"3", "", "", "Выбирает тип агента", "TRUE", "Анализировать", "средний", "5", "Типы агентов: рефлекторный, с моделью, целевой.",
+			test("Выберите тип агента для робота-уборщика.", "Агент с моделью мира."), "Эталон: агент с моделью мира, потому что среда наблюдается частично.", "Какой агент нужен роботу-уборщику и почему?", "Эталон: агент с моделью мира.\nБалл (макс. 1): 1 — тип и причина."},
+	}
+	for i, row := range rows {
+		if err := book.SetSheetRow("Карта компетенций", fmt.Sprintf("A%d", i+1), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := book.SetSheetRow("Сводка", "A1", &[]interface{}{"Составляющая", "Всего ОР"}); err != nil {
+		t.Fatal(err)
+	}
+	buffer, err := book.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
 
 type mapTestQuestions struct{}
@@ -746,12 +845,17 @@ func TestLearningSheetParseFailurePreservesSafeDetailsAndCause(t *testing.T) {
 	parserFailure := fault.New(fault.Invalid, "CSV_INVALID", "Некорректная карта.").WithCause(underlying)
 	parserFailure.Details = []fault.Detail{{Path: "row:7", Code: "CSV_INVALID", Message: "Важность: ожидается число."}}
 
-	failure := learningSheetParseFailure(parserFailure)
+	failure := learningSheetParseFailure(parserFailure, coursegraphentity.MapSheet{Number: 2})
 	if !errors.Is(failure, underlying) {
 		t.Fatalf("parser cause was not preserved: %v", failure)
 	}
 	if len(failure.Details) != 1 || failure.Details[0].Path != "sheet:2/row:7" || failure.Details[0].Message != "Важность: ожидается число." {
 		t.Fatalf("safe parser detail lost sheet/row context: %+v", failure.Details)
+	}
+	// A projected sheet answers with its sheet and column in the book.
+	unified := learningSheetParseFailure(parserFailure, coursegraphentity.MapSheet{Number: 1, Titles: map[string]string{"Важность": "Важность (1–5)"}})
+	if unified.Details[0].Path != "sheet:1/row:7" || unified.Details[0].Message != "Важность (1–5): ожидается число." {
+		t.Fatalf("unified detail not addressed in the book: %+v", unified.Details)
 	}
 	encoded, err := json.Marshal(failure)
 	if err != nil {

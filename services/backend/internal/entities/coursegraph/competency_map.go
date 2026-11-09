@@ -79,6 +79,10 @@ var bloomRanks = map[string]int{
 type MapSheet struct {
 	Name string
 	Rows [][]string
+	// A sheet projected from a unified map keeps the number of its sheet in
+	// the book and the titles its columns have there, for messages.
+	Number int
+	Titles map[string]string
 }
 
 // MapIssue is a problem in a cell of the map; Row counts from 1 as in Excel.

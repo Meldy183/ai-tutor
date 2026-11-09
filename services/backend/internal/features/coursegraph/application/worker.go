@@ -289,6 +289,13 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	if err != nil {
 		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось прочитать книгу Excel (.xlsx).")
 	}
+	// A unified first sheet holds both modes; it stands for the two sheets of
+	// the paired book, and the sheets after it are reference data.
+	if len(sheets) > 0 {
+		if exam, learning, ok := coursegraph.SplitUnifiedSheet(sheets[0]); ok {
+			sheets = []coursegraph.MapSheet{exam, learning}
+		}
+	}
 	// One upload holds both modes: the first sheet is Geek's, the second the
 	// learning diagnostic's (decision of 08.11.2026).
 	if len(sheets) < 2 || w.importLearningMap == nil {
@@ -297,6 +304,9 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	built, err := coursegraph.BuildMapGraph(sheets)
 	var mapErr *coursegraph.MapError
 	if errors.As(err, &mapErr) {
+		for i := range mapErr.Issues {
+			mapErr.Issues[i].Column = sheets[0].BookTitle(mapErr.Issues[i].Column)
+		}
 		return coursegraph.Snapshot{}, mapFault(mapErr)
 	}
 	if err != nil {
@@ -331,7 +341,7 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	}
 	for _, warning := range assessment.Warnings {
 		logx.From(ctx).Warn("course graph uses default assessment criteria", zap.String("subject_id", subjectID), zap.String("filename", filename),
-			zap.String("sheet", built.Sheet), zap.Int("row", warning.Row), zap.String("column", warning.Column), zap.String("warning", warning.Message))
+			zap.String("sheet", built.Sheet), zap.Int("row", warning.Row), zap.String("column", sheets[0].BookTitle(warning.Column)), zap.String("warning", warning.Message))
 	}
 	snapshot, err := w.snapshot(ctx, subjectID)
 	if err != nil {

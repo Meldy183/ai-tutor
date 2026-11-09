@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	voicegatewayv1 "github.com/AskarKasimov/ai-tutor/services/shared/gen/go/voicegateway/v1"
@@ -180,16 +181,20 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	graphRepository := &pairedCourseGraphRepository{Repository: graphpg.New(pool), pool: pool, learning: learningMapRepository}
 	a.graphWorker = graphapp.New(graphRepository, materialRepository, a.materialsStorage, graphapi.New(cfg.CourseGraphURL), a.warmer, graphxlsx.Read)
 	a.graphWorker.SetLearningMapImporter(func(ctx context.Context, actor user.User, subjectID string, data []byte, sheets []coursegraphentity.MapSheet) (competencymap.Map, []coursegraphentity.ImportWarning, error) {
-		learningMap, err := csvparser.ParseXLSXSheet(data, 1)
+		sheet := sheets[1]
+		if sheet.Number == 0 {
+			sheet.Number = 2
+		}
+		learningMap, err := csvparser.ParseSheetRows(sheet.Rows)
 		if err != nil {
-			return competencymap.Map{}, nil, learningSheetParseFailure(err)
+			return competencymap.Map{}, nil, learningSheetParseFailure(err, sheet)
 		}
 		if err := learningMapImport.Authorize(actor); err != nil {
 			return competencymap.Map{}, nil, err
 		}
 		warnings := make([]coursegraphentity.ImportWarning, len(learningMap.Warnings))
 		for i, warning := range learningMap.Warnings {
-			warnings[i] = coursegraphentity.ImportWarning{Row: warning.Row, ColumnIndex: warning.ColumnIndex, Column: warning.Column, Code: warning.Code}
+			warnings[i] = coursegraphentity.ImportWarning{Row: warning.Row, ColumnIndex: warning.ColumnIndex, Column: sheet.BookTitle(warning.Column), Code: warning.Code}
 		}
 		return learningMap, warnings, nil
 	})
@@ -198,13 +203,18 @@ func New(cfg Config, pool *pgxpool.Pool, logger *zap.Logger) (*App, error) {
 	return a, nil
 }
 
-func learningSheetParseFailure(cause error) *fault.Error {
+// learningSheetParseFailure addresses the parser's cells in the book: the
+// number of the sheet and, for a projected sheet, the titles of its columns.
+func learningSheetParseFailure(cause error, sheet coursegraphentity.MapSheet) *fault.Error {
 	failure := fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось разобрать лист карты для обучения.").WithCause(cause)
 	var parserFailure *fault.Error
 	if errors.As(cause, &parserFailure) {
 		failure.Details = make([]fault.Detail, len(parserFailure.Details))
 		for i, detail := range parserFailure.Details {
-			detail.Path = "sheet:2/" + detail.Path
+			detail.Path = fmt.Sprintf("sheet:%d/%s", sheet.Number, detail.Path)
+			if column, message, found := strings.Cut(detail.Message, ": "); found {
+				detail.Message = sheet.BookTitle(column) + ": " + message
+			}
 			failure.Details[i] = detail
 		}
 	}

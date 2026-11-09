@@ -334,3 +334,31 @@ func TestMLMapKeepsTheHeaderOfATaskAsWritten(t *testing.T) {
 		t.Fatalf("task = %+v, headers %q", parsed.Tasks, parsed.SourceHeaders)
 	}
 }
+
+// «Критерии N» are the criteria of «Задание N»; the levels and the section of
+// the curriculum may be absent, the modes do not use them.
+func TestMLMapReadsCriteriaOfTasksAndOptionalLevels(t *testing.T) {
+	header := "Компетенция;Составляющая;Образовательный результат;Что должно войти в тест;Таксономия;Важность;ОС;Задание 1;Критерии 1;Задание 2\n"
+	task := func(question string) string {
+		return "\"" + question + "\n\n\n- да\n- нет\n\n\nОтветьте.\n\n\nда\""
+	}
+	parsed, err := Parse([]byte(header + "К;С;О;TRUE;Помнить;3;Текст;" + task("Первый?") + ";Эталон: да, потому что…;" + task("Второй?") + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Tasks) != 2 || parsed.Tasks[0].Criteria != "Эталон: да, потому что…" || parsed.Tasks[1].Criteria != "" {
+		t.Fatalf("tasks: %+v", parsed.Tasks)
+	}
+	if parsed.Constituents[0].TopicLevelCode != "" || parsed.Outcomes[0].ALDLevelCode != "" {
+		t.Fatalf("levels were invented: %+v %+v", parsed.Constituents[0], parsed.Outcomes[0])
+	}
+}
+
+func TestMLMapRejectsCriteriaWithoutTheirTask(t *testing.T) {
+	header := "Компетенция;Составляющая;Образовательный результат;Что должно войти в тест;Таксономия;Важность;Задание 1;Критерии 2\n"
+	_, err := Parse([]byte(header + "К;С;О;TRUE;Помнить;3;;\n"))
+	failure, ok := err.(*fault.Error)
+	if !ok || !strings.Contains(failure.Details[0].Message, "Критерии 2") {
+		t.Fatalf("orphan criteria: %#v", err)
+	}
+}
