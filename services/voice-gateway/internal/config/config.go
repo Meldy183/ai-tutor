@@ -47,8 +47,9 @@ type Instance struct {
 	Profiles          []string `yaml:"profiles"`
 }
 type Pool struct {
-	MaxWaiting int        `yaml:"max_waiting"`
-	Instances  []Instance `yaml:"instances"`
+	MaxWaiting    int        `yaml:"max_waiting"`
+	MinCallBudget Duration   `yaml:"min_call_budget"`
+	Instances     []Instance `yaml:"instances"`
 }
 type Voice struct {
 	// Identity identifies the reference voice installed on all compatible servers.
@@ -78,6 +79,7 @@ type Config struct {
 	LogLevel        string           `yaml:"log_level"`
 	DataDir         string           `yaml:"data_dir"`
 	RequestTimeout  Duration         `yaml:"request_timeout"`
+	ShutdownDrain   Duration         `yaml:"shutdown_drain"`
 	Retention       Duration         `yaml:"retention"`
 	MaxConnections  int              `yaml:"max_connections"`
 	MaxPayloadBytes int64            `yaml:"max_payload_bytes"`
@@ -213,7 +215,7 @@ func (c Config) Validate() error {
 	if c.LogLevel != "debug" && c.LogLevel != "info" && c.LogLevel != "warn" && c.LogLevel != "error" {
 		return fmt.Errorf("invalid log_level")
 	}
-	if c.DataDir == "" || c.RequestTimeout.Duration <= 0 || c.Retention.Duration <= 0 || c.MaxConnections < 1 || c.MaxConnections > 1024 || c.MaxPayloadBytes < 1 {
+	if c.DataDir == "" || c.RequestTimeout.Duration <= 0 || c.ShutdownDrain.Duration <= 0 || c.Retention.Duration <= 0 || c.MaxConnections < 1 || c.MaxConnections > 1024 || c.MaxPayloadBytes < 1 {
 		return fmt.Errorf("data_dir and positive limits are required")
 	}
 	if len(c.Brokers) == 0 || c.STTTopic == "" || c.TTSTopic == "" || c.STTTopic == c.TTSTopic {
@@ -236,6 +238,9 @@ func (c Config) Validate() error {
 	for op, pool := range map[string]Pool{"stt": c.STT, "tts": c.TTS} {
 		if pool.MaxWaiting < 1 || len(pool.Instances) == 0 {
 			return fmt.Errorf("%s requires instances and positive max_waiting", op)
+		}
+		if pool.MinCallBudget.Duration <= 0 || pool.MinCallBudget.Duration >= c.RequestTimeout.Duration {
+			return fmt.Errorf("%s min_call_budget must be positive and below request_timeout", op)
 		}
 		for _, in := range pool.Instances {
 			if !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(in.ID) || ids[in.ID] || in.Slots < 1 || in.Timeout.Duration <= 0 {
@@ -290,6 +295,7 @@ func (c Config) Queues() (map[string]*scheduler.Queue, error) {
 		if err != nil {
 			return nil, err
 		}
+		q.RequireBudget(pool.MinCallBudget.Duration)
 		queues[op] = q
 	}
 	return queues, nil
@@ -308,13 +314,24 @@ func (c Config) Provider() *provider.HTTP {
 	}
 	return p
 }
+
+// HoldTimeout limits how long an uncertain call keeps the instance's slot. It is
+// an estimate: nothing confirms that the model has stopped when it runs out.
+func (c Config) HoldTimeout(instance string) time.Duration {
+	return c.instance(instance).Timeout.Duration
+}
 func (c Config) AbortOnDisconnect(instance string) bool {
+	return c.instance(instance).AbortOnDisconnect
+}
+
+// instance returns the configured instance, or the zero value for an unknown id.
+func (c Config) instance(id string) Instance {
 	for _, pool := range []Pool{c.STT, c.TTS} {
 		for _, in := range pool.Instances {
-			if in.ID == instance {
-				return in.AbortOnDisconnect
+			if in.ID == id {
+				return in
 			}
 		}
 	}
-	return false
+	return Instance{}
 }

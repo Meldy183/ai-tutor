@@ -20,6 +20,20 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// heldCheckInterval is how often held slots are compared with their hold timeout.
+const heldCheckInterval = 5 * time.Second
+
+var (
+	errInsufficientTime = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
+	errGatewayNotReady  = diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")
+)
+
+// Reasons a held slot was freed, as reported in logs and metrics.
+const (
+	releaseExpired  = "expired"
+	releaseOperator = "operator"
+)
+
 type Job struct {
 	ID         string    `json:"id"`
 	Operation  string    `json:"operation"`
@@ -34,6 +48,7 @@ type Job struct {
 	HTTPStatus int       `json:"http_status,omitempty"`
 	Code       int32     `json:"code,omitempty"`
 	Submitted  time.Time `json:"submitted"`
+	Started    time.Time `json:"started,omitempty"`
 	Finished   time.Time `json:"finished,omitempty"`
 }
 type Engine struct {
@@ -55,11 +70,12 @@ type Engine struct {
 	logger    *slog.Logger
 	selected  map[string]uint64
 	completed map[string]uint64
+	released  map[string]uint64
 	durations map[string]*histogram
 }
 
 func New(store journal.Store, blobs *journal.Blobs, queues map[string]*scheduler.Queue, retention time.Duration, abort func(string) bool, logger *slog.Logger) *Engine {
-	return &Engine{requests: map[string]uint64{}, failed: make(chan struct{}), store: store, blobs: blobs, queues: queues, retention: retention, abort: abort, logger: logger, jobs: map[string]*Job{}, keys: map[string]string{}, done: map[string]chan struct{}{}, selected: map[string]uint64{}, completed: map[string]uint64{}, durations: map[string]*histogram{}}
+	return &Engine{requests: map[string]uint64{}, failed: make(chan struct{}), store: store, blobs: blobs, queues: queues, retention: retention, abort: abort, logger: logger, jobs: map[string]*Job{}, keys: map[string]string{}, done: map[string]chan struct{}{}, selected: map[string]uint64{}, completed: map[string]uint64{}, released: map[string]uint64{}, durations: map[string]*histogram{}}
 }
 func (e *Engine) save(j *Job) error {
 	return e.saveContext(context.Background(), j)
@@ -156,7 +172,17 @@ func validID(id string) bool {
 	return err == nil
 }
 func (e *Engine) Ready() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.ready }
-func (e *Engine) Stop()       { e.mu.Lock(); e.ready = false; e.mu.Unlock() }
+
+// Stop ends admission and finishes jobs still waiting for a slot, so shutdown
+// waits only for calls already sent to a model.
+func (e *Engine) Stop() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ready = false
+	for _, q := range e.queues {
+		q.Stop(errGatewayNotReady)
+	}
+}
 func (e *Engine) resultLocked(j *Job) scheduler.Result {
 	if j == nil {
 		return scheduler.Result{Err: diagnostic.New(codes.NotFound, "storage", "result_expired")}
@@ -184,7 +210,7 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	e.mu.Lock()
 	if !e.ready {
 		e.mu.Unlock()
-		return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")}, ""
+		return scheduler.Result{Err: errGatewayNotReady}, ""
 	}
 	if id, ok := e.keys[op+"/"+keyHash]; keyHash != "" && ok {
 		j := e.jobs[id]
@@ -242,27 +268,46 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 		e.mu.Lock()
 		if !e.ready {
 			e.mu.Unlock()
-			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")}
+			return scheduler.Result{Err: errGatewayNotReady}
+		}
+		// The caller may have given up after the slot was assigned; its job must
+		// not leave the terminal state written for it.
+		if err := callCtx.Err(); err != nil {
+			e.mu.Unlock()
+			return scheduler.Result{Err: err}
 		}
 		e.workers.Add(1)
 		defer e.workers.Done()
 		j.State = "running"
 		j.Instance = instance
 		j.Held = true
+		j.Started = time.Now()
 		if err := e.save(j); err != nil {
 			e.mu.Unlock()
 			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "journal", "running_write"), HoldSlot: true}
 		}
-		e.selected[op+"/"+instance]++
-		e.observe(op, "queue_wait", time.Since(j.Submitted).Seconds())
-		e.mu.Unlock()
-		started := time.Now()
-		r := call(callCtx, instance)
-		elapsed := time.Since(started)
-		// Disconnects and transport failures do not prove model execution stopped.
-		if e.abort(instance) {
-			r.HoldSlot = false
+		// Waiting for the lock and the journal spends the same deadline the queue
+		// checked, and a call cut off after sending keeps the model busy to no use.
+		var notSent error
+		if !e.queues[op].HasBudget(callCtx) {
+			notSent = errInsufficientTime
+		} else if err := callCtx.Err(); err != nil {
+			// The caller left while the running state was being saved.
+			notSent = err
 		}
+		sending := notSent == nil
+		if sending {
+			e.selected[op+"/"+instance]++
+			e.observe(op, "queue_wait", time.Since(j.Submitted).Seconds())
+		}
+		e.mu.Unlock()
+		r := scheduler.Result{Err: notSent}
+		started := time.Now()
+		if sending {
+			r = call(callCtx, instance)
+			r.HoldSlot = e.holdsSlot(instance, r.Err)
+		}
+		elapsed := time.Since(started)
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		j.Finished = time.Now()
@@ -292,6 +337,9 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 			e.finishLocked(j)
 			_ = e.blobs.Remove(id + ".in")
 		}
+		if !sending {
+			return r
+		}
 		e.observe(op, "upstream", elapsed.Seconds())
 		e.completed[op+"/"+errorCode(r.Err).String()]++
 		attrs := []slog.Attr{slog.String("gateway_request_id", id), slog.String("trace_id", diagnostic.TraceID(callCtx)), slog.String("operation", op), slog.String("instance", instance), slog.Duration("duration", elapsed), slog.Bool("slot_held", r.HoldSlot)}
@@ -304,6 +352,9 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	}
 	if errors.Is(result.Err, scheduler.ErrNoCompatibleInstance) {
 		result.Err = diagnostic.New(codes.Unavailable, "queue", "no_compatible_model")
+	}
+	if errors.Is(result.Err, scheduler.ErrInsufficientBudget) {
+		result.Err = errInsufficientTime
 	}
 	e.mu.Lock()
 	if j.State == "queued" {
@@ -319,6 +370,20 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	}
 	e.mu.Unlock()
 	return result, id
+}
+
+// holdsSlot reports whether a finished model call keeps its slot reserved.
+// Disconnects and transport failures do not prove model execution stopped, so
+// an uncertain outcome holds the slot unless the instance releases it at once.
+func (e *Engine) holdsSlot(instance string, err error) bool {
+	if err == nil || e.abort(instance) {
+		return false
+	}
+	var upstream *diagnostic.Error
+	if errors.As(err, &upstream) {
+		return upstream.Uncertain
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 func logLevel(err error) slog.Level {
 	if err == nil {
@@ -378,19 +443,76 @@ func (e *Engine) cleanLocked(parent context.Context, now time.Time) error {
 	}
 	return nil
 }
-func (e *Engine) Maintain(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+
+// holdStart is when the hold timeout begins. A TTS job is one HTTP call. An STT
+// job sends fragments in turn, each under its own timeout, and the journal does
+// not record when the last one left, so its hold counts from the end of the job.
+func holdStart(j *Job) time.Time {
+	if j.Operation == "tts" {
+		return j.Started
+	}
+	return j.Finished
+}
+
+// releaseHeldLocked commits the removal of a finished call's reservation before
+// the slot is offered to new calls.
+func (e *Engine) releaseHeldLocked(ctx context.Context, j *Job, now time.Time, reason string) error {
+	released := *j
+	released.Held = false
+	if err := e.saveContext(ctx, &released); err != nil {
+		return err
+	}
+	*j = released
+	if err := e.queues[j.Operation].ReleaseHeld(j.Instance, 1); err != nil {
+		return err
+	}
+	e.released[j.Operation+"/"+reason+"/"+j.Instance]++
+	attrs := []slog.Attr{slog.String("gateway_request_id", j.ID), slog.String("operation", j.Operation), slog.String("instance", j.Instance), slog.String("release_reason", reason), slog.Duration("duration", now.Sub(j.Finished))}
+	attrs = append(attrs, diagnostic.Fields(&diagnostic.Error{Code: codes.Code(j.Code), Stage: j.Stage, Reason: j.Reason, HTTPStatus: j.HTTPStatus})...)
+	e.logger.LogAttrs(ctx, slog.LevelWarn, "voice held slot released", attrs...)
+	return nil
+}
+
+// expireHeldLocked frees reservations of finished calls once holdFor has passed,
+// so a lost upstream response cannot block a model forever.
+func (e *Engine) expireHeldLocked(parent context.Context, now time.Time, holdFor func(string) time.Duration) error {
+	if !e.ready {
+		return nil
+	}
+	for _, j := range e.jobs {
+		if !j.Held || j.State == "running" || now.Sub(holdStart(j)) < holdFor(j.Instance) {
+			continue
+		}
+		if err := e.releaseHeldLocked(parent, j, now, releaseExpired); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Maintain removes expired results and frees held slots after holdFor(instance).
+func (e *Engine) Maintain(ctx context.Context, holdFor func(string) time.Duration) {
+	cleanup := time.NewTicker(time.Minute)
+	defer cleanup.Stop()
+	held := time.NewTicker(heldCheckInterval)
+	defer held.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
+		case now := <-cleanup.C:
 			e.mu.Lock()
 			err := e.cleanLocked(ctx, now)
 			e.mu.Unlock()
 			if err != nil {
 				e.logger.Error("voice cleanup failed", slog.String("reason", "storage unavailable"))
+			}
+		case now := <-held.C:
+			e.mu.Lock()
+			err := e.expireHeldLocked(ctx, now, holdFor)
+			e.mu.Unlock()
+			if err != nil {
+				e.logger.Error("voice held slot expiry failed", slog.String("error", err.Error()))
 			}
 		}
 	}
@@ -407,23 +529,19 @@ func (e *Engine) ReleaseHeld(instance string) error {
 		return errors.New("gateway not ready")
 	}
 	count := 0
-	op := ""
+	now := time.Now()
 	for _, j := range e.jobs {
 		if j.Instance == instance && j.Held && j.State != "running" {
-			copy := *j
-			copy.Held = false
-			if err := e.save(&copy); err != nil {
+			if err := e.releaseHeldLocked(context.Background(), j, now, releaseOperator); err != nil {
 				return err
 			}
-			*j = copy
 			count++
-			op = j.Operation
 		}
 	}
 	if count == 0 {
 		return errors.New("no held slots for instance")
 	}
-	return e.queues[op].ReleaseHeld(instance, count)
+	return nil
 }
 
 func (e *Engine) failLocked()             { e.ready = false; e.failOnce.Do(func() { close(e.failed) }) }

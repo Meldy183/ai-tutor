@@ -23,6 +23,17 @@ import (
 	"google.golang.org/grpc"
 )
 
+// failureDrain limits the wait for active RPCs after a failure: their results
+// can no longer be committed, so a longer wait gains nothing.
+const failureDrain = 10 * time.Second
+
+func drainWindow(failure error, planned time.Duration) time.Duration {
+	if failure != nil {
+		return failureDrain
+	}
+	return planned
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "voice-gateway"))
 	if err := run(); err != nil {
@@ -161,7 +172,6 @@ func run() error {
 			w.WriteHeader(409)
 			return
 		}
-		logger.Warn("voice held slots released by operator", slog.String("instance", input.Instance))
 		w.WriteHeader(204)
 	})
 	socket := filepath.Join(cfg.DataDir, "admin.sock")
@@ -180,7 +190,7 @@ func run() error {
 	httpServer := &http.Server{Addr: cfg.HTTPAddress, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	go engine.Maintain(ctx)
+	go engine.Maintain(ctx, cfg.HoldTimeout)
 	failures := make(chan error, 3)
 	go func() { failures <- rpc.Serve(listener) }()
 	go func() { failures <- httpServer.ListenAndServe() }()
@@ -199,7 +209,7 @@ func run() error {
 	go func() { rpc.GracefulStop(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(drainWindow(err, cfg.ShutdownDrain.Duration)):
 		rpc.Stop()
 		<-done
 	}

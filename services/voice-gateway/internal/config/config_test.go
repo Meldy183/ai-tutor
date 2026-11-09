@@ -3,14 +3,29 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCommittedConfigAndVoiceRevision(t *testing.T) {
 	c, err := Load("../../config/dev.yaml")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := c.HoldTimeout("voxcpm-1"); got != 340*time.Second {
+		t.Fatalf("tts hold timeout: %s", got)
+	}
+	if got := c.HoldTimeout("gigaam-1"); got != 40*time.Second {
+		t.Fatalf("stt hold timeout: %s", got)
+	}
+	if got := c.HoldTimeout("missing"); got != 0 {
+		t.Fatalf("unknown instance hold timeout: %s", got)
+	}
+	abortable := Config{TTS: Pool{Instances: []Instance{{ID: "tts", AbortOnDisconnect: true}}}}
+	if !abortable.AbortOnDisconnect("tts") || abortable.AbortOnDisconnect("missing") {
+		t.Fatal("abort setting looked up the wrong instance")
 	}
 	v := c.Voices["geek-default"]
 	first := v.Revision()
@@ -37,6 +52,9 @@ func TestInvalidConfiguration(t *testing.T) {
 		"string number": strings.Replace(string(body), "slots: 1", "slots: '1'", 1),
 		"float slots":   strings.Replace(string(body), "slots: 1", "slots: 1.5", 1),
 		"empty pool":    strings.Replace(string(body), "max_waiting: 32", "max_waiting: 0", 1),
+		"no budget":     strings.Replace(string(body), "min_call_budget: 60s", "min_call_budget: 0s", 1),
+		"long budget":   strings.Replace(string(body), "min_call_budget: 60s", "min_call_budget: 370s", 1),
+		"no drain":      strings.Replace(string(body), "shutdown_drain: 75s", "shutdown_drain: 0s", 1),
 		"bad time":      strings.Replace(string(body), "request_timeout: 370s", "request_timeout: 370", 1),
 		"same topics":   strings.Replace(string(body), "voice.tts.v1", "voice.stt.v1", 1),
 		"bad profile":   strings.Replace(string(body), "profiles: [geek-default]", "profiles: [absent]", 1),
@@ -50,6 +68,31 @@ func TestInvalidConfiguration(t *testing.T) {
 				t.Fatal("invalid config accepted")
 			}
 		})
+	}
+}
+
+func TestShutdownDrainFitsStopGracePeriod(t *testing.T) {
+	setting := func(path, name string) time.Duration {
+		t.Helper()
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		match := regexp.MustCompile(name + `: (\S+)`).FindSubmatch(body)
+		if match == nil {
+			t.Fatalf("%s has no %s", path, name)
+		}
+		value, err := time.ParseDuration(string(match[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	grace := setting("../../docker-compose.yaml", "stop_grace_period")
+	for _, path := range []string{"../../config/dev.yaml", "../../config/prod.yaml"} {
+		if drain := setting(path, "shutdown_drain"); drain >= grace {
+			t.Fatalf("%s: shutdown_drain %s does not fit stop_grace_period %s", path, drain, grace)
+		}
 	}
 }
 

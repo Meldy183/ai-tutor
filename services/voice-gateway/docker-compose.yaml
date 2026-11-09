@@ -22,7 +22,7 @@ services:
     depends_on:
       voice-queue-init:
         condition: service_completed_successfully
-    stop_grace_period: 30s
+    stop_grace_period: 90s
     healthcheck:
       test: ["CMD", "/voice-gateway", "--config", "/work/voice-gateway/config/dev.yaml", "healthcheck"]
       interval: 10s

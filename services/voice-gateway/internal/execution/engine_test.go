@@ -22,6 +22,11 @@ import (
 
 func setup(t *testing.T, store *testutil.Memory, dir string) *Engine {
 	t.Helper()
+	return setupAbort(t, store, dir, false)
+}
+
+func setupAbort(t *testing.T, store *testutil.Memory, dir string, abort bool) *Engine {
+	t.Helper()
 	blobs, err := journal.OpenBlobs(dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +37,7 @@ func setup(t *testing.T, store *testutil.Memory, dir string) *Engine {
 		t.Fatal(err)
 	}
 	tts, _ := scheduler.New([]scheduler.Instance{{ID: "tts", Profiles: []string{"voice"}, Slots: 1}}, 4)
-	e := New(store, blobs, map[string]*scheduler.Queue{"stt": q, "tts": tts}, time.Hour, func(string) bool { return false }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	e := New(store, blobs, map[string]*scheduler.Queue{"stt": q, "tts": tts}, time.Hour, func(string) bool { return abort }, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err = e.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +165,7 @@ func TestRecoveryKeepsUncertainSlot(t *testing.T) {
 	dir := t.TempDir()
 	e := setup(t, store, dir)
 	r, _ := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	if !errors.Is(r.Err, context.DeadlineExceeded) {
 		t.Fatal(r.Err)
@@ -177,7 +182,7 @@ func TestOperatorReleaseIsDurable(t *testing.T) {
 	dir := t.TempDir()
 	e := setup(t, store, dir)
 	e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	if err := e.ReleaseHeld("one"); err != nil {
 		t.Fatal(err)
@@ -189,6 +194,428 @@ func TestOperatorReleaseIsDurable(t *testing.T) {
 	restored := setup(t, store, dir)
 	if restored.queues["stt"].Stats().Instances[0].Busy != 0 {
 		t.Fatal("release was not committed")
+	}
+}
+
+func holdOneMinute(string) time.Duration { return time.Minute }
+
+func submitHeld(t *testing.T, e *Engine) time.Time {
+	t.Helper()
+	_, id := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Err: context.DeadlineExceeded}
+	})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.jobs[id].Finished
+}
+
+func expire(e *Engine, now time.Time) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.expireHeldLocked(context.Background(), now, holdOneMinute)
+}
+
+func busy(e *Engine) int { return e.queues["stt"].Stats().Instances[0].Busy }
+
+func TestHeldSlotExpiresDurablyAndAdmitsNextCall(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	finished := submitHeld(t, e)
+	if err := expire(e, finished.Add(time.Minute-time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 1 {
+		t.Fatal("slot released before hold timeout")
+	}
+	if err := expire(e, finished.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 0 {
+		t.Fatal("slot still held after hold timeout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r, _ := e.Submit(ctx, "stt", "", "", []byte("next"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Value: []byte("ok")}
+	})
+	if r.Err != nil {
+		t.Fatalf("next call stayed blocked: %v", r.Err)
+	}
+	e.blobs.Close()
+	if restored := setup(t, store, dir); busy(restored) != 0 {
+		t.Fatal("expiry was not committed")
+	}
+}
+
+func TestRestartKeepsHoldDeadline(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	finished := submitHeld(t, e)
+	e.blobs.Close()
+	restored := setup(t, store, dir)
+	if err := expire(restored, finished.Add(59*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(restored) != 1 {
+		t.Fatal("restart shortened the hold")
+	}
+	if err := expire(restored, finished.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(restored) != 0 {
+		t.Fatal("restart extended the hold")
+	}
+}
+
+func TestExpiryDoesNotReleaseRunningCall(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	started, finish := make(chan struct{}), make(chan struct{})
+	done := make(chan scheduler.Result, 1)
+	go func() {
+		r, _ := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+			close(started)
+			<-finish
+			return scheduler.Result{Value: []byte("ok")}
+		})
+		done <- r
+	}()
+	<-started
+	if err := expire(e, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if busy(e) != 1 {
+		t.Fatal("running call lost its slot")
+	}
+	close(finish)
+	if r := <-done; r.Err != nil {
+		t.Fatal(r.Err)
+	}
+	if busy(e) != 0 {
+		t.Fatal("finished call kept its slot")
+	}
+}
+
+func TestHeldSlotStaysReservedWhenExpiryIsNotSaved(t *testing.T) {
+	store := &testutil.Memory{}
+	e := setup(t, store, t.TempDir())
+	finished := submitHeld(t, e)
+	store.Mu.Lock()
+	store.Fail = true
+	store.Mu.Unlock()
+	if err := expire(e, finished.Add(time.Minute)); err == nil {
+		t.Fatal("journal failure ignored")
+	}
+	if busy(e) != 1 {
+		t.Fatal("slot released without a committed record")
+	}
+}
+
+func TestTTSHoldCountsFromSend(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	_, id := e.Submit(context.Background(), "tts", "voice", "", []byte("text"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Err: context.DeadlineExceeded}
+	})
+	e.mu.Lock()
+	started := e.jobs[id].Started
+	e.jobs[id].Finished = started.Add(time.Hour)
+	e.mu.Unlock()
+	if started.IsZero() {
+		t.Fatal("send time was not recorded")
+	}
+	if err := expire(e, started.Add(59*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if e.queues["tts"].Stats().Instances[0].Busy != 1 {
+		t.Fatal("slot released before hold timeout")
+	}
+	if err := expire(e, started.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if e.queues["tts"].Stats().Instances[0].Busy != 0 {
+		t.Fatal("hold was not counted from send")
+	}
+}
+
+func TestRestoredTTSHoldKeepsSendTime(t *testing.T) {
+	store := &testutil.Memory{}
+	started := time.Now().Add(-2 * time.Minute)
+	data, err := json.Marshal(Job{ID: strings.Repeat("a", 32), Operation: "tts", State: "running", Instance: "tts", Held: true, Started: started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Append(context.Background(), journal.Record{ID: strings.Repeat("a", 32), Operation: "tts", Value: data}); err != nil {
+		t.Fatal(err)
+	}
+	e := setup(t, store, t.TempDir())
+	if e.queues["tts"].Stats().Instances[0].Busy != 1 {
+		t.Fatal("interrupted call lost its hold")
+	}
+	if err = expire(e, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if e.queues["tts"].Stats().Instances[0].Busy != 0 {
+		t.Fatal("restart restarted the hold")
+	}
+}
+
+func TestReleasedSlotIsNotRetakenByJobWithoutTime(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	e.queues["stt"].RequireBudget(time.Second)
+	submitHeld(t, e)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	called := make(chan struct{}, 1)
+	done := make(chan scheduler.Result, 1)
+	go func() {
+		r, _ := e.Submit(ctx, "stt", "", "", []byte("late"), func(string) {}, func(context.Context, string) scheduler.Result {
+			called <- struct{}{}
+			return scheduler.Result{Err: context.DeadlineExceeded}
+		})
+		done <- r
+	}()
+	time.Sleep(1200 * time.Millisecond)
+	if err := e.ReleaseHeld("one"); err != nil {
+		t.Fatal(err)
+	}
+	r := <-done
+	if status.Code(r.Err) != codes.DeadlineExceeded || diagnostic.Info(r.Err).Reason != "insufficient_time" {
+		t.Fatalf("late job: %+v", r)
+	}
+	if len(called) != 0 {
+		t.Fatal("late job reached the model")
+	}
+	if busy(e) != 0 {
+		t.Fatal("late job took the released slot")
+	}
+}
+
+func TestMaintainExpiresHeldSlots(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	submitHeld(t, e)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Maintain(ctx, func(string) time.Duration { return 0 })
+	deadline := time.Now().Add(2 * heldCheckInterval)
+	for busy(e) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("maintenance did not release the held slot")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// logLines receives each JSON log entry, so tests can wait for entries written
+// by the maintenance goroutine.
+type logLines chan map[string]any
+
+func (l logLines) Write(line []byte) (int, error) {
+	entry := map[string]any{}
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return 0, err
+	}
+	l <- entry
+	return len(line), nil
+}
+
+func captureLogs(e *Engine) logLines {
+	logs := make(logLines, 8)
+	e.logger = slog.New(slog.NewJSONHandler(logs, nil))
+	return logs
+}
+
+func nextLog(t *testing.T, logs logLines) map[string]any {
+	t.Helper()
+	select {
+	case entry := <-logs:
+		return entry
+	case <-time.After(2 * heldCheckInterval):
+		t.Fatal("log entry was not written")
+		return nil
+	}
+}
+
+func metricsText(e *Engine) string {
+	w := httptest.NewRecorder()
+	e.Metrics(w, httptest.NewRequest("GET", "/metrics", nil))
+	return w.Body.String()
+}
+
+func TestHeldSlotExpiryReportsCauseAndTimeSinceCallEnd(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	_, id := e.Submit(context.Background(), "tts", "voice", "", []byte("text"), func(string) {}, func(context.Context, string) scheduler.Result {
+		return scheduler.Result{Err: &diagnostic.Error{Code: codes.DeadlineExceeded, Stage: "upstream", Reason: "timeout", Uncertain: true}}
+	})
+	logs := captureLogs(e)
+	e.mu.Lock()
+	started := e.jobs[id].Started
+	e.jobs[id].Finished = started.Add(20 * time.Second)
+	e.mu.Unlock()
+	if err := expire(e, started.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	entry := nextLog(t, logs)
+	for key, want := range map[string]any{
+		"msg":                "voice held slot released",
+		"gateway_request_id": id,
+		"operation":          "tts",
+		"instance":           "tts",
+		"release_reason":     "expired",
+		"duration":           float64(40 * time.Second),
+		"error_code":         "DeadlineExceeded",
+		"error":              "timeout",
+		"stage":              "upstream",
+	} {
+		if entry[key] != want {
+			t.Fatalf("log field %s = %v, want %v: %v", key, entry[key], want, entry)
+		}
+	}
+	if metrics := metricsText(e); !strings.Contains(metrics, `voice_held_slots_released_total{operation="tts",model_instance="tts",reason="expired"} 1`) {
+		t.Fatalf("expiry not counted: %s", metrics)
+	}
+}
+
+func TestOperatorReleaseReportsEachJob(t *testing.T) {
+	e := setup(t, &testutil.Memory{}, t.TempDir())
+	submitHeld(t, e)
+	logs := captureLogs(e)
+	if err := e.ReleaseHeld("one"); err != nil {
+		t.Fatal(err)
+	}
+	entry := nextLog(t, logs)
+	if entry["msg"] != "voice held slot released" || entry["release_reason"] != "operator" || entry["error_code"] != "DeadlineExceeded" {
+		t.Fatalf("operator release log: %v", entry)
+	}
+	if metrics := metricsText(e); !strings.Contains(metrics, `voice_held_slots_released_total{operation="stt",model_instance="one",reason="operator"} 1`) {
+		t.Fatalf("operator release not counted: %s", metrics)
+	}
+}
+
+func TestMaintainLogsActualExpiryError(t *testing.T) {
+	store := &testutil.Memory{}
+	e := setup(t, store, t.TempDir())
+	submitHeld(t, e)
+	logs := captureLogs(e)
+	store.Mu.Lock()
+	store.Fail = true
+	store.Mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.Maintain(ctx, func(string) time.Duration { return 0 })
+	entry := nextLog(t, logs)
+	if entry["msg"] != "voice held slot expiry failed" || entry["error"] != "test journal unavailable" {
+		t.Fatalf("expiry failure log: %v", entry)
+	}
+	if _, found := entry["reason"]; found {
+		t.Fatalf("expiry failure kept a fixed reason: %v", entry)
+	}
+}
+
+func TestHeldReleaseCounterStartsAtZero(t *testing.T) {
+	metrics := metricsText(setup(t, &testutil.Memory{}, t.TempDir()))
+	for _, series := range []string{
+		`voice_held_slots_released_total{operation="stt",model_instance="one",reason="expired"} 0`,
+		`voice_held_slots_released_total{operation="stt",model_instance="one",reason="operator"} 0`,
+		`voice_held_slots_released_total{operation="tts",model_instance="tts",reason="expired"} 0`,
+		`voice_held_slots_released_total{operation="tts",model_instance="tts",reason="operator"} 0`,
+	} {
+		if !strings.Contains(metrics, series) {
+			t.Fatalf("missing zero series %s: %s", series, metrics)
+		}
+	}
+}
+
+func TestStopFinishesQueuedJobsDurably(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	submitHeld(t, e)
+	type outcome struct {
+		result scheduler.Result
+		id     string
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, id := e.Submit(context.Background(), "stt", "", "", []byte("queued"), func(string) {}, func(context.Context, string) scheduler.Result {
+			t.Error("queued job reached the model")
+			return scheduler.Result{}
+		})
+		done <- outcome{r, id}
+	}()
+	for deadline := time.Now().Add(2 * time.Second); e.queues["stt"].Stats().Waiting != 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("job did not start waiting")
+		}
+	}
+	e.Stop()
+	var finished outcome
+	select {
+	case finished = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued job outlived the stop")
+	}
+	if status.Code(finished.result.Err) != codes.Unavailable || diagnostic.Info(finished.result.Err).Reason != "gateway_not_ready" {
+		t.Fatalf("queued job: %+v", finished.result)
+	}
+	if busy(e) != 1 {
+		t.Fatal("stop changed the held slot")
+	}
+	e.blobs.Close()
+	restored := setup(t, store, dir)
+	if j := restored.jobs[finished.id]; j == nil || j.State != "failed" || j.Reason != "gateway_not_ready" {
+		t.Fatalf("queued job outcome was not committed: %+v", j)
+	}
+}
+
+type slowRunningStore struct {
+	*testutil.Memory
+	delay time.Duration
+}
+
+func (s *slowRunningStore) Append(ctx context.Context, r journal.Record) error {
+	var job Job
+	if json.Unmarshal(r.Value, &job) == nil && job.State == "running" {
+		time.Sleep(s.delay)
+	}
+	return s.Memory.Append(ctx, r)
+}
+
+func TestBudgetSpentOnRunningCommitRefusesCallWithoutHold(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	e.store = &slowRunningStore{Memory: store, delay: 800 * time.Millisecond}
+	e.queues["stt"].RequireBudget(time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	called := false
+	r, id := e.Submit(ctx, "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+		called = true
+		return scheduler.Result{Err: context.DeadlineExceeded}
+	})
+	if called {
+		t.Fatal("call was sent without enough time left")
+	}
+	if status.Code(r.Err) != codes.DeadlineExceeded || diagnostic.Info(r.Err).Reason != "insufficient_time" || r.HoldSlot {
+		t.Fatalf("refused job: %+v", r)
+	}
+	if busy(e) != 0 {
+		t.Fatal("refused job kept the slot")
+	}
+	e.mu.Lock()
+	state, held := e.jobs[id].State, e.jobs[id].Held
+	e.mu.Unlock()
+	if state != "failed" || held {
+		t.Fatalf("refused job state %s, held %v", state, held)
+	}
+	metrics := metricsText(e)
+	if strings.Contains(metrics, "voice_route_selections_total{") || strings.Contains(metrics, "voice_upstream_calls_total{") {
+		t.Fatalf("refused job counted as a model call: %s", metrics)
+	}
+	e.blobs.Close()
+	if restored := setup(t, store, dir); busy(restored) != 0 {
+		t.Fatal("refusal was not committed")
 	}
 }
 
@@ -272,11 +699,7 @@ func TestCancelAfterAssignmentReleasesSlot(t *testing.T) {
 	p := provider.HTTP{STT: map[string]provider.STT{"one": {URL: "http://127.0.0.1:1", Timeout: time.Second}}}
 	e.Submit(ctx, "stt", "", "", []byte("audio"), func(string) {}, func(ctx context.Context, id string) scheduler.Result {
 		_, err := p.Transcribe(ctx, id, []byte("audio"), "audio/ogg")
-		f, ok := err.(*diagnostic.Error)
-		if !ok {
-			return scheduler.Result{Err: err, HoldSlot: true}
-		}
-		return scheduler.Result{Err: err, HoldSlot: f.Uncertain}
+		return scheduler.Result{Err: err}
 	})
 	e.Wait()
 	deadline := time.Now().Add(time.Second)

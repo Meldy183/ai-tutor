@@ -6,10 +6,14 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"time"
 )
 
 var ErrQueueFull = errors.New("voice queue is full")
 var ErrNoCompatibleInstance = errors.New("no compatible voice instance")
+
+// ErrInsufficientBudget reports a job refused before its call was sent.
+var ErrInsufficientBudget = errors.New("not enough time left for a voice call")
 
 type Instance struct {
 	ID       string
@@ -44,6 +48,28 @@ type Queue struct {
 	waiting   []*job
 	limit     int
 	next      int
+	minBudget time.Duration
+	stopped   error
+}
+
+// RequireBudget refuses jobs with less than d left before their deadline. A
+// call cut off by its deadline after sending keeps the model busy to no use.
+func (q *Queue) RequireBudget(d time.Duration) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.minBudget = d
+}
+
+// HasBudget reports whether ctx still leaves the required time for a call.
+func (q *Queue) HasBudget(ctx context.Context) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.hasBudgetLocked(ctx)
+}
+
+func (q *Queue) hasBudgetLocked(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) >= q.minBudget
 }
 
 func New(instances []Instance, maxWaiting int) (*Queue, error) {
@@ -61,6 +87,18 @@ func New(instances []Instance, maxWaiting int) (*Queue, error) {
 		q.instances = append(q.instances, poolInstance{Instance: instance})
 	}
 	return q, nil
+}
+
+// Stop finishes waiting jobs with err and refuses new ones. Calls already
+// running keep their slots and finish normally.
+func (q *Queue) Stop(err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.stopped = err
+	for _, pending := range q.waiting {
+		pending.result <- Result{Err: err}
+	}
+	q.waiting = nil
 }
 
 func compatible(i *poolInstance, profile string) bool {
@@ -86,6 +124,10 @@ func (q *Queue) Submit(ctx context.Context, profile string, call func(context.Co
 	}
 	j := &job{ctx: ctx, profile: profile, call: call, result: make(chan Result, 1)}
 	q.mu.Lock()
+	if q.stopped != nil {
+		defer q.mu.Unlock()
+		return Result{Err: q.stopped}
+	}
 	found := false
 	for i := range q.instances {
 		if compatible(&q.instances[i], profile) {
@@ -127,6 +169,11 @@ func (q *Queue) dispatchLocked() {
 		pending := q.waiting[j]
 		if pending.ctx.Err() != nil {
 			q.waiting = slices.Delete(q.waiting, j, j+1)
+			continue
+		}
+		if !q.hasBudgetLocked(pending.ctx) {
+			q.waiting = slices.Delete(q.waiting, j, j+1)
+			pending.result <- Result{Err: ErrInsufficientBudget}
 			continue
 		}
 		chosen := -1
@@ -198,7 +245,8 @@ func (q *Queue) Stats() Stats {
 	return s
 }
 
-// ReleaseHeld is called only after an operator confirms upstream execution has stopped.
+// ReleaseHeld is called after an operator confirms upstream execution has
+// stopped or after the reservation's hold timeout has passed.
 func (q *Queue) ReleaseHeld(id string, count int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

@@ -102,6 +102,15 @@ func (e *Engine) writeMetrics(w io.Writer) {
 		op, code, _ := strings.Cut(key, "/")
 		fmt.Fprintf(w, "voice_upstream_calls_total{operation=%q,code=%q} %d\n", op, code, e.completed[key])
 	}
+	fmt.Fprintln(w, "# TYPE voice_held_slots_released_total counter")
+	// Every series starts at 0: Prometheus increase() misses a series' first event.
+	for _, op := range []string{"stt", "tts"} {
+		for _, in := range e.queues[op].Stats().Instances {
+			for _, reason := range []string{releaseExpired, releaseOperator} {
+				fmt.Fprintf(w, "voice_held_slots_released_total{operation=%q,model_instance=%q,reason=%q} %d\n", op, in.ID, reason, e.released[op+"/"+reason+"/"+in.ID])
+			}
+		}
+	}
 	for _, kind := range []string{"upstream", "queue_wait"} {
 		name := "voice_" + kind + "_seconds"
 		fmt.Fprintf(w, "# TYPE %s histogram\n", name)
