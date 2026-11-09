@@ -94,7 +94,7 @@ func (s *Server) Transcribe(ctx context.Context, req *pb.TranscribeRequest) (*pb
 			err = status.Error(codes.Internal, "invalid provider response")
 		}
 		if err != nil {
-			return failure(err)
+			return scheduler.Result{Err: failure(err)}
 		}
 		data, err := proto.Marshal(&pb.TranscribeResponse{Text: text})
 		return scheduler.Result{Value: data, Err: err}
@@ -133,7 +133,7 @@ func (s *Server) Synthesize(ctx context.Context, req *pb.SynthesizeRequest) (*pb
 			err = status.Error(codes.Internal, "invalid provider response")
 		}
 		if err != nil {
-			return failure(err)
+			return scheduler.Result{Err: failure(err)}
 		}
 		payload, err := proto.Marshal(&pb.SynthesizeResponse{Audio: data, MediaType: "audio/wav"})
 		return scheduler.Result{Value: payload, Err: err}
@@ -148,13 +148,16 @@ func (s *Server) Synthesize(ctx context.Context, req *pb.SynthesizeRequest) (*pb
 	response.RequestId = id
 	return &response, nil
 }
-func failure(err error) scheduler.Result {
-	held := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+
+// failure prepares a provider error for the engine. Context and diagnostic
+// errors pass unmapped: the engine decides from them whether the slot stays
+// reserved, and mapping would erase that distinction.
+func failure(err error) error {
 	var upstream *diagnostic.Error
-	if errors.As(err, &upstream) {
-		held = upstream.Uncertain
+	if errors.As(err, &upstream) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
-	return scheduler.Result{Err: mapError(err), HoldSlot: held}
+	return mapError(err)
 }
 func mapError(err error) error {
 	if errors.Is(err, context.Canceled) {

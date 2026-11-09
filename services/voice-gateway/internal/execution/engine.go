@@ -270,6 +270,12 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 			e.mu.Unlock()
 			return scheduler.Result{Err: errGatewayNotReady}
 		}
+		// The caller may have given up after the slot was assigned; its job must
+		// not leave the terminal state written for it.
+		if err := callCtx.Err(); err != nil {
+			e.mu.Unlock()
+			return scheduler.Result{Err: err}
+		}
 		e.workers.Add(1)
 		defer e.workers.Done()
 		j.State = "running"
@@ -281,23 +287,27 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "journal", "running_write"), HoldSlot: true}
 		}
 		// Waiting for the lock and the journal spends the same deadline the queue
-		// checked, and a call cut off after sending would hold the slot.
-		sending := e.queues[op].HasBudget(callCtx)
+		// checked, and a call cut off after sending keeps the model busy to no use.
+		var notSent error
+		if !e.queues[op].HasBudget(callCtx) {
+			notSent = errInsufficientTime
+		} else if err := callCtx.Err(); err != nil {
+			// The caller left while the running state was being saved.
+			notSent = err
+		}
+		sending := notSent == nil
 		if sending {
 			e.selected[op+"/"+instance]++
 			e.observe(op, "queue_wait", time.Since(j.Submitted).Seconds())
 		}
 		e.mu.Unlock()
-		r := scheduler.Result{Err: errInsufficientTime}
+		r := scheduler.Result{Err: notSent}
 		started := time.Now()
 		if sending {
 			r = call(callCtx, instance)
+			r.HoldSlot = e.holdsSlot(instance, r.Err)
 		}
 		elapsed := time.Since(started)
-		// Disconnects and transport failures do not prove model execution stopped.
-		if e.abort(instance) {
-			r.HoldSlot = false
-		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		j.Finished = time.Now()
@@ -360,6 +370,20 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	}
 	e.mu.Unlock()
 	return result, id
+}
+
+// holdsSlot reports whether a finished model call keeps its slot reserved.
+// Disconnects and transport failures do not prove model execution stopped, so
+// an uncertain outcome holds the slot unless the instance releases it at once.
+func (e *Engine) holdsSlot(instance string, err error) bool {
+	if err == nil || e.abort(instance) {
+		return false
+	}
+	var upstream *diagnostic.Error
+	if errors.As(err, &upstream) {
+		return upstream.Uncertain
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 func logLevel(err error) slog.Level {
 	if err == nil {

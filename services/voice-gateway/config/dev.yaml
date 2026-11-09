@@ -22,7 +22,7 @@ stt:
       timeout: 40s # На каждый HTTP-фрагмент; весь RPC ограничен request_timeout.
       model: ""
       longform: false
-      abort_on_disconnect: false
+      abort_on_disconnect: true
 tts:
   max_waiting: 32
   min_call_budget: 60s # Выше p95 синтеза (52 с в локальных логах).
@@ -34,7 +34,7 @@ tts:
       slots: 1
       timeout: 340s
       profiles: [geek-default]
-      abort_on_disconnect: false
+      abort_on_disconnect: true
 voices:
   geek-default:
     identity: "geek-reference-v1"

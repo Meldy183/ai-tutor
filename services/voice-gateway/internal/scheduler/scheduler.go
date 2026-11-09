@@ -53,7 +53,7 @@ type Queue struct {
 }
 
 // RequireBudget refuses jobs with less than d left before their deadline. A
-// call cut off by its deadline after sending would hold the slot.
+// call cut off by its deadline after sending keeps the model busy to no use.
 func (q *Queue) RequireBudget(d time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

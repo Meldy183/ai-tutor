@@ -22,6 +22,11 @@ import (
 
 func setup(t *testing.T, store *testutil.Memory, dir string) *Engine {
 	t.Helper()
+	return setupAbort(t, store, dir, false)
+}
+
+func setupAbort(t *testing.T, store *testutil.Memory, dir string, abort bool) *Engine {
+	t.Helper()
 	blobs, err := journal.OpenBlobs(dir, 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +37,7 @@ func setup(t *testing.T, store *testutil.Memory, dir string) *Engine {
 		t.Fatal(err)
 	}
 	tts, _ := scheduler.New([]scheduler.Instance{{ID: "tts", Profiles: []string{"voice"}, Slots: 1}}, 4)
-	e := New(store, blobs, map[string]*scheduler.Queue{"stt": q, "tts": tts}, time.Hour, func(string) bool { return false }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	e := New(store, blobs, map[string]*scheduler.Queue{"stt": q, "tts": tts}, time.Hour, func(string) bool { return abort }, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err = e.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +165,7 @@ func TestRecoveryKeepsUncertainSlot(t *testing.T) {
 	dir := t.TempDir()
 	e := setup(t, store, dir)
 	r, _ := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	if !errors.Is(r.Err, context.DeadlineExceeded) {
 		t.Fatal(r.Err)
@@ -177,7 +182,7 @@ func TestOperatorReleaseIsDurable(t *testing.T) {
 	dir := t.TempDir()
 	e := setup(t, store, dir)
 	e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	if err := e.ReleaseHeld("one"); err != nil {
 		t.Fatal(err)
@@ -197,7 +202,7 @@ func holdOneMinute(string) time.Duration { return time.Minute }
 func submitHeld(t *testing.T, e *Engine) time.Time {
 	t.Helper()
 	_, id := e.Submit(context.Background(), "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -310,7 +315,7 @@ func TestHeldSlotStaysReservedWhenExpiryIsNotSaved(t *testing.T) {
 func TestTTSHoldCountsFromSend(t *testing.T) {
 	e := setup(t, &testutil.Memory{}, t.TempDir())
 	_, id := e.Submit(context.Background(), "tts", "voice", "", []byte("text"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	e.mu.Lock()
 	started := e.jobs[id].Started
@@ -366,7 +371,7 @@ func TestReleasedSlotIsNotRetakenByJobWithoutTime(t *testing.T) {
 	go func() {
 		r, _ := e.Submit(ctx, "stt", "", "", []byte("late"), func(string) {}, func(context.Context, string) scheduler.Result {
 			called <- struct{}{}
-			return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+			return scheduler.Result{Err: context.DeadlineExceeded}
 		})
 		done <- r
 	}()
@@ -440,7 +445,7 @@ func metricsText(e *Engine) string {
 func TestHeldSlotExpiryReportsCauseAndTimeSinceCallEnd(t *testing.T) {
 	e := setup(t, &testutil.Memory{}, t.TempDir())
 	_, id := e.Submit(context.Background(), "tts", "voice", "", []byte("text"), func(string) {}, func(context.Context, string) scheduler.Result {
-		return scheduler.Result{Err: diagnostic.New(codes.DeadlineExceeded, "upstream", "timeout"), HoldSlot: true}
+		return scheduler.Result{Err: &diagnostic.Error{Code: codes.DeadlineExceeded, Stage: "upstream", Reason: "timeout", Uncertain: true}}
 	})
 	logs := captureLogs(e)
 	e.mu.Lock()
@@ -587,7 +592,7 @@ func TestBudgetSpentOnRunningCommitRefusesCallWithoutHold(t *testing.T) {
 	called := false
 	r, id := e.Submit(ctx, "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
 		called = true
-		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+		return scheduler.Result{Err: context.DeadlineExceeded}
 	})
 	if called {
 		t.Fatal("call was sent without enough time left")
@@ -694,11 +699,7 @@ func TestCancelAfterAssignmentReleasesSlot(t *testing.T) {
 	p := provider.HTTP{STT: map[string]provider.STT{"one": {URL: "http://127.0.0.1:1", Timeout: time.Second}}}
 	e.Submit(ctx, "stt", "", "", []byte("audio"), func(string) {}, func(ctx context.Context, id string) scheduler.Result {
 		_, err := p.Transcribe(ctx, id, []byte("audio"), "audio/ogg")
-		f, ok := err.(*diagnostic.Error)
-		if !ok {
-			return scheduler.Result{Err: err, HoldSlot: true}
-		}
-		return scheduler.Result{Err: err, HoldSlot: f.Uncertain}
+		return scheduler.Result{Err: err}
 	})
 	e.Wait()
 	deadline := time.Now().Add(time.Second)
