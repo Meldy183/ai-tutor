@@ -23,6 +23,8 @@ import (
 // heldCheckInterval is how often held slots are compared with their hold timeout.
 const heldCheckInterval = 5 * time.Second
 
+var errInsufficientTime = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
+
 // Reasons a held slot was freed, as reported in logs and metrics.
 const (
 	releaseExpired  = "expired"
@@ -265,11 +267,19 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 			e.mu.Unlock()
 			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "journal", "running_write"), HoldSlot: true}
 		}
-		e.selected[op+"/"+instance]++
-		e.observe(op, "queue_wait", time.Since(j.Submitted).Seconds())
+		// Waiting for the lock and the journal spends the same deadline the queue
+		// checked, and a call cut off after sending would hold the slot.
+		sending := e.queues[op].HasBudget(callCtx)
+		if sending {
+			e.selected[op+"/"+instance]++
+			e.observe(op, "queue_wait", time.Since(j.Submitted).Seconds())
+		}
 		e.mu.Unlock()
+		r := scheduler.Result{Err: errInsufficientTime}
 		started := time.Now()
-		r := call(callCtx, instance)
+		if sending {
+			r = call(callCtx, instance)
+		}
 		elapsed := time.Since(started)
 		// Disconnects and transport failures do not prove model execution stopped.
 		if e.abort(instance) {
@@ -304,6 +314,9 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 			e.finishLocked(j)
 			_ = e.blobs.Remove(id + ".in")
 		}
+		if !sending {
+			return r
+		}
 		e.observe(op, "upstream", elapsed.Seconds())
 		e.completed[op+"/"+errorCode(r.Err).String()]++
 		attrs := []slog.Attr{slog.String("gateway_request_id", id), slog.String("trace_id", diagnostic.TraceID(callCtx)), slog.String("operation", op), slog.String("instance", instance), slog.Duration("duration", elapsed), slog.Bool("slot_held", r.HoldSlot)}
@@ -318,7 +331,7 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 		result.Err = diagnostic.New(codes.Unavailable, "queue", "no_compatible_model")
 	}
 	if errors.Is(result.Err, scheduler.ErrInsufficientBudget) {
-		result.Err = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
+		result.Err = errInsufficientTime
 	}
 	e.mu.Lock()
 	if j.State == "queued" {

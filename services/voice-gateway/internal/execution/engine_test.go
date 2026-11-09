@@ -507,6 +507,57 @@ func TestMaintainLogsActualExpiryError(t *testing.T) {
 	}
 }
 
+type slowRunningStore struct {
+	*testutil.Memory
+	delay time.Duration
+}
+
+func (s *slowRunningStore) Append(ctx context.Context, r journal.Record) error {
+	var job Job
+	if json.Unmarshal(r.Value, &job) == nil && job.State == "running" {
+		time.Sleep(s.delay)
+	}
+	return s.Memory.Append(ctx, r)
+}
+
+func TestBudgetSpentOnRunningCommitRefusesCallWithoutHold(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	e.store = &slowRunningStore{Memory: store, delay: 800 * time.Millisecond}
+	e.queues["stt"].RequireBudget(time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	called := false
+	r, id := e.Submit(ctx, "stt", "", "", []byte("audio"), func(string) {}, func(context.Context, string) scheduler.Result {
+		called = true
+		return scheduler.Result{Err: context.DeadlineExceeded, HoldSlot: true}
+	})
+	if called {
+		t.Fatal("call was sent without enough time left")
+	}
+	if status.Code(r.Err) != codes.DeadlineExceeded || diagnostic.Info(r.Err).Reason != "insufficient_time" || r.HoldSlot {
+		t.Fatalf("refused job: %+v", r)
+	}
+	if busy(e) != 0 {
+		t.Fatal("refused job kept the slot")
+	}
+	e.mu.Lock()
+	state, held := e.jobs[id].State, e.jobs[id].Held
+	e.mu.Unlock()
+	if state != "failed" || held {
+		t.Fatalf("refused job state %s, held %v", state, held)
+	}
+	metrics := metricsText(e)
+	if strings.Contains(metrics, "voice_route_selections_total{") || strings.Contains(metrics, "voice_upstream_calls_total{") {
+		t.Fatalf("refused job counted as a model call: %s", metrics)
+	}
+	e.blobs.Close()
+	if restored := setup(t, store, dir); busy(restored) != 0 {
+		t.Fatal("refusal was not committed")
+	}
+}
+
 type countingStore struct {
 	*testutil.Memory
 	writes int

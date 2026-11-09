@@ -59,6 +59,18 @@ func (q *Queue) RequireBudget(d time.Duration) {
 	q.minBudget = d
 }
 
+// HasBudget reports whether ctx still leaves the required time for a call.
+func (q *Queue) HasBudget(ctx context.Context) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.hasBudgetLocked(ctx)
+}
+
+func (q *Queue) hasBudgetLocked(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return !ok || time.Until(deadline) >= q.minBudget
+}
+
 func New(instances []Instance, maxWaiting int) (*Queue, error) {
 	if len(instances) == 0 || maxWaiting < 1 {
 		return nil, errors.New("instances and positive queue limit are required")
@@ -142,7 +154,7 @@ func (q *Queue) dispatchLocked() {
 			q.waiting = slices.Delete(q.waiting, j, j+1)
 			continue
 		}
-		if deadline, ok := pending.ctx.Deadline(); ok && time.Until(deadline) < q.minBudget {
+		if !q.hasBudgetLocked(pending.ctx) {
 			q.waiting = slices.Delete(q.waiting, j, j+1)
 			pending.result <- Result{Err: ErrInsufficientBudget}
 			continue
