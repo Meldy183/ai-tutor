@@ -23,7 +23,10 @@ import (
 // heldCheckInterval is how often held slots are compared with their hold timeout.
 const heldCheckInterval = 5 * time.Second
 
-var errInsufficientTime = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
+var (
+	errInsufficientTime = diagnostic.New(codes.DeadlineExceeded, "queue", "insufficient_time")
+	errGatewayNotReady  = diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")
+)
 
 // Reasons a held slot was freed, as reported in logs and metrics.
 const (
@@ -169,7 +172,17 @@ func validID(id string) bool {
 	return err == nil
 }
 func (e *Engine) Ready() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.ready }
-func (e *Engine) Stop()       { e.mu.Lock(); e.ready = false; e.mu.Unlock() }
+
+// Stop ends admission and finishes jobs still waiting for a slot, so shutdown
+// waits only for calls already sent to a model.
+func (e *Engine) Stop() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ready = false
+	for _, q := range e.queues {
+		q.Stop(errGatewayNotReady)
+	}
+}
 func (e *Engine) resultLocked(j *Job) scheduler.Result {
 	if j == nil {
 		return scheduler.Result{Err: diagnostic.New(codes.NotFound, "storage", "result_expired")}
@@ -197,7 +210,7 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 	e.mu.Lock()
 	if !e.ready {
 		e.mu.Unlock()
-		return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")}, ""
+		return scheduler.Result{Err: errGatewayNotReady}, ""
 	}
 	if id, ok := e.keys[op+"/"+keyHash]; keyHash != "" && ok {
 		j := e.jobs[id]
@@ -255,7 +268,7 @@ func (e *Engine) Submit(ctx context.Context, op, profile, key string, input []by
 		e.mu.Lock()
 		if !e.ready {
 			e.mu.Unlock()
-			return scheduler.Result{Err: diagnostic.New(codes.Unavailable, "admission", "gateway_not_ready")}
+			return scheduler.Result{Err: errGatewayNotReady}
 		}
 		e.workers.Add(1)
 		defer e.workers.Done()

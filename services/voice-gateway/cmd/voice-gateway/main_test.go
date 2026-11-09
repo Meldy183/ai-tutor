@@ -3,13 +3,14 @@ package main
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestDrainWindowWaitsForCallsOnlyOnPlannedStop(t *testing.T) {
-	if got := drainWindow(nil); got != plannedStopDrain {
+	if got := drainWindow(nil, time.Minute); got != time.Minute {
 		t.Fatalf("planned stop drain: %s", got)
 	}
-	if got := drainWindow(errors.New("voice durable state unavailable")); got != failureDrain {
+	if got := drainWindow(errors.New("voice durable state unavailable"), time.Minute); got != failureDrain {
 		t.Fatalf("failure drain: %s", got)
 	}
 }

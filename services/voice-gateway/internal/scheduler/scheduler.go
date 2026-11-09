@@ -49,6 +49,7 @@ type Queue struct {
 	limit     int
 	next      int
 	minBudget time.Duration
+	stopped   error
 }
 
 // RequireBudget refuses jobs with less than d left before their deadline. A
@@ -88,6 +89,18 @@ func New(instances []Instance, maxWaiting int) (*Queue, error) {
 	return q, nil
 }
 
+// Stop finishes waiting jobs with err and refuses new ones. Calls already
+// running keep their slots and finish normally.
+func (q *Queue) Stop(err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.stopped = err
+	for _, pending := range q.waiting {
+		pending.result <- Result{Err: err}
+	}
+	q.waiting = nil
+}
+
 func compatible(i *poolInstance, profile string) bool {
 	if profile == "" {
 		return true
@@ -111,6 +124,10 @@ func (q *Queue) Submit(ctx context.Context, profile string, call func(context.Co
 	}
 	j := &job{ctx: ctx, profile: profile, call: call, result: make(chan Result, 1)}
 	q.mu.Lock()
+	if q.stopped != nil {
+		defer q.mu.Unlock()
+		return Result{Err: q.stopped}
+	}
 	found := false
 	for i := range q.instances {
 		if compatible(&q.instances[i], profile) {

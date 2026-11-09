@@ -507,6 +507,62 @@ func TestMaintainLogsActualExpiryError(t *testing.T) {
 	}
 }
 
+func TestHeldReleaseCounterStartsAtZero(t *testing.T) {
+	metrics := metricsText(setup(t, &testutil.Memory{}, t.TempDir()))
+	for _, series := range []string{
+		`voice_held_slots_released_total{operation="stt",model_instance="one",reason="expired"} 0`,
+		`voice_held_slots_released_total{operation="stt",model_instance="one",reason="operator"} 0`,
+		`voice_held_slots_released_total{operation="tts",model_instance="tts",reason="expired"} 0`,
+		`voice_held_slots_released_total{operation="tts",model_instance="tts",reason="operator"} 0`,
+	} {
+		if !strings.Contains(metrics, series) {
+			t.Fatalf("missing zero series %s: %s", series, metrics)
+		}
+	}
+}
+
+func TestStopFinishesQueuedJobsDurably(t *testing.T) {
+	store := &testutil.Memory{}
+	dir := t.TempDir()
+	e := setup(t, store, dir)
+	submitHeld(t, e)
+	type outcome struct {
+		result scheduler.Result
+		id     string
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, id := e.Submit(context.Background(), "stt", "", "", []byte("queued"), func(string) {}, func(context.Context, string) scheduler.Result {
+			t.Error("queued job reached the model")
+			return scheduler.Result{}
+		})
+		done <- outcome{r, id}
+	}()
+	for deadline := time.Now().Add(2 * time.Second); e.queues["stt"].Stats().Waiting != 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("job did not start waiting")
+		}
+	}
+	e.Stop()
+	var finished outcome
+	select {
+	case finished = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued job outlived the stop")
+	}
+	if status.Code(finished.result.Err) != codes.Unavailable || diagnostic.Info(finished.result.Err).Reason != "gateway_not_ready" {
+		t.Fatalf("queued job: %+v", finished.result)
+	}
+	if busy(e) != 1 {
+		t.Fatal("stop changed the held slot")
+	}
+	e.blobs.Close()
+	restored := setup(t, store, dir)
+	if j := restored.jobs[finished.id]; j == nil || j.State != "failed" || j.Reason != "gateway_not_ready" {
+		t.Fatalf("queued job outcome was not committed: %+v", j)
+	}
+}
+
 type slowRunningStore struct {
 	*testutil.Memory
 	delay time.Duration

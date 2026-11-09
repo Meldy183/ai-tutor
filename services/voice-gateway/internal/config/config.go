@@ -79,6 +79,7 @@ type Config struct {
 	LogLevel        string           `yaml:"log_level"`
 	DataDir         string           `yaml:"data_dir"`
 	RequestTimeout  Duration         `yaml:"request_timeout"`
+	ShutdownDrain   Duration         `yaml:"shutdown_drain"`
 	Retention       Duration         `yaml:"retention"`
 	MaxConnections  int              `yaml:"max_connections"`
 	MaxPayloadBytes int64            `yaml:"max_payload_bytes"`
@@ -214,7 +215,7 @@ func (c Config) Validate() error {
 	if c.LogLevel != "debug" && c.LogLevel != "info" && c.LogLevel != "warn" && c.LogLevel != "error" {
 		return fmt.Errorf("invalid log_level")
 	}
-	if c.DataDir == "" || c.RequestTimeout.Duration <= 0 || c.Retention.Duration <= 0 || c.MaxConnections < 1 || c.MaxConnections > 1024 || c.MaxPayloadBytes < 1 {
+	if c.DataDir == "" || c.RequestTimeout.Duration <= 0 || c.ShutdownDrain.Duration <= 0 || c.Retention.Duration <= 0 || c.MaxConnections < 1 || c.MaxConnections > 1024 || c.MaxPayloadBytes < 1 {
 		return fmt.Errorf("data_dir and positive limits are required")
 	}
 	if len(c.Brokers) == 0 || c.STTTopic == "" || c.TTSTopic == "" || c.STTTopic == c.TTSTopic {

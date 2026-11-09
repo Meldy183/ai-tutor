@@ -3,6 +3,7 @@ http_address: ":8020"
 log_level: info
 data_dir: "/var/lib/voice-gateway"
 request_timeout: 370s
+shutdown_drain: 75s # Ожидание отправленных вызовов при остановке: выше максимума синтеза (67 с в локальных логах), меньше stop_grace_period в docker-compose.yaml.
 retention: 24h
 max_connections: 16 # Отдельный лимит для STT, TTS и DescribeVoice.
 max_payload_bytes: 2147483648

@@ -23,21 +23,15 @@ import (
 	"google.golang.org/grpc"
 )
 
-// How long active RPCs may finish after the gateway stops admitting work. An
-// interrupted call keeps its slot held, so a planned stop waits past the slowest
-// TTS synthesis seen locally (p95 52 s, maximum 67 s). stop_grace_period in
-// docker-compose.yaml must exceed plannedStopDrain. After a failure results can
-// no longer be committed, so waiting for calls gains nothing.
-const (
-	plannedStopDrain = 75 * time.Second
-	failureDrain     = 10 * time.Second
-)
+// failureDrain limits the wait for active RPCs after a failure: their results
+// can no longer be committed, so a longer wait gains nothing.
+const failureDrain = 10 * time.Second
 
-func drainWindow(failure error) time.Duration {
+func drainWindow(failure error, planned time.Duration) time.Duration {
 	if failure != nil {
 		return failureDrain
 	}
-	return plannedStopDrain
+	return planned
 }
 
 func main() {
@@ -215,7 +209,7 @@ func run() error {
 	go func() { rpc.GracefulStop(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(drainWindow(err)):
+	case <-time.After(drainWindow(err, cfg.ShutdownDrain.Duration)):
 		rpc.Stop()
 		<-done
 	}

@@ -32,6 +32,50 @@ func TestRequireBudgetRefusesOnlyJobsWithoutEnoughTime(t *testing.T) {
 	}
 }
 
+func TestStopFinishesWaitingJobsAndKeepsRunningCalls(t *testing.T) {
+	q, err := New([]Instance{{ID: "one", Slots: 1}}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	running := make(chan Result, 1)
+	go func() {
+		running <- q.Submit(context.Background(), "", func(context.Context, string) Result {
+			close(started)
+			<-release
+			return Result{Value: "ok"}
+		})
+	}()
+	<-started
+	waiting := make(chan Result, 1)
+	go func() {
+		waiting <- q.Submit(context.Background(), "", func(context.Context, string) Result {
+			t.Error("waiting job was dispatched after stop")
+			return Result{}
+		})
+	}()
+	for deadline := time.Now().Add(2 * time.Second); q.Stats().Waiting != 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("job did not start waiting")
+		}
+	}
+	stopped := errors.New("stopped")
+	q.Stop(stopped)
+	if r := <-waiting; !errors.Is(r.Err, stopped) {
+		t.Fatalf("waiting job: %+v", r)
+	}
+	if r := q.Submit(context.Background(), "", func(context.Context, string) Result { return Result{} }); !errors.Is(r.Err, stopped) {
+		t.Fatalf("job after stop: %+v", r)
+	}
+	close(release)
+	if r := <-running; r.Err != nil {
+		t.Fatalf("running call: %+v", r)
+	}
+	if busy := q.Stats().Instances[0].Busy; busy != 0 {
+		t.Fatalf("running call kept its slot: %d", busy)
+	}
+}
+
 func TestSeparateQueuesAndCompatibleInstances(t *testing.T) {
 	stt, err := New([]Instance{{ID: "stt", Slots: 1}}, 2)
 	if err != nil {
