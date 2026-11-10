@@ -35,14 +35,15 @@ ON CONFLICT(subject_id) DO UPDATE SET filename=excluded.filename, sheet=excluded
 SELECT graph FROM course_graph_maps WHERE subject_id = $1;
 
 -- name: CourseMapOutcomesOfRevision :many
--- The outcomes of a map revision with their place in the structure, so the
--- Geek sheet's topics resolve to the same outcomes.
+-- The outcomes of a map revision from one source with their place in the
+-- structure, so the Geek sheet's topics resolve to them: its own exam
+-- outcomes, or the diagnostic ones when a unified map shares one set.
 SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent_id,
        competency.name AS competency_name, constituent.name AS constituent_name, outcome.name AS outcome_name
 FROM course_map_outcomes outcome
 JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
 JOIN course_map_competencies competency ON competency.id = constituent.competency_id
-WHERE competency.revision = $1 AND competency.source_mode = 'exam';
+WHERE competency.revision = sqlc.arg(revision) AND competency.source_mode = sqlc.arg(source_mode)::text;
 
 -- name: InsertCourseMapExamTask :exec
 INSERT INTO course_map_tasks(id, outcome_id, mode, position, question, voice_instruction, reference_answer, criteria, created_at)

@@ -54,8 +54,13 @@ SELECT outcome.id, competency.id AS competency_id, constituent.id AS constituent
 FROM course_map_outcomes outcome
 JOIN course_map_constituents constituent ON constituent.id = outcome.constituent_id
 JOIN course_map_competencies competency ON competency.id = constituent.competency_id
-WHERE competency.revision = $1 AND competency.source_mode = 'exam'
+WHERE competency.revision = $1 AND competency.source_mode = $2::text
 `
+
+type CourseMapOutcomesOfRevisionParams struct {
+	Revision   int64
+	SourceMode string
+}
 
 type CourseMapOutcomesOfRevisionRow struct {
 	ID              string
@@ -66,10 +71,11 @@ type CourseMapOutcomesOfRevisionRow struct {
 	OutcomeName     string
 }
 
-// The outcomes of a map revision with their place in the structure, so the
-// Geek sheet's topics resolve to the same outcomes.
-func (q *Queries) CourseMapOutcomesOfRevision(ctx context.Context, revision int64) ([]CourseMapOutcomesOfRevisionRow, error) {
-	rows, err := q.db.Query(ctx, courseMapOutcomesOfRevision, revision)
+// The outcomes of a map revision from one source with their place in the
+// structure, so the Geek sheet's topics resolve to them: its own exam
+// outcomes, or the diagnostic ones when a unified map shares one set.
+func (q *Queries) CourseMapOutcomesOfRevision(ctx context.Context, arg CourseMapOutcomesOfRevisionParams) ([]CourseMapOutcomesOfRevisionRow, error) {
+	rows, err := q.db.Query(ctx, courseMapOutcomesOfRevision, arg.Revision, arg.SourceMode)
 	if err != nil {
 		return nil, err
 	}

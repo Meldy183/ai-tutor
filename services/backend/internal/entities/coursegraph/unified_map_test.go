@@ -107,3 +107,18 @@ func TestPairedFirstSheetIsNotUnified(t *testing.T) {
 		t.Fatal("a sheet of the paired book read as unified")
 	}
 }
+
+func TestShareOutcomesMarksTheGraphAndKeepsItsFields(t *testing.T) {
+	graph := json.RawMessage(`{"version":"competency-map-v1","topics":[]}`)
+	if SharesOutcomes(graph) {
+		t.Fatal("an unmarked graph shares outcomes")
+	}
+	marked, err := ShareOutcomes(graph)
+	if err != nil || !SharesOutcomes(marked) {
+		t.Fatalf("marked graph: %s %v", marked, err)
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(marked, &shape); err != nil || string(shape["version"]) != `"competency-map-v1"` {
+		t.Fatalf("fields lost: %s", marked)
+	}
+}

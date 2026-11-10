@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/audioasset"
+	"github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/coursegraph"
 	pgshared "github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/postgres"
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/shared/security"
 
@@ -22,12 +23,20 @@ import (
 // independently of the diagnostic sheet. All variants become exam tasks and
 // the graph build is queued. The saved
 // graph is the Geek view of the revision, not a second structure.
+//
+// A graph of a unified map shares the outcomes of the diagnostic: no exam
+// structure is stored, and the exam tasks belong to the same outcomes as the
+// diagnostic ones, so a gap found in either mode is the same outcome.
 func SaveImportedMapInTx(ctx context.Context, tx pgx.Tx, subjectID, filename, sheet string, graph json.RawMessage, revision int64, now time.Time) error {
 	q := db.New(tx)
-	if err := saveExamOutcomes(ctx, q, graph, revision); err != nil {
-		return err
+	source := "diagnostic"
+	if !coursegraph.SharesOutcomes(graph) {
+		source = "exam"
+		if err := saveExamOutcomes(ctx, q, graph, revision); err != nil {
+			return err
+		}
 	}
-	outcomes, err := q.CourseMapOutcomesOfRevision(ctx, revision)
+	outcomes, err := q.CourseMapOutcomesOfRevision(ctx, db.CourseMapOutcomesOfRevisionParams{Revision: revision, SourceMode: source})
 	if err != nil {
 		return err
 	}

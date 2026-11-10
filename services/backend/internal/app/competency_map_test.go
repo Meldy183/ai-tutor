@@ -63,6 +63,12 @@ func TestPairedWorkbookUsesBothModeBanks(t *testing.T) {
 }
 
 func assertPairedWorkbookBanks(t *testing.T, book []byte) *fixture {
+	return assertWorkbookBanks(t, book, "exam")
+}
+
+// assertWorkbookBanks imports a map and checks the bank of each mode and the
+// Geek graph; examSource is the structure the exam outcomes belong to.
+func assertWorkbookBanks(t *testing.T, book []byte, examSource string) *fixture {
 	t.Helper()
 	f := newFixture(t)
 	admin := f.admin(t)
@@ -71,9 +77,9 @@ func assertPairedWorkbookBanks(t *testing.T, book []byte) *fixture {
 		t.Fatalf("import: %d %s", response.Code, response.Body.String())
 	}
 	ctx := context.Background()
-	for _, mode := range []string{"diagnostic", "exam"} {
+	for mode, source := range map[string]string{"diagnostic": "diagnostic", "exam": examSource} {
 		var outcomes, tasks int
-		if err := f.pool.QueryRow(ctx, `SELECT count(DISTINCT o.id),count(t.id) FROM course_map_competencies c JOIN course_map_constituents p ON p.competency_id=c.id JOIN course_map_outcomes o ON o.constituent_id=p.id LEFT JOIN course_map_tasks t ON t.outcome_id=o.id AND t.mode=$1 WHERE c.revision=1 AND c.source_mode=$1`, mode).Scan(&outcomes, &tasks); err != nil {
+		if err := f.pool.QueryRow(ctx, `SELECT count(DISTINCT o.id),count(t.id) FROM course_map_competencies c JOIN course_map_constituents p ON p.competency_id=c.id JOIN course_map_outcomes o ON o.constituent_id=p.id LEFT JOIN course_map_tasks t ON t.outcome_id=o.id AND t.mode=$1 WHERE c.revision=1 AND c.source_mode=$2`, mode, source).Scan(&outcomes, &tasks); err != nil {
 			t.Fatal(err)
 		}
 		if outcomes == 0 || tasks == 0 {
@@ -98,7 +104,7 @@ func assertPairedWorkbookBanks(t *testing.T, book []byte) *fixture {
 	}
 	for _, n := range graph.Nodes {
 		var mode string
-		if err := f.pool.QueryRow(ctx, `SELECT c.source_mode FROM course_map_outcomes o JOIN course_map_constituents p ON p.id=o.constituent_id JOIN course_map_competencies c ON c.id=p.competency_id WHERE o.id=$1`, n.ID).Scan(&mode); err != nil || mode != "exam" {
+		if err := f.pool.QueryRow(ctx, `SELECT c.source_mode FROM course_map_outcomes o JOIN course_map_constituents p ON p.id=o.constituent_id JOIN course_map_competencies c ON c.id=p.competency_id WHERE o.id=$1`, n.ID).Scan(&mode); err != nil || mode != examSource {
 			t.Fatalf("exam vertex %s mode=%s: %v", n.ID, mode, err)
 		}
 		for _, v := range n.Variants {
@@ -146,24 +152,44 @@ func TestUnifiedWorkbookUsesBothModeBanks(t *testing.T) {
 	}
 }
 
-// assertUnifiedWorkbook imports a unified map and checks that each mode got
-// the tasks of its own columns only, with one structure of outcomes.
+// assertUnifiedWorkbook imports a unified map and checks that its modes share
+// one set of outcomes: no exam structure, every outcome holds the tasks of
+// both modes, and the Geek graph is built on the diagnostic outcomes.
 func assertUnifiedWorkbook(t *testing.T, book []byte) *fixture {
 	t.Helper()
-	f := assertPairedWorkbookBanks(t, book)
+	f := assertWorkbookBanks(t, book, "diagnostic")
 	ctx := context.Background()
-	var examOutcomes, diagnosticOutcomes, shared int
+	var examStructures, outcomes, withBoth int
 	if err := f.pool.QueryRow(ctx, `
-		WITH o AS (SELECT c.source_mode, c.name AS competency, p.name AS constituent, o.name AS outcome
-		           FROM course_map_competencies c JOIN course_map_constituents p ON p.competency_id=c.id JOIN course_map_outcomes o ON o.constituent_id=p.id
-		           WHERE c.revision=1)
-		SELECT (SELECT count(*) FROM o WHERE source_mode='exam'), (SELECT count(*) FROM o WHERE source_mode='diagnostic'),
-		       (SELECT count(*) FROM o e JOIN o d USING (competency, constituent, outcome) WHERE e.source_mode='exam' AND d.source_mode='diagnostic')`).
-		Scan(&examOutcomes, &diagnosticOutcomes, &shared); err != nil {
+		SELECT (SELECT count(*) FROM course_map_competencies WHERE source_mode='exam'),
+		       (SELECT count(*) FROM course_map_outcomes),
+		       (SELECT count(*) FROM course_map_outcomes o
+		        WHERE EXISTS (SELECT 1 FROM course_map_tasks t WHERE t.outcome_id=o.id AND t.mode='exam')
+		          AND EXISTS (SELECT 1 FROM course_map_tasks t WHERE t.outcome_id=o.id AND t.mode='diagnostic'))`).
+		Scan(&examStructures, &outcomes, &withBoth); err != nil {
 		t.Fatal(err)
 	}
-	if examOutcomes == 0 || examOutcomes != diagnosticOutcomes || shared != examOutcomes {
-		t.Fatalf("one sheet must give one structure: exam=%d diagnostic=%d shared=%d", examOutcomes, diagnosticOutcomes, shared)
+	if examStructures != 0 || outcomes == 0 || withBoth != outcomes {
+		t.Fatalf("one set of outcomes: exam competencies=%d outcomes=%d with tasks of both modes=%d", examStructures, outcomes, withBoth)
+	}
+	// The learning reads still see only the diagnostic tasks.
+	learning, err := competencypg.New(f.pool).Read(ctx, "subject:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var learningTasks, diagnosticTasks int
+	for _, competency := range learning.Competencies {
+		for _, constituent := range competency.Constituents {
+			for _, outcome := range constituent.Outcomes {
+				learningTasks += len(outcome.Tasks)
+			}
+		}
+	}
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM course_map_tasks WHERE mode='diagnostic'`).Scan(&diagnosticTasks); err != nil {
+		t.Fatal(err)
+	}
+	if learningTasks != diagnosticTasks {
+		t.Fatalf("learning read sees %d tasks, the diagnostic has %d", learningTasks, diagnosticTasks)
 	}
 	return f
 }

@@ -290,10 +290,12 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 		return coursegraph.Snapshot{}, fault.New(fault.Invalid, "COMPETENCY_MAP_INVALID", "Не удалось прочитать книгу Excel (.xlsx).")
 	}
 	// A unified first sheet holds both modes; it stands for the two sheets of
-	// the paired book, and the sheets after it are reference data.
+	// the paired book, and the sheets after it are reference data. Its modes
+	// share one set of outcomes.
+	unified := false
 	if len(sheets) > 0 {
 		if exam, learning, ok := coursegraph.SplitUnifiedSheet(sheets[0]); ok {
-			sheets = []coursegraph.MapSheet{exam, learning}
+			sheets, unified = []coursegraph.MapSheet{exam, learning}, true
 		}
 	}
 	// One upload holds both modes: the first sheet is Geek's, the second the
@@ -311,6 +313,11 @@ func (w *Worker) ImportMap(ctx context.Context, actor user.User, subjectID, file
 	}
 	if err != nil {
 		return coursegraph.Snapshot{}, err
+	}
+	if unified {
+		if built.Graph, err = coursegraph.ShareOutcomes(built.Graph); err != nil {
+			return coursegraph.Snapshot{}, err
+		}
 	}
 	if expectedLearningRevision < 0 {
 		return coursegraph.Snapshot{}, fault.New(fault.Conflict, "COMPETENCY_MAP_CHANGED", "Обновите состояние учебной карты и подтвердите замену ещё раз.")

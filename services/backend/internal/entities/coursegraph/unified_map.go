@@ -1,6 +1,7 @@
 package coursegraph
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -218,6 +219,28 @@ func SplitUnifiedSheet(sheet MapSheet) (exam, learning MapSheet, ok bool) {
 		learning.Rows[i] = learningProjection.row(sheet.Rows[i], layout)
 	}
 	return exam, learning, true
+}
+
+// sharedOutcomesField marks a map graph whose topics are the outcomes of the
+// diagnostic: a unified map has one set of outcomes for both modes.
+const sharedOutcomesField = "shared_outcomes"
+
+// ShareOutcomes marks the Geek graph of a unified map.
+func ShareOutcomes(graph json.RawMessage) (json.RawMessage, error) {
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(graph, &shape); err != nil {
+		return nil, err
+	}
+	shape[sharedOutcomesField] = json.RawMessage("true")
+	return json.Marshal(shape)
+}
+
+// SharesOutcomes reports whether the graph uses the outcomes of the diagnostic.
+func SharesOutcomes(graph json.RawMessage) bool {
+	var shape struct {
+		Shared bool `json:"shared_outcomes"`
+	}
+	return json.Unmarshal(graph, &shape) == nil && shape.Shared
 }
 
 // BookTitle is the title a column of a projected sheet has in the book.
