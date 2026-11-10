@@ -98,6 +98,13 @@ func (e *UpstreamFailure) Error() string {
 	return e.Code
 }
 
+// upstreamIdleConnTimeout is how long an idle upstream connection is kept. The
+// models' servers (uvicorn) close an idle keep-alive connection after 5 s; the
+// gateway must close it first, otherwise a call can be written into a connection
+// the server is closing and fail with EOF. Keep it below every upstream's
+// keep-alive timeout; recheck when adding a server type.
+const upstreamIdleConnTimeout = 4 * time.Second
+
 type Caller struct {
 	cfg      Config
 	client   *http.Client
@@ -106,7 +113,7 @@ type Caller struct {
 }
 
 func NewCaller(cfg Config) *Caller {
-	return &Caller{cfg: cfg, client: &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext, MaxIdleConns: 128, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: cfg.UpstreamTimeout}, Timeout: cfg.UpstreamTimeout}, circuits: make(map[string]*Circuit)}
+	return &Caller{cfg: cfg, client: &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext, MaxIdleConns: 128, IdleConnTimeout: upstreamIdleConnTimeout, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: cfg.UpstreamTimeout}, Timeout: cfg.UpstreamTimeout}, circuits: make(map[string]*Circuit)}
 }
 func (c *Caller) circuit(id string) *Circuit {
 	c.mu.Lock()

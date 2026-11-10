@@ -37,7 +37,7 @@ func TestUpstreamReadFailureRetainsUncertainSlot(t *testing.T) {
 	}
 }
 
-func TestOnlyVerifiedDisconnectAbortMakesGatewayTimeoutCertain(t *testing.T) {
+func TestOnlyVerifiedDisconnectAbortMakesSentCallCertain(t *testing.T) {
 	timeout := &UpstreamFailure{Code: "upstream_transport_error", Err: context.DeadlineExceeded}
 	if uncertainUpstreamOutcomeForInstance(InstanceConfig{}, timeout) != true {
 		t.Fatal("unverified upstream timeout did not retain its slot")
@@ -45,9 +45,17 @@ func TestOnlyVerifiedDisconnectAbortMakesGatewayTimeoutCertain(t *testing.T) {
 	if uncertainUpstreamOutcomeForInstance(InstanceConfig{AbortOnDisconnect: true}, timeout) {
 		t.Fatal("verified abort-on-disconnect timeout retained its slot")
 	}
-	readFailure := &UpstreamFailure{Code: "upstream_response_error", Err: io.ErrUnexpectedEOF}
-	if !uncertainUpstreamOutcomeForInstance(InstanceConfig{AbortOnDisconnect: true}, readFailure) {
-		t.Fatal("ordinary response read failure was treated as a confirmed cancellation")
+	// The model closed the connection: the call ended without the gateway's timer.
+	for _, closedByModel := range []*UpstreamFailure{
+		{Code: "upstream_response_error", Err: io.ErrUnexpectedEOF},
+		{Code: "upstream_transport_error", Err: io.EOF},
+	} {
+		if !uncertainUpstreamOutcomeForInstance(InstanceConfig{}, closedByModel) {
+			t.Fatalf("%+v: unverified upstream did not retain its slot", closedByModel)
+		}
+		if uncertainUpstreamOutcomeForInstance(InstanceConfig{AbortOnDisconnect: true}, closedByModel) {
+			t.Fatalf("%+v: verified abort-on-disconnect upstream retained its slot", closedByModel)
+		}
 	}
 }
 

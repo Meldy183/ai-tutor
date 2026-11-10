@@ -43,8 +43,9 @@ type InstanceConfig struct {
 	SupportedResponseFormats []string      `json:"supported_response_formats"`
 	ContextWindow            int           `json:"context_window"`
 	Timeout                  time.Duration `json:"timeout"`
-	// AbortOnDisconnect allows releasing an uncertain slot after closing the
-	// upstream HTTP request. Set only after verifying this endpoint's behavior.
+	// AbortOnDisconnect allows releasing an uncertain slot once the upstream
+	// HTTP connection is closed, by either side. Set only after verifying this
+	// endpoint's behavior.
 	AbortOnDisconnect bool `json:"abort_on_disconnect"`
 	// ServerExecutionLimit is a verified upstream bound, including its queue.
 	// Zero leaves uncertain slots reserved until completion is confirmed.
