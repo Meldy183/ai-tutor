@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	closingText = "Спасибо! Диагностика завершена, итог уже готов."
+	closingText = "Спасибо, на этом закончим. Итог уже готов."
 	// speechLimit is the TTS limit of one synthesis request.
 	speechLimit = 500
 	maxKeyLen   = 200
@@ -270,7 +270,7 @@ func (s *Service) Answer(ctx context.Context, ownerID, id, key string, a Answer)
 	if err := s.append(&session, exam.SpeakerStudent, exam.KindAnswer, &step.NodeID, &source, text); err != nil {
 		return exam.Session{}, err
 	}
-	evaluate := EvaluationRequest{PreferredName: session.PreferredName, ClarificationPending: session.ClarificationPending, AddressPreference: exam.AddressNeutral, HintUsed: session.Exam.Nodes[node.ID].HintUsed, Kind: step.Kind, Node: node, MaxScore: session.Exam.Graph.MaxScore(node.ID), Prerequisites: unaskedPrerequisites(session.Exam, node.ID), Dialogue: session.Dialogue(node.ID)}
+	evaluate := EvaluationRequest{PreferredName: session.PreferredName, ClarificationPending: session.ClarificationPending, HintUsed: session.Exam.Nodes[node.ID].HintUsed, Kind: step.Kind, Node: node, MaxScore: session.Exam.Graph.MaxScore(node.ID), Prerequisites: unaskedPrerequisites(session.Exam, node.ID), Dialogue: session.Dialogue(node.ID)}
 	assessment := Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictDontKnow}}
 	if source != exam.SourceDontKnow {
 		if assessment, err = s.examiner.Evaluate(ctx, evaluate); err != nil {
@@ -281,25 +281,10 @@ func (s *Service) Answer(ctx context.Context, ownerID, id, key string, a Answer)
 		}
 	}
 	session.ClarificationPending = assessment.ClarificationPending
-	if !assessment.AddressPreference.Valid() || (assessment.Verdict == exam.VerdictAddressCorrection && assessment.AddressPreference == "") {
-		return exam.Session{}, modelError(errors.New("invalid address preference"))
-	}
-	session.AddressPreference = exam.AddressNeutral
-	evaluate.AddressPreference = exam.AddressNeutral
-	if assessment.Verdict == exam.VerdictInsufficient || assessment.Verdict == exam.VerdictPause || assessment.Verdict == exam.VerdictAddressCorrection {
-		assessment.Verdict = exam.VerdictClarifyQuestion
-		assessment.Clarification = RepeatUnclearSpeech
-	}
 	if assessment.Verdict.Conversational() {
 		// Keep the actual exam step, scores, hint allowance and question count.
 		session.Turns[len(session.Turns)-1].Meta = true
 		message := assessment.Clarification
-		switch assessment.Verdict {
-		case exam.VerdictAddressCorrection:
-			message = addressAcknowledgement(session.AddressPreference)
-		case exam.VerdictPause:
-			message = pauseAcknowledgement
-		}
 		if strings.TrimSpace(message) == "" || utf8.RuneCountInString(message) > 600 {
 			return exam.Session{}, modelError(errors.New("invalid conversational reply"))
 		}
@@ -481,7 +466,7 @@ func (s *Service) say(ctx context.Context, session *exam.Session, step exam.Step
 		text = node.PreparedRephrase()
 	} else {
 		var err error
-		text, err = s.examiner.Question(ctx, QuestionRequest{PreferredName: session.PreferredName, Reasons: session.Exam.Nodes[node.ID].Reasons, AddressPreference: session.AddressPreference, Hint: step.Hint, Kind: step.Kind, Node: node, Dialogue: session.Dialogue(node.ID)})
+		text, err = s.examiner.Question(ctx, QuestionRequest{PreferredName: session.PreferredName, Reasons: session.Exam.Nodes[node.ID].Reasons, Hint: step.Hint, Kind: step.Kind, Node: node, Dialogue: session.Dialogue(node.ID)})
 		if err != nil {
 			return modelError(err)
 		}
@@ -569,7 +554,7 @@ func answerFingerprint(sessionID string, a Answer) (string, error) {
 
 func checkEvaluation(e exam.Evaluation, session exam.Session) error {
 	switch e.Verdict {
-	case exam.VerdictAnswered, exam.VerdictDontKnow, exam.VerdictInsufficient, exam.VerdictHintRequested, exam.VerdictAddressCorrection, exam.VerdictClarifyQuestion, exam.VerdictPause:
+	case exam.VerdictAnswered, exam.VerdictDontKnow, exam.VerdictInsufficient, exam.VerdictHintRequested, exam.VerdictClarifyQuestion:
 	default:
 		return fmt.Errorf("unknown verdict %q", e.Verdict)
 	}

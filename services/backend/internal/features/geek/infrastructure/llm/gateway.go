@@ -137,7 +137,8 @@ func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest)
 		r.ClarificationPending = false
 	}
 	if normalized == "не понял" || normalized == "не поняла" || normalized == "я не понял" || normalized == "я не поняла" || normalized == "не понял вопрос" || normalized == "не поняла вопрос" || normalized == "я ничего не понял" || normalized == "я ничего не поняла" || normalized == "я не понимаю вопрос" {
-		return application.Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictClarifyQuestion}, Clarification: application.AskUnclearPart, ClarificationPending: true}, nil
+		last := r.Dialogue[len(r.Dialogue)-1]
+		return application.Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictClarifyQuestion}, Clarification: application.AskUnclearPart(last.Line), ClarificationPending: true}, nil
 	}
 	if pureControl(request, "skip") {
 		return application.Assessment{Evaluation: exam.Evaluation{Verdict: exam.VerdictDontKnow}}, nil
@@ -146,11 +147,10 @@ func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest)
 	// The student waits for the evaluation, so it uses the fast low pool too.
 	err := g.complete(ctx, "evaluate:"+string(r.Kind), llmgatewayv1.Complexity_COMPLEXITY_LOW, true, evaluationPrompt(r), func(content []byte) error {
 		var out struct {
-			Verdict           exam.Verdict           `json:"verdict"`
-			Score             *int                   `json:"score"`
-			Reasons           []string               `json:"reasons"`
-			Evidence          []json.Number          `json:"evidence_lines"`
-			AddressPreference exam.AddressPreference `json:"address_preference"`
+			Verdict  exam.Verdict  `json:"verdict"`
+			Score    *int          `json:"score"`
+			Reasons  []string      `json:"reasons"`
+			Evidence []json.Number `json:"evidence_lines"`
 		}
 		if err := json.Unmarshal(content, &out); err != nil {
 			return err
@@ -176,15 +176,12 @@ func (g *Gateway) Evaluate(ctx context.Context, r application.EvaluationRequest)
 					e.Reasons = append(e.Reasons, reason)
 				}
 			}
-		case exam.VerdictDontKnow, exam.VerdictHintRequested, exam.VerdictAddressCorrection, exam.VerdictClarifyQuestion, exam.VerdictPause:
+		case exam.VerdictDontKnow, exam.VerdictHintRequested, exam.VerdictClarifyQuestion:
 		default:
 			return fmt.Errorf("unknown verdict %q", out.Verdict)
 		}
-		if !out.AddressPreference.Valid() || (out.Verdict == exam.VerdictAddressCorrection && out.AddressPreference == "") {
-			return errors.New("invalid address preference")
-		}
 		// Never show grading-model prose to a student, even if the model emits it.
-		result = application.Assessment{Evaluation: e, AddressPreference: out.AddressPreference}
+		result = application.Assessment{Evaluation: e}
 		return nil
 	})
 	if err != nil {
@@ -209,9 +206,6 @@ func (g *Gateway) Feedback(ctx context.Context, r application.FeedbackRequest) (
 	// A rephrase needs a transition, not another model-generated question or
 	// hints. Keep this branch deterministic, including the speaker's agency.
 	if !r.Closed && r.Next == exam.KindRephrase {
-		if r.Verdict == exam.VerdictInsufficient {
-			return transition(r, offTopicTransitions), nil
-		}
 		return transition(r, rephraseTransitions), nil
 	}
 	if !r.Closed {

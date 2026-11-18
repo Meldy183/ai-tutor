@@ -81,12 +81,11 @@ type QuestionRequest struct {
 	PreferredName string
 	// Reasons are the grader's grounds for the score observed so far; a
 	// followup asks only about what they leave missing.
-	Reasons           []string
-	AddressPreference exam.AddressPreference
-	Hint              bool          // requested context, not a ready-made answer
-	Kind              exam.TurnKind // question, followup or rephrase
-	Node              exam.Node
-	Dialogue          []exam.Turn
+	Reasons  []string
+	Hint     bool          // requested context, not a ready-made answer
+	Kind     exam.TurnKind // question, followup or rephrase
+	Node     exam.Node
+	Dialogue []exam.Turn
 	// Ahead marks a main question or its rephrase prepared before any
 	// session (decision of 18.10.2026); nobody waits for it, while a question
 	// asked during a session keeps the student waiting.
@@ -96,7 +95,6 @@ type QuestionRequest struct {
 type EvaluationRequest struct {
 	PreferredName        string
 	ClarificationPending bool
-	AddressPreference    exam.AddressPreference
 	HintUsed             bool          // distinguish the student's reasoning from supplied context
 	Kind                 exam.TurnKind // the step that was answered
 	Node                 exam.Node
@@ -113,7 +111,6 @@ type EvaluationRequest struct {
 // Assessment contains only grading; feedback follows the exam engine's decision.
 type Assessment struct {
 	ClarificationPending bool
-	AddressPreference    exam.AddressPreference
 	Clarification        string // from the separate support dialogue, never grading prose
 	exam.Evaluation
 }

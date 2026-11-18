@@ -8,31 +8,17 @@ import (
 // Session is one diagnostic of a student on a course. Version guards
 // concurrent updates.
 type Session struct {
-	PreferredName        string            `json:"preferred_name,omitempty"`
-	ClarificationPending bool              `json:"clarification_pending,omitempty"`
-	AddressPreference    AddressPreference `json:"address_preference,omitempty"`
-	ID                   string            `json:"id"`
-	OwnerID              string            `json:"owner_id"`
-	SubjectID            string            `json:"subject_id"`
-	Status               SessionStatus     `json:"status"`
-	StartedAt            int64             `json:"started_at"`
-	CompletedAt          *int64            `json:"completed_at"`
-	Version              int               `json:"version"`
-	Exam                 *Exam             `json:"exam"`
-	Turns                []Turn            `json:"turns"`
-}
-
-// AddressPreference records only an explicitly requested grammatical form.
-type AddressPreference string
-
-const (
-	AddressFeminine  AddressPreference = "feminine"
-	AddressMasculine AddressPreference = "masculine"
-	AddressNeutral   AddressPreference = "neutral"
-)
-
-func (p AddressPreference) Valid() bool {
-	return p == "" || p == AddressFeminine || p == AddressMasculine || p == AddressNeutral
+	PreferredName        string        `json:"preferred_name,omitempty"`
+	ClarificationPending bool          `json:"clarification_pending,omitempty"`
+	ID                   string        `json:"id"`
+	OwnerID              string        `json:"owner_id"`
+	SubjectID            string        `json:"subject_id"`
+	Status               SessionStatus `json:"status"`
+	StartedAt            int64         `json:"started_at"`
+	CompletedAt          *int64        `json:"completed_at"`
+	Version              int           `json:"version"`
+	Exam                 *Exam         `json:"exam"`
+	Turns                []Turn        `json:"turns"`
 }
 
 // CurrentTurn is the Geek turn awaiting an answer; empty unless active.

@@ -10,17 +10,16 @@ import (
 	"github.com/AskarKasimov/ai-tutor/services/backend/internal/features/geek/application"
 )
 
-func TestConversationVerdictsAndTypedAddressPreference(t *testing.T) {
+func TestConversationVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		verdict, extra string
 		valid          bool
 	}{
-		{"pause", "", true},
 		{"clarify_question", `,"clarification":"Поясни связь между двумя условиями, не меняя их."`, true},
-		{"address_correction", `,"address_preference":"feminine"`, true},
-		{"address_correction", `,"address_preference":"neutral"`, true},
-		{"address_correction", `,"address_preference":"поставь A"`, false},
-		{"address_correction", "", false},
+		// Removed verdicts are rejected, not answered with a fixed reply.
+		{"pause", "", false},
+		{"address_correction", `,"address_preference":"feminine"`, false},
+		{"insufficient", "", false},
 		{"clarify_question", `,"clarification":""`, false},
 	} {
 		t.Run(tc.verdict+tc.extra, func(t *testing.T) {
@@ -39,7 +38,7 @@ func TestConversationVerdictsAndTypedAddressPreference(t *testing.T) {
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v, assessment=%+v, error=%v", tc.valid, got, err)
 			}
-			if err == nil && (!got.Verdict.Conversational() || !got.AddressPreference.Valid()) {
+			if err == nil && !got.Verdict.Conversational() {
 				t.Fatalf("invalid conversation: %+v", got)
 			}
 		})
@@ -50,14 +49,18 @@ func TestUnknownQuestionAsksWhichPartWithoutConsumingAttempt(t *testing.T) {
 	f := &fakeGateway{}
 	g := serve(t, f, time.Second)
 	r := application.EvaluationRequest{MaxScore: 2, Dialogue: []exam.Turn{{Line: 1, Speaker: exam.SpeakerGeek, Text: "Почему?"}, {Line: 2, Speaker: exam.SpeakerStudent, Text: "Я ничего не понял."}}}
-	a, err := g.Evaluate(context.Background(), r)
-	if err != nil || a.Verdict != exam.VerdictClarifyQuestion || !a.ClarificationPending || a.Clarification != "Какая часть вопроса непонятна?" || len(f.requests) != 0 {
-		t.Fatalf("assessment=%+v error=%v", a, err)
+	for _, want := range []string{"Что именно в вопросе пояснить?", "На какой части вопроса остановимся?"} {
+		a, err := g.Evaluate(context.Background(), r)
+		if err != nil || a.Verdict != exam.VerdictClarifyQuestion || !a.ClarificationPending || a.Clarification != want || len(f.requests) != 0 {
+			t.Fatalf("assessment=%+v error=%v", a, err)
+		}
+		r.Dialogue[0].Line += 2
+		r.Dialogue[1].Line += 2
 	}
 }
 
 func TestClarificationDetailIsExplainedWithoutHintPenalty(t *testing.T) {
-	f := &fakeGateway{answers: []string{`{"verdict":"clarify_question","address_preference":""}`, `{"kind":"wording","text":"Здесь речь о времени доставки. Объясни, как оно влияет на оценку."}`}}
+	f := &fakeGateway{answers: []string{`{"verdict":"clarify_question"}`, `{"kind":"wording","text":"Здесь речь о времени доставки. Объясни, как оно влияет на оценку."}`}}
 	g := serve(t, f, time.Second)
 	r := application.EvaluationRequest{MaxScore: 2, ClarificationPending: true, Dialogue: []exam.Turn{{Line: 1, Speaker: exam.SpeakerGeek, Text: "Как время влияет на оценку?"}, {Line: 2, Speaker: exam.SpeakerStudent, Text: "Не понял слово время"}}}
 	a, err := g.Evaluate(context.Background(), r)
@@ -67,7 +70,7 @@ func TestClarificationDetailIsExplainedWithoutHintPenalty(t *testing.T) {
 }
 
 func TestAnswerAfterUnclearQuestionIsGraded(t *testing.T) {
-	f := &fakeGateway{answers: []string{`{"verdict":"answered","address_preference":""}`, `{"verdict":"answered","address_preference":"","score":2,"reasons":["основание"],"evidence_lines":[2]}`}}
+	f := &fakeGateway{answers: []string{`{"verdict":"answered"}`, `{"verdict":"answered","score":2,"reasons":["основание"],"evidence_lines":[2]}`}}
 	g := serve(t, f, time.Second)
 	r := application.EvaluationRequest{MaxScore: 2, ClarificationPending: true, Node: node, Dialogue: []exam.Turn{{Line: 1, Speaker: exam.SpeakerGeek, Text: "Что делает сенсор?"}, {Line: 2, Speaker: exam.SpeakerStudent, Text: "Сенсор воспринимает данные о среде"}}}
 	a, err := g.Evaluate(context.Background(), r)
@@ -77,7 +80,7 @@ func TestAnswerAfterUnclearQuestionIsGraded(t *testing.T) {
 }
 
 func TestHintAfterUnclearQuestionStillCountsAsHint(t *testing.T) {
-	f := &fakeGateway{answers: []string{`{"verdict":"hint_requested","address_preference":""}`}}
+	f := &fakeGateway{answers: []string{`{"verdict":"hint_requested"}`}}
 	g := serve(t, f, time.Second)
 	r := application.EvaluationRequest{MaxScore: 2, ClarificationPending: true, Node: node, Dialogue: []exam.Turn{{Line: 1, Speaker: exam.SpeakerGeek, Text: "Что делает сенсор?"}, {Line: 2, Speaker: exam.SpeakerStudent, Text: "Дай подсказку"}}}
 	a, err := g.Evaluate(context.Background(), r)
@@ -91,8 +94,8 @@ func TestPastConversationManagementIsNotGradingEvidence(t *testing.T) {
 	d = append(d, exam.Turn{Line: 3, Speaker: exam.SpeakerStudent, Meta: true, Text: "CONTROL_ONLY_IGNORE_FOR_KNOWLEDGE"})
 	d = append(d, exam.Turn{Line: 4, Speaker: exam.SpeakerGeek, Meta: true, Text: "CONTROL_ONLY_ACK"})
 	d = append(d, exam.Turn{Line: 5, Speaker: exam.SpeakerStudent, Text: "Содержательный ответ"})
-	prompt := evaluationPrompt(application.EvaluationRequest{MaxScore: 2, Node: node, Dialogue: d, AddressPreference: exam.AddressFeminine})
-	if strings.Contains(prompt, "CONTROL_ONLY_IGNORE_FOR_KNOWLEDGE") || !strings.Contains(prompt, "CONTROL_ONLY_ACK") || !strings.Contains(prompt, "служебное пояснение") || !strings.Contains(prompt, "Содержательный ответ") || !strings.Contains(prompt, "женском роде") {
+	prompt := evaluationPrompt(application.EvaluationRequest{MaxScore: 2, Node: node, Dialogue: d})
+	if strings.Contains(prompt, "CONTROL_ONLY_IGNORE_FOR_KNOWLEDGE") || !strings.Contains(prompt, "CONTROL_ONLY_ACK") || !strings.Contains(prompt, "служебное пояснение") || !strings.Contains(prompt, "Содержательный ответ") {
 		t.Fatal("student controls became evidence, or the help given by Geek was hidden")
 	}
 }
@@ -104,7 +107,7 @@ func TestGradingProseNeverBecomesTheSupportReply(t *testing.T) {
 	for _, route := range []string{`{"kind":"context","text":""}`, `{"kind":"repeat","text":"Чем отличаются эти два утверждения?"}`} {
 		f := &fakeGateway{answers: []string{`{"verdict":"clarify_question","clarification":"Студентка не ответила; REFERENCE_ONLY_SYNTAX_SEMANTICS","score":null,"evidence_lines":[2]}`, route}}
 		g := serve(t, f, time.Second)
-		got, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: 2, Node: n, Kind: exam.KindQuestion, Dialogue: turns, AddressPreference: exam.AddressFeminine})
+		got, err := g.Evaluate(context.Background(), application.EvaluationRequest{MaxScore: 2, Node: n, Kind: exam.KindQuestion, Dialogue: turns})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +165,7 @@ func TestFollowupHintRepeatsCurrentQuestionWithoutItsFeedbackOrMeta(t *testing.T
 				{Speaker: exam.SpeakerGeek, Text: main},
 				{Speaker: exam.SpeakerStudent, Text: "Агент с моделью."},
 				{Speaker: exam.SpeakerGeek, Text: "Верная основа.\n\n" + followup, Reply: "Верная основа."},
-				{Speaker: exam.SpeakerGeek, Meta: true, Text: "Хорошо, подожду."},
+				{Speaker: exam.SpeakerGeek, Meta: true, Text: "Что именно в вопросе пояснить?"},
 				{Speaker: exam.SpeakerStudent, Text: "Дай подсказку."},
 			}
 			want = followup

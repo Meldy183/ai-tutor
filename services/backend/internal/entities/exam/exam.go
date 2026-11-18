@@ -97,17 +97,17 @@ type NodeState struct {
 type Verdict string
 
 const (
-	VerdictAnswered          Verdict = "answered"
-	VerdictDontKnow          Verdict = "dont_know"
-	VerdictInsufficient      Verdict = "insufficient"
-	VerdictHintRequested     Verdict = "hint_requested"
-	VerdictAddressCorrection Verdict = "address_correction"
-	VerdictClarifyQuestion   Verdict = "clarify_question"
-	VerdictPause             Verdict = "pause"
+	VerdictAnswered        Verdict = "answered"
+	VerdictDontKnow        Verdict = "dont_know"
+	VerdictInsufficient    Verdict = "insufficient"
+	VerdictHintRequested   Verdict = "hint_requested"
+	VerdictClarifyQuestion Verdict = "clarify_question"
 )
 
+// Conversational verdicts keep the exam step: a request to repeat or explain
+// the wording of the question is the only one.
 func (v Verdict) Conversational() bool {
-	return v == VerdictAddressCorrection || v == VerdictClarifyQuestion || v == VerdictPause
+	return v == VerdictClarifyQuestion
 }
 
 // Evaluation is the model's assessment of the dialogue on the current topic:

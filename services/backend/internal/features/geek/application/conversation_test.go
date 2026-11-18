@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestConversationDoesNotSpendAttemptOrHintOrChangeScores(t *testing.T) {
 		nodeID := s.Exam.Current.NodeID
 		before, _ := json.Marshal(s.Exam)
 		feedbacks, questions := len(f.examiner.feedbacks), len(f.examiner.questions)
-		for _, text := range []string{"поправка обращения: женский род", "поясни формулировку", "пауза"} {
+		for _, text := range []string{"поясни формулировку", "поясни формулировку ещё раз"} {
 			previous := s.Turns[len(s.Turns)-1].ID
 			s = f.answer(t, s, Answer{Text: text})
 			after, _ := json.Marshal(s.Exam)
@@ -32,9 +33,6 @@ func TestConversationDoesNotSpendAttemptOrHintOrChangeScores(t *testing.T) {
 			last := s.Turns[len(s.Turns)-1]
 			if !last.Meta || !s.Turns[len(s.Turns)-2].Meta || last.ID == previous {
 				t.Fatalf("invalid conversational transcript: %+v", last)
-			}
-			if s.AddressPreference != exam.AddressNeutral {
-				t.Fatal("address preference lost on persistence")
 			}
 		}
 		if len(f.examiner.feedbacks) != feedbacks || len(f.examiner.questions) != questions {
@@ -49,9 +47,6 @@ func TestConversationDoesNotSpendAttemptOrHintOrChangeScores(t *testing.T) {
 		if state := s.Exam.Nodes[nodeID]; state.Score == nil || *state.Score != want {
 			t.Fatalf("answer after conversation: %+v", state)
 		}
-		if f.examiner.feedbacks[len(f.examiner.feedbacks)-1].AddressPreference != exam.AddressNeutral {
-			t.Fatal("feedback did not receive address preference")
-		}
 	}
 }
 
@@ -62,16 +57,6 @@ func TestNameInAnswerIsNotRecognized(t *testing.T) {
 	s = f.answer(t, s, Answer{Text: "Меня зовут Кирилл, сильно"})
 	if s.PreferredName != "" || s.Exam.Nodes[id].Score == nil || *s.Exam.Nodes[id].Score != 2 {
 		t.Fatal("name was stored or answer was not graded")
-	}
-}
-
-func TestMixedAnswerAndAddressCorrectionStillGradesTheAnswer(t *testing.T) {
-	f := newFixture(t)
-	s, _, _ := f.service.Start(context.Background(), "student", "subject", "start")
-	id := s.Exam.Current.NodeID
-	s = f.answer(t, s, Answer{Text: "сильно; женский род"})
-	if s.AddressPreference != exam.AddressNeutral || *s.Exam.Nodes[id].Score != 2 {
-		t.Fatal("mixed answer lost either knowledge or preference")
 	}
 }
 
@@ -87,13 +72,15 @@ func TestWholeAudioUsesPreparedQuestionAndFixedSpeechCache(t *testing.T) {
 	if _, err := f.service.TurnAudio(ctx, "student", s.ID, question.ID, AudioWhole); err != nil || len(f.voice.calls) != calls {
 		t.Fatalf("prepared question cache missed: %v", err)
 	}
-	if !strings.Contains(strings.Join(ConversationSpeech(), "\n"), RepeatUnclearSpeech) || !strings.Contains(strings.Join(ConversationSpeech(), "\n"), AskUnclearPart) {
-		t.Fatal("fixed speech not queued for warming")
+	for _, text := range unclearPartQuestions {
+		if !slices.Contains(ConversationSpeech(), text) {
+			t.Fatalf("fixed speech not queued for warming: %q", text)
+		}
+		if _, err := f.service.speech.Part(ctx, text); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := f.service.speech.Part(ctx, RepeatUnclearSpeech); err != nil {
-		t.Fatal(err)
-	}
-	s = f.answer(t, s, Answer{Text: "пауза"})
+	s = f.answer(t, s, Answer{Text: "НЕПОНЯТНО"})
 	reply := s.Turns[len(s.Turns)-1]
 	calls = len(f.voice.calls)
 	if _, err := f.service.TurnAudio(ctx, "student", s.ID, reply.ID, AudioWhole); err != nil || len(f.voice.calls) != calls {
@@ -101,15 +88,24 @@ func TestWholeAudioUsesPreparedQuestionAndFixedSpeechCache(t *testing.T) {
 	}
 }
 
-func TestUnrelatedConversationDoesNotSpendAttempt(t *testing.T) {
-	f := newFixture(t)
-	s, _, _ := f.service.Start(context.Background(), "student", "subject", "start")
-	before, _ := json.Marshal(s.Exam)
-	s = f.answer(t, s, Answer{Text: "ПОСТОРОННИЙ РАЗГОВОР"})
-	after, _ := json.Marshal(s.Exam)
-	last := s.Turns[len(s.Turns)-1]
-	if string(before) != string(after) || !last.Meta || !strings.Contains(last.Text, "я не знаю") {
-		t.Fatalf("unrelated utterance spent an attempt: %+v", last)
+// Geek has no reply of its own to a request to wait, to a correction of the
+// form of address or to an unrelated utterance, and never asks to repeat an
+// answer because the recording might have been cut: all of them are graded.
+func TestPauseAddressAndUnrelatedSpeechAreGradedAsAnswers(t *testing.T) {
+	for _, text := range []string{"подожди, я думаю", "обращайся ко мне в женском роде", "посторонний разговор"} {
+		f := newFixture(t)
+		s, _, _ := f.service.Start(context.Background(), "student", "subject", "start")
+		s = f.answer(t, s, Answer{Text: text})
+		if len(f.examiner.feedbacks) != 1 {
+			t.Fatalf("%q was not graded as an answer", text)
+		}
+		for _, turn := range s.Turns {
+			for _, removed := range []string{"запись оборвалась", "Повтори ответ", "подожду", "буду обращаться", "нейтральные обращения"} {
+				if turn.Speaker == exam.SpeakerGeek && strings.Contains(turn.Text, removed) {
+					t.Fatalf("Geek used a removed reply to %q: %q", text, turn.Text)
+				}
+			}
+		}
 	}
 }
 

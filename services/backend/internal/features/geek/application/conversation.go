@@ -2,10 +2,21 @@ package application
 
 import "github.com/AskarKasimov/ai-tutor/services/backend/internal/entities/exam"
 
-const feedbackLeadIn = "Давай разберём ответ."
+const feedbackLeadIn = "Хорошо, пару слов про твой ответ."
 
-var feedbackLeadIns = []string{feedbackLeadIn, "Давай посмотрим на твой ответ.", "Подведём итог твоему ответу.", "Посмотрим, что получилось."}
-var nextQuestionTransitions = []string{"Давай перейдём к следующему вопросу.", "Теперь перейдём к следующей теме.", "Продолжим: следующий вопрос.", "Хорошо, перейдём дальше."}
+var feedbackLeadIns = []string{
+	feedbackLeadIn,
+	"Так, посмотрим, что у нас получилось.",
+	"Давай пройдёмся по твоему рассуждению.",
+	"Теперь коротко разберём ответ.",
+}
+
+var nextQuestionTransitions = []string{
+	"Так, идём дальше.",
+	"С этим вопросом закончили. Теперь следующий.",
+	"Хорошо. Теперь вопрос по другой теме.",
+	"Перейдём к другой теме.",
+}
 
 // NextQuestionTransition is deterministic for existing turns and is only used
 // when feedback closes a topic and a new main question follows it.
@@ -16,24 +27,17 @@ func NextQuestionTransition(turn exam.Turn) string {
 	return nextQuestionTransitions[(turn.Line/2)%len(nextQuestionTransitions)]
 }
 
-const pauseAcknowledgement = "Хорошо, подожду. Продолжай, когда будет удобно."
-const RepeatUnclearSpeech = "Возможно, запись оборвалась или распознался посторонний разговор. Повтори ответ или скажи «я не знаю»."
-const AskUnclearPart = "Какая часть вопроса непонятна?"
+var unclearPartQuestions = []string{
+	"Что именно в вопросе пояснить?",
+	"На какой части вопроса остановимся?",
+}
 
-func addressAcknowledgement(preference exam.AddressPreference) string {
-	switch preference {
-	case exam.AddressFeminine:
-		return "Хорошо, дальше буду обращаться в женском роде. Можем продолжить с того же вопроса."
-	case exam.AddressMasculine:
-		return "Хорошо, дальше буду обращаться в мужском роде. Можем продолжить с того же вопроса."
-	default:
-		return "Хорошо, дальше буду использовать нейтральные обращения. Можем продолжить с того же вопроса."
-	}
+func AskUnclearPart(answerLine int) string {
+	return unclearPartQuestions[((answerLine-1)/2)%len(unclearPartQuestions)]
 }
 
 func ConversationSpeech() []string {
 	texts := append([]string{}, feedbackLeadIns...)
 	texts = append(texts, nextQuestionTransitions...)
-	return append(texts, pauseAcknowledgement, RepeatUnclearSpeech, AskUnclearPart,
-		addressAcknowledgement(exam.AddressFeminine), addressAcknowledgement(exam.AddressMasculine), addressAcknowledgement(exam.AddressNeutral))
+	return append(texts, unclearPartQuestions...)
 }

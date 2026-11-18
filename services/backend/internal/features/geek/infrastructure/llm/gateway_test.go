@@ -359,18 +359,9 @@ func TestFeedbackUsesDifferentInstructionsForActualDecisions(t *testing.T) {
 func TestRephraseTransitionDoesNotCallTheModelOrGiveHints(t *testing.T) {
 	f := &fakeGateway{}
 	g := serve(t, f, time.Second)
-	for _, verdict := range []exam.Verdict{exam.VerdictInsufficient, exam.VerdictAnswered} {
-		text, err := g.Feedback(context.Background(), application.FeedbackRequest{Next: exam.KindRephrase, Verdict: verdict})
-		variants := rephraseTransitions
-		if verdict == exam.VerdictInsufficient {
-			variants = offTopicTransitions
-		}
-		if err != nil || !slices.Contains(variants, text) || f.count() != 0 {
-			t.Fatalf("transition = %q, %v, calls=%d", text, err, f.count())
-		}
-		if verdict == exam.VerdictAnswered && strings.Contains(text, "не связан") {
-			t.Fatal("weak answer called off-topic")
-		}
+	text, err := g.Feedback(context.Background(), application.FeedbackRequest{Next: exam.KindRephrase, Verdict: exam.VerdictAnswered})
+	if err != nil || !slices.Contains(rephraseTransitions, text) || f.count() != 0 {
+		t.Fatalf("transition = %q, %v, calls=%d", text, err, f.count())
 	}
 }
 

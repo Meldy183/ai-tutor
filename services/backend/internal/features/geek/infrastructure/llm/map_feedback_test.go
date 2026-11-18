@@ -46,7 +46,7 @@ func TestImportedMapCriteriaAndSelectedReferenceReachGradingAndFeedback(t *testi
 		{Line: 2, Speaker: exam.SpeakerStudent, Text: "Классификация спама: письма разнообразны, учиться на примерах полезнее жёстких правил."},
 	}}
 	f := &fakeGateway{answers: []string{
-		`{"verdict":"answered","address_preference":"","score":2,"reasons":["Пример спама","Разнообразие писем"],"evidence_lines":[2]}`,
+		`{"verdict":"answered","score":2,"reasons":["Пример спама","Разнообразие писем"],"evidence_lines":[2]}`,
 		`{"text":"Ты связал фильтрацию спама с разнообразием писем и обучением на примерах."}`,
 	}}
 	g := serve(t, f, time.Second)

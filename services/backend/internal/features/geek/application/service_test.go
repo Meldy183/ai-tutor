@@ -195,20 +195,14 @@ func (e *examiner) Evaluate(_ context.Context, r EvaluationRequest) (Assessment,
 	switch {
 	case strings.Contains(last.Text, "НЕПОНЯТНО"):
 		a.Evaluation.Verdict = exam.VerdictClarifyQuestion
-		a.Clarification = "Какая часть вопроса непонятна?"
+		a.Clarification = AskUnclearPart(last.Line)
 		a.ClarificationPending = true
 	case r.ClarificationPending:
 		a.Evaluation.Verdict = exam.VerdictClarifyQuestion
 		a.Clarification = "Это про условия задачи. Теперь ответь на вопрос."
-	case strings.Contains(last.Text, "ПОСТОРОННИЙ РАЗГОВОР"):
-		a.Evaluation.Verdict = exam.VerdictInsufficient
-	case strings.Contains(last.Text, "поправка обращения"):
-		a.Evaluation.Verdict = exam.VerdictAddressCorrection
 	case strings.Contains(last.Text, "поясни формулировку"):
 		a.Evaluation.Verdict = exam.VerdictClarifyQuestion
 		a.Clarification = "Объясни смысл исходного вопроса своими словами; условия остаются прежними."
-	case strings.Contains(last.Text, "пауза"):
-		a.Evaluation.Verdict = exam.VerdictPause
 	case strings.Contains(last.Text, "подсказка"):
 		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictHintRequested, Evidence: []int{last.Line}}
 	case strings.Contains(last.Text, "не знаю"):
@@ -227,9 +221,6 @@ func (e *examiner) Evaluate(_ context.Context, r EvaluationRequest) (Assessment,
 		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: score, Evidence: []int{last.Line}}
 	default:
 		a.Evaluation = exam.Evaluation{Verdict: exam.VerdictAnswered, Score: 0, Evidence: []int{last.Line}}
-	}
-	if strings.Contains(last.Text, "женский род") {
-		a.AddressPreference = exam.AddressFeminine
 	}
 	return a, nil
 }
